@@ -818,6 +818,8 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
     readonly modelSelection: ModelSelection;
     readonly appThread?: Pick<OrchestrationV2AppThread, "createdBy" | "lineage" | "delegatedFrom">;
+    /** A scheduled task run: nobody watches it, whoever created the task. */
+    readonly scheduled?: boolean;
     readonly hasT3Mcp?: boolean;
     readonly browserToolsAvailable?: boolean;
     readonly deviceToolsAvailable?: boolean;
@@ -830,8 +832,9 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly configuredReasoningSummary?: CodexSchema.V2TurnStartParams__ReasoningSummary;
   }) {
     const agentDriven =
-      input.appThread !== undefined &&
-      (input.appThread.createdBy === "agent" || isDelegatedAppThread(input.appThread));
+      input.scheduled === true ||
+      (input.appThread !== undefined &&
+        (input.appThread.createdBy === "agent" || isDelegatedAppThread(input.appThread)));
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(
       input.runtimePolicy.runtimeMode,
       !agentDriven && (input.browserToolsAvailable ?? true),
@@ -7641,6 +7644,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
               appThread: turnInput.appThread,
+              scheduled: turnInput.message.scheduledTaskId !== undefined,
               hasT3Mcp: mcpSession !== undefined,
               browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
