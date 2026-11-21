@@ -5,6 +5,7 @@ import { projectTurnItemForWire } from "./WireProjection.ts";
 import * as Stream from "effect/Stream";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { makeThreadFind } from "./ThreadFind.ts";
+import { spentProviderRetryBudget } from "@t3tools/provider-core/server/failure";
 import { unsentManualContinuationSource } from "@t3tools/shared/orchestrationV2ManualContinuation";
 import type {
   OrchestrationV2ThreadLinkMetadata,
@@ -199,6 +200,7 @@ export interface ProjectionTransientFailureCandidate {
   readonly runId: RunId;
   readonly userMessageId: MessageId;
   readonly completedAt: DateTime.Utc;
+  readonly spentRetryBudget: boolean;
 }
 
 export type ProjectionLimitRecoveryCandidate = Pick<
@@ -5111,9 +5113,17 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           readonly run_id: string;
           readonly user_message_id: string;
           readonly completed_at: string;
+          readonly failure_code: string | null;
+          readonly failure_retried: number;
+          readonly failure_started_at: string | null;
+          readonly failure_completed_at: string | null;
         }>`
           SELECT t.thread_id, r.run_id, r.completed_at,
-            json_extract(r.payload_json, '$.userMessageId') AS user_message_id
+            json_extract(r.payload_json, '$.userMessageId') AS user_message_id,
+            json_extract(item.payload_json, '$.failure.code') AS failure_code,
+            json_type(item.payload_json, '$.retry') IS NOT NULL AS failure_retried,
+            json_extract(item.payload_json, '$.startedAt') AS failure_started_at,
+            json_extract(item.payload_json, '$.completedAt') AS failure_completed_at
           FROM orchestration_v2_projection_threads t
           INNER JOIN orchestration_v2_projection_runs r ON r.run_id = (
             SELECT latest.run_id FROM orchestration_v2_projection_runs latest
@@ -5175,6 +5185,16 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           runId: RunId.make(row.run_id),
           userMessageId: MessageId.make(row.user_message_id),
           completedAt: DateTime.makeUnsafe(row.completed_at),
+          spentRetryBudget: spentProviderRetryBudget({
+            code: row.failure_code,
+            retried: row.failure_retried === 1,
+            startedAt:
+              row.failure_started_at === null ? null : DateTime.makeUnsafe(row.failure_started_at),
+            completedAt:
+              row.failure_completed_at === null
+                ? null
+                : DateTime.makeUnsafe(row.failure_completed_at),
+          }),
         }));
       },
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
