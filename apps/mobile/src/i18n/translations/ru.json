@@ -5710,5 +5710,11 @@
   "892f08d21b8e48a9": "Слить {layers} в {base} методом {kind, select, squash {squash} merge {merge} rebase {rebase} fastForward {fast-forward} other {{method}}}, когда будут выполнены требования. Это может произойти сразу.",
   "3d4448e3c061f894": "Другой компьютер",
   "349587beaf00ce5e": "{title}, делегировано с {machine}, {count, plural, one {{count} задача} few {{count} задачи} many {{count} задач} other {{count} задачи}}",
-  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} задача} few {{count} задачи} many {{count} задач} other {{count} задачи}}"
+  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} задача} few {{count} задачи} many {{count} задач} other {{count} задачи}}",
+  "948185631ef288e6": "{count, plural, one {Выполняется: {count}} few {Выполняется: {count}} many {Выполняется: {count}} other {Выполняется: {count}}}",
+  "425e4a3d6c5c2867": "{count, plural, one {Ошибок: {count}} few {Ошибок: {count}} many {Ошибок: {count}} other {Ошибок: {count}}}",
+  "67d4a779cd49a863": "{count, plural, one {{count} завершён} few {{count} завершено} many {{count} завершено} other {{count} завершено}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} открытый PR} few {{count} открытых PR} many {{count} открытых PR} other {{count} открытых PR}}",
+  "5c73b69a42cb7616": "Дочерние треды",
+  "fa97f7ae0f746034": "{count, plural, one {{count} ждёт ответа} few {{count} ждут ответа} many {{count} ждут ответа} other {{count} ждут ответа}}"
 }
