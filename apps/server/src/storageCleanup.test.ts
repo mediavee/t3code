@@ -28,6 +28,7 @@ import {
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as ServerConfig from "./config.ts";
+import { threadTempDirectory } from "./process/agentScope.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 import * as TaskFolders from "./workspace/TaskFolders.ts";
@@ -444,6 +445,10 @@ const cleanupFixture = (
           ),
         getThreadShell: (threadId: ThreadId) =>
           Effect.sync(() => threads.find((thread) => thread.id === threadId) ?? null),
+        listActiveShellIndex: () =>
+          Effect.sync(() =>
+            threads.filter((thread) => thread.deletedAt === null && thread.archivedAt === null),
+          ),
       } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
       Effect.provideService(ThreadManagement.ThreadManagementService, {
         getShellSnapshot: (input?: { threadIds?: ReadonlyArray<ThreadId> }) =>
@@ -3976,6 +3981,42 @@ describe("storage cleanup reports and local file policies", () => {
           reports.flatMap((report) => report.entries).filter((entry) => entry.kind === "worktree"),
         ).toMatchObject([{ outcome: "removed" }]);
         expect(yield* service.latestReport).toEqual(reports[1]);
+      }),
+    ),
+  );
+  it.live("removes temp directories of threads that are gone", () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const { service, fs, config, setThreads } = yield* cleanupFixture();
+        const live = shell({ id: ThreadId.make("thread-live") });
+        setThreads([live, shell({ id: ThreadId.make("thread-archived"), archivedAt: at(0) })]);
+        const directories = [
+          "thread-live",
+          "thread-archived",
+          "thread-deleted",
+          "thread-new",
+          "thread-a-stuck",
+          ...Array.from({ length: 8 }, (_, index) => `thread-gone-${index}`),
+        ].map((id) => threadTempDirectory(config.stateDir, id));
+        // A read-only folder a tool left cannot be emptied; the sweep goes on past it.
+        const locked = `${directories[4]}/locked`;
+        yield* fs.makeDirectory(locked, { recursive: true });
+        yield* fs.writeFileString(`${locked}/file`, "x");
+        yield* fs.chmod(locked, 0o500);
+        for (const directory of directories) {
+          yield* fs.makeDirectory(directory, { recursive: true });
+          if (!directory.endsWith("thread-new")) yield* fs.utimes(directory, 1, 1);
+        }
+        yield* service.runNow;
+        yield* fs.chmod(locked, 0o700);
+        expect(yield* Effect.forEach(directories, (directory) => fs.exists(directory))).toEqual([
+          true,
+          false,
+          false,
+          true,
+          true,
+          ...Array.from({ length: 8 }, () => false),
+        ]);
       }),
     ),
   );
