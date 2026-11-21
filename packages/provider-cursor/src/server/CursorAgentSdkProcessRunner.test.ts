@@ -301,6 +301,7 @@ describe("CursorAgentSdkProcessRunner", () => {
             Effect.provideService(AgentScope, {
               wrap: ({ command, args, name }) =>
                 Effect.succeed({ command, args, unit: `unit-${name}` }),
+              threadTemp: () => Effect.undefined,
               oomKilled: () => Effect.succeed(false),
               stop: (unit) =>
                 Effect.sync(() => {
