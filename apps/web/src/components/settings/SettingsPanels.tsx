@@ -70,6 +70,7 @@ import { useOptionalSettingsScope, useSettingsScope } from "./SettingsScopeConte
 import { scopedIdleCompaction } from "./scopedSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ThreadTitleInstructionsSettings } from "./ThreadTitleInstructionsSettings";
+import { AgentPolicySettingsSection } from "./AgentPolicySettings";
 import { SnoozePresetsRow } from "./SnoozePresetsSettings";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { managedTelemetryOffMessage, usePrimaryManagedPolicy } from "../../state/managedPolicy";
@@ -653,6 +654,10 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.threadTitleInstructions !== DEFAULT_UNIFIED_SETTINGS.threadTitleInstructions
       ? [gt("Thread title instructions")]
       : []),
+    ...(settings.standingInstructions !== DEFAULT_UNIFIED_SETTINGS.standingInstructions
+      ? [gt("Standing instructions")]
+      : []),
+    ...(Object.keys(settings.agentRoleModels).length > 0 ? [gt("Models by role")] : []),
     ...getChangedBrowserSettingLabels(settings, messages),
     ...(settings.enableAgentBrowserAccess !== DEFAULT_UNIFIED_SETTINGS.enableAgentBrowserAccess
       ? [gt("Agent browser access")]
@@ -768,6 +773,8 @@ export function useSettingsRestore(onRestored?: () => void) {
       confirmQuit: DEFAULT_UNIFIED_SETTINGS.confirmQuit,
       textGenerationModelSelection: DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
       threadTitleInstructions: DEFAULT_UNIFIED_SETTINGS.threadTitleInstructions,
+      standingInstructions: DEFAULT_UNIFIED_SETTINGS.standingInstructions,
+      agentRoleModels: DEFAULT_UNIFIED_SETTINGS.agentRoleModels,
       fontFamilySans: DEFAULT_UNIFIED_SETTINGS.fontFamilySans,
       fontFamilyComposer: DEFAULT_UNIFIED_SETTINGS.fontFamilyComposer,
       fontFamilyCode: DEFAULT_UNIFIED_SETTINGS.fontFamilyCode,
@@ -2397,6 +2404,7 @@ export function ThreadsSettingsPanel() {
           />
         </AdvancedSettings>
       </SettingsSection>
+      <AgentPolicySettingsSection />
     </SettingsPageContainer>
   );
 }

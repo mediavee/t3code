@@ -14,6 +14,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
@@ -142,7 +144,8 @@ export const layerFromProjectStore: Layer.Layer<
     const workspaceFolders = yield* WorkspaceFolders.WorkspaceFolders;
     const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
     // The same ceiling the orchestrator enforces, fixed for the server's life.
-    const { managedPolicy } = yield* ServerSettings.ServerSettingsService;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
+    const { managedPolicy } = serverSettings;
     const maxRuntimeMode = managedPolicy?.limits?.maxRuntimeMode;
     return RuntimePolicyV2.of({
       resolve: Effect.fn("RuntimePolicyV2.resolve")(function* (input) {
@@ -177,6 +180,19 @@ export const layerFromProjectStore: Layer.Layer<
               }),
             ),
           ));
+        const { standingInstructions } = resolveProjectSettings(
+          yield* serverSettings.getSettings.pipe(
+            Effect.mapError(
+              (cause) =>
+                new RuntimePolicyResolveError({
+                  projectId: input.thread.projectId,
+                  providerInstanceId: input.modelSelection.instanceId,
+                  cause,
+                }),
+            ),
+          ),
+          input.thread.projectId,
+        ).settings;
         // The turn can still run in its own cwd, as a single-folder thread does.
         const workspace = yield* workspaceFolders
           .forThread({
@@ -195,6 +211,7 @@ export const layerFromProjectStore: Layer.Layer<
           interactionMode: input.thread.interactionMode,
           cwd,
           ...(maxRuntimeMode === undefined ? {} : { maxRuntimeMode }),
+          ...(standingInstructions === "" ? {} : { standingInstructions }),
           ...(workspace === undefined || workspace.folders.length === 0 ? {} : { workspace }),
         });
       }),
