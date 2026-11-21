@@ -11,6 +11,7 @@ import {
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ProviderRetry,
   type OrchestrationV2ProviderSession,
+  type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ProviderTurn,
@@ -2191,6 +2192,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 defaultCwd: input.runtimePolicy.cwd ?? process.cwd(),
                 environment: options.clientTerminals.environment,
                 shellCommands: options.clientTerminals.shellCommands,
+                onRunningChange: (sessionId) =>
+                  Effect.suspend(() => publishCommandRoster(sessionId)),
                 environmentForSession: (sessionId) => {
                   const remembered = terminalEnvironmentBySessionId.get(sessionId);
                   if (remembered !== undefined) return remembered;
@@ -2776,8 +2779,61 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           });
 
+        // The terminals T3 runs for the agent, until they exit or are released.
+        const commandRoster = (sessionId: string): Array<OrchestrationV2PendingBackgroundTask> =>
+          (clientTerminals?.running(sessionId) ?? []).map((terminal) => ({
+            taskId: terminal.terminalId,
+            kind: "command",
+            description: terminal.commandLine,
+            ...(terminal.awaited ? { awaited: true } : {}),
+          }));
+        // The roster each provider thread last carried, so an emptied one is still sent, and a
+        // replacement session on the same provider thread clears what the last one listed.
+        const publishedRosters = new Map<OrchestrationV2ProviderThread["id"], string>();
+        const rosterKey = (roster: ReadonlyArray<OrchestrationV2PendingBackgroundTask>) =>
+          roster.map((task) => `${task.taskId}${task.awaited === true ? "*" : ""}`).join("\n");
+        // Run subscriptions that outlive their turn because its last roster listed a command, as
+        // RunExecutionService keeps them; a roster sent past one of these would be overtaken.
+        const rosterHeldThreadIds = new Set<OrchestrationV2ProviderThread["id"]>();
+        const withCommandRoster = (providerThread: OrchestrationV2ProviderThread) => {
+          const sessionId = providerThread.nativeThreadRef?.nativeId;
+          if (sessionId == null) return providerThread;
+          const pendingBackgroundTasks = commandRoster(sessionId);
+          if (
+            pendingBackgroundTasks.length === 0 &&
+            (providerThread.pendingBackgroundTasks?.length ?? 0) === 0 &&
+            !publishedRosters.has(providerThread.id)
+          ) {
+            return providerThread;
+          }
+          publishedRosters.set(providerThread.id, rosterKey(pendingBackgroundTasks));
+          return { ...providerThread, pendingBackgroundTasks };
+        };
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+          Queue.offer(
+            events,
+            event.type === "provider_thread.updated"
+              ? { ...event, providerThread: withCommandRoster(event.providerThread) }
+              : event,
+          ).pipe(Effect.asVoid);
+        const publishCommandRoster = Effect.fnUntraced(function* (sessionId: string) {
+          const providerThread = (yield* Ref.get(providerThreadByNativeSessionId)).get(sessionId);
+          if (providerThread === undefined) return;
+          const roster = rosterKey(commandRoster(sessionId));
+          if ((publishedRosters.get(providerThread.id) ?? "") === roster) return;
+          const turn = yield* Ref.get(activeTurn);
+          // A finalizing turn sends its thread's roster, then this runs again once it has.
+          if (turn !== null && turn.finalized && turn.nativeThreadId === sessionId) return;
+          // Only a session no run reads stores the roster itself.
+          const sessionScoped = turn === null && !rosterHeldThreadIds.has(providerThread.id);
+          if (roster === "") rosterHeldThreadIds.delete(providerThread.id);
+          yield* emitProviderEvent({
+            type: "provider_thread.updated",
+            driver,
+            providerThread: { ...providerThread, updatedAt: yield* DateTime.now },
+            ...(sessionScoped ? { sessionScoped: true } : {}),
+          });
+        });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
         let refreshModelSwitchCapability: Effect.Effect<void> = Effect.void;
@@ -2828,11 +2884,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               ? notePromptProgress()
               : Effect.void,
           );
+        // The terminals T3 ran for a runtime that is gone end with it, before its turn settles.
+        const requireRuntimeRestart = Ref.set(runtimeRestartRequired, true).pipe(
+          Effect.andThen(clientTerminals?.disposeAll ?? Effect.void),
+        );
         const handleRuntimeTerminationAtGeneration = (runtimeGeneration: number) =>
           runRuntimeCallbackAtGeneration(
             runtimeGeneration,
             Effect.gen(function* () {
-              yield* Ref.set(runtimeRestartRequired, true);
+              yield* requireRuntimeRestart;
               if (!followsAgentWorkState) {
                 // An open prompt fails with its transport. A turn held open for a running tool
                 // has no prompt, so nothing else ends it.
@@ -7823,6 +7883,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
         ) {
           if (runtimeScope !== undefined) {
             yield* Scope.close(runtimeScope, Exit.void);
+            if (clientTerminals !== undefined) yield* clientTerminals.disposeAll;
           }
           runtimeScope = yield* Scope.make();
           const mcpContext = yield* readMcpContext(threadId);
@@ -8786,6 +8847,15 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             driver,
             providerThread: updatedProviderThread,
           });
+          // Only a completed or failed turn's subscription stays for the commands it listed.
+          if (
+            (settledStatus === "completed" || settledStatus === "failed") &&
+            commandRoster(context.nativeThreadId).length > 0
+          ) {
+            rosterHeldThreadIds.add(updatedProviderThread.id);
+          } else {
+            rosterHeldThreadIds.delete(updatedProviderThread.id);
+          }
           const rootSessionId = yield* Ref.get(activeSessionId);
           const childTurnsContinue =
             settledStatus === "failed" &&
@@ -8841,6 +8911,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           }
           yield* Ref.set(activeTurn, null);
+          yield* publishCommandRoster(context.nativeThreadId);
           if (settledStatus === "completed" && !directStopQuarantine) {
             yield* detachBackgroundCommands(context);
           }
@@ -8971,7 +9042,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
               openAgentRequests.clear();
               yield* quarantineNativeTransportAtGeneration(generation);
               yield* advanceRuntimeCallbackGeneration;
-              yield* Ref.set(runtimeRestartRequired, true);
+              yield* requireRuntimeRestart;
               yield* cancelPendingRuntimeRequests();
               yield* terminalizeOpenForegroundTools(context, "failed");
               // Bounded: it runs under the transition permit that Stop and the next turn wait on.
@@ -9396,7 +9467,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                           settle.generation,
                           Effect.gen(function* () {
                             if (context.finalized || context.interrupted) return;
-                            yield* Ref.set(runtimeRestartRequired, true);
+                            yield* requireRuntimeRestart;
                             yield* terminalizeOpenForegroundTools(context, "failed");
                             yield* finalizeTurn(context, "failed", hiddenFailure.failure, {
                               childTurnsContinue: hasSurvivingBackgroundWork(context),
@@ -9410,7 +9481,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     return;
                   }
                   if (hiddenFailure !== undefined) {
-                    yield* Ref.set(runtimeRestartRequired, true);
+                    yield* requireRuntimeRestart;
                   }
                   const failure =
                     hiddenFailure?.failure ??
@@ -9500,7 +9571,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     (context.outcomeResumed ||
                       flavor.restartRuntimeAfterPromptError?.(failure) === true)
                   ) {
-                    yield* Ref.set(runtimeRestartRequired, true);
+                    yield* requireRuntimeRestart;
                   }
                   // An agent that answered with an error may still finish tools it started,
                   // never pending ones; any other failure means its process or pipe is gone.
@@ -10169,6 +10240,10 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             return providerSession;
           },
           canResumeAfterRestart: canLoadSession || canResumeSession,
+          // Closing the session ends the terminals T3 ran for it.
+          ...(clientTerminals === undefined
+            ? {}
+            : { backgroundTasksEndWithProcess: true as const }),
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ...(flavor.getModelContextWindow === undefined
             ? {}
@@ -10180,9 +10255,12 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     : flavor.getModelContextWindow?.(selection, session);
                 },
               }),
-          ...(canReportBackgroundWork
+          ...(canReportBackgroundWork || clientTerminals !== undefined
             ? {
                 hasPendingBackgroundWork: Effect.gen(function* () {
+                  // Releasing or replacing the session would kill them.
+                  if ((clientTerminals?.running().length ?? 0) > 0) return true;
+                  if (!canReportBackgroundWork) return false;
                   if (!postSettleContinuationEnabled && !followsAgentWorkState) return false;
                   const rootSessionId = yield* Ref.get(activeSessionId);
                   if (
@@ -10485,15 +10563,23 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 ),
               ),
           ),
-          // The held turn already waits on these commands; their tool calls carry no task id,
-          // so any id matches while one runs on this thread.
-          ...(flavor.toolOutlivesPrompt === undefined
+          ...(flavor.toolOutlivesPrompt === undefined && clientTerminals === undefined
             ? {}
             : {
                 awaitBackgroundTasks: Effect.fn("AcpAdapterV2.awaitBackgroundTasks")(function* ({
                   providerThread,
                   taskIds,
+                  awaited,
                 }) {
+                  const sessionId = providerThread.nativeThreadRef?.nativeId;
+                  if (sessionId == null) return { matched: [] };
+                  const terminals = clientTerminals?.setAwaited(sessionId, taskIds, awaited) ?? [];
+                  if (terminals.length > 0) {
+                    yield* publishCommandRoster(sessionId);
+                    return { matched: terminals };
+                  }
+                  // The held turn already waits on these commands; their tool calls carry no
+                  // task id, so any id matches while one runs on this thread.
                   const outlives = flavor.toolOutlivesPrompt;
                   const context = yield* Ref.get(activeTurn);
                   const holdsCommand =
@@ -10501,7 +10587,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                     defersFinalizeForBackgroundWork &&
                     context !== null &&
                     !context.finalized &&
-                    context.nativeThreadId === providerThread.nativeThreadRef?.nativeId &&
+                    context.nativeThreadId === sessionId &&
                     [...context.tools.values()].some(
                       (tool) => toolStatus(tool.status) === "running" && outlives(tool),
                     );
@@ -10556,7 +10642,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                             const context = yield* Ref.get(activeTurn);
                             const carryover = yield* Ref.get(carryoverSubagents);
                             yield* Ref.set(stoppedRunQuarantine, true);
-                            yield* Ref.set(runtimeRestartRequired, true);
+                            yield* requireRuntimeRestart;
                             agentWork = null;
                             agentRequests.clear();
                             nativeChildren.clear();
@@ -10678,7 +10764,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                             yield* Deferred.fail(teardownBarrier, error).pipe(Effect.ignore);
                             return yield* error;
                           }
-                          yield* Ref.set(runtimeRestartRequired, true);
+                          yield* requireRuntimeRestart;
                           yield* Ref.set(runtimeTeardownState, { _tag: "Idle" });
                           yield* Deferred.succeed(teardownBarrier, undefined).pipe(Effect.ignore);
                         }
@@ -10765,7 +10851,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                             Cause.squash(teardownExit.cause),
                           ).pipe(Effect.flatMap(Effect.fail));
                         }
-                        yield* Ref.set(runtimeRestartRequired, true);
+                        yield* requireRuntimeRestart;
                         yield* Ref.set(runtimeTeardownState, { _tag: "Idle" });
                         yield* Deferred.succeed(teardownBarrier!, undefined).pipe(Effect.ignore);
                       } else {
@@ -10774,7 +10860,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                           yield* runtime.cancel;
                         }
                         if (restartRuntime && flavor.restartRuntimeAfterInterrupt === true) {
-                          yield* Ref.set(runtimeRestartRequired, true);
+                          yield* requireRuntimeRestart;
                         }
                       }
                       const stopped = yield* Deferred.await(context.completed).pipe(
