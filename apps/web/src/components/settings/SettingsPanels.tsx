@@ -557,6 +557,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.autoResumeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads
       ? [gt("Resume after usage limits")]
       : []),
+    ...(settings.autoRetryTransientFailures !== DEFAULT_UNIFIED_SETTINGS.autoRetryTransientFailures
+      ? [gt("Resume after provider errors")]
+      : []),
     ...(settings.snoozeLimitedThreads !== DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads
       ? [gt("Snooze until limits reset")]
       : []),
@@ -739,6 +742,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       sidebarAutoSettleKeepPullRequests: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleKeepPullRequests,
       sidebarAutoSettleOnMerge: DEFAULT_UNIFIED_SETTINGS.sidebarAutoSettleOnMerge,
       autoResumeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.autoResumeLimitedThreads,
+      autoRetryTransientFailures: DEFAULT_UNIFIED_SETTINGS.autoRetryTransientFailures,
       snoozeLimitedThreads: DEFAULT_UNIFIED_SETTINGS.snoozeLimitedThreads,
       snoozePresets: DEFAULT_UNIFIED_SETTINGS.snoozePresets,
       responseStreamingMode: DEFAULT_UNIFIED_SETTINGS.responseStreamingMode,
@@ -2093,6 +2097,27 @@ export function ThreadsSettingsPanel() {
                 updateSettings({ snoozeLimitedThreads: Boolean(checked) })
               }
               aria-label={gt("Snooze until limits reset")}
+            />
+          }
+        />
+      </SettingsSection>
+
+      <SettingsSection id="provider-errors" title={gt("Provider errors")}>
+        <SettingsRow
+          serverScoped
+          {...setting("auto-retry-transient-failures")}
+          description={gt(
+            "Resume a turn that failed on a provider server or connection error, up to three times, after 15 seconds, 1 minute and 3 minutes.",
+          )}
+          settingKeys={["autoRetryTransientFailures"]}
+          control={
+            <ScopedSwitch
+              settingKeys={["autoRetryTransientFailures"]}
+              checked={settings.autoRetryTransientFailures}
+              onCheckedChange={(checked) =>
+                updateSettings({ autoRetryTransientFailures: Boolean(checked) })
+              }
+              aria-label={gt("Resume after provider errors")}
             />
           }
         />
