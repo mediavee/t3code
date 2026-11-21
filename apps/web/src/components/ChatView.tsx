@@ -6,6 +6,7 @@ import {
   draftRuntimeModeLimitsInstance,
   draftSupportedRuntimeModes,
 } from "./chat/runtimeModeConfig";
+import { ThreadFleetStrip } from "./chat/ThreadFleetStrip";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { resolveNewThreadModelSelection } from "@t3tools/shared/usageLimits";
@@ -3833,6 +3834,7 @@ export default function ChatView(props: ChatViewProps) {
                         : undefined
                     }
                   >
+                    <ThreadFleetStrip threadRef={activeThreadRef} />
                     <ChildThreadApprovals threadRef={activeThreadRef} />
                     <div className="relative">
                       <ComposerSurface.Shell contextRow={showComposerContextStrip}>
