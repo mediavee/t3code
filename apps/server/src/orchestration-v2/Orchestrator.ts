@@ -4135,8 +4135,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       activeProviderThreadId: null,
       pullRequests: [],
       ...(command.linkOrigin === undefined ? {} : { linkOrigin: command.linkOrigin }),
-      // Only stamped work names a remote parent, so a client cannot claim one.
-      ...(command.linkOrigin === undefined || command.delegatedFrom === undefined
+      // Only work the server stamps names a delegating parent, so a client or agent cannot claim one.
+      ...((command.linkOrigin === undefined && command.localDelegation !== true) ||
+      command.delegatedFrom === undefined
         ? {}
         : { delegatedFrom: command.delegatedFrom }),
       ...(command.workflowRun === undefined ? {} : { workflowRun: command.workflowRun }),
@@ -7544,10 +7545,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // The parent that delegated this thread is working with it again, so it no longer settles
     // as that parent's done task.
     const delegatedFrom = projection.thread.delegatedFrom;
+    // A parent here sends as its own thread; one in a linked environment through the link.
     if (
       delegatedFrom?.parentDoneAt !== undefined &&
-      command.linkedSender?.environmentId === delegatedFrom.environmentId &&
-      command.linkedSender.threadId === delegatedFrom.threadId
+      (command.linkedSender === undefined
+        ? command.senderThreadId === delegatedFrom.threadId
+        : command.linkedSender.environmentId === delegatedFrom.environmentId &&
+          command.linkedSender.threadId === delegatedFrom.threadId)
     ) {
       const event = yield* emit(
         events,
