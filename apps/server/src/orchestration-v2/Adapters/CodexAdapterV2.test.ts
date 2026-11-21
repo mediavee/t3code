@@ -195,8 +195,20 @@ describe("CodexAdapterV2 runtime policy", () => {
 
   it.effect("derives concrete Codex turn policies from every T3 runtime mode", () =>
     Effect.gen(function* () {
+      const userThread = {
+        createdBy: "user",
+        lineage: {
+          parentThreadId: null,
+          relationshipToParent: null,
+          rootThreadId: ThreadId.make("t"),
+        },
+      } as const;
       const build = (
         runtimeMode: "approval-required" | "auto-accept-edits" | "auto" | "full-access",
+        thread: Pick<
+          Parameters<typeof CodexAdapterV2.buildCodexTurnStartParams>[0],
+          "appThread" | "browserToolsAvailable"
+        > = {},
       ) =>
         CodexAdapterV2.buildCodexTurnStartParams({
           nativeThreadId: `native-${runtimeMode}`,
@@ -210,6 +222,7 @@ describe("CodexAdapterV2 runtime policy", () => {
             instanceId: ProviderInstanceId.make("codex"),
             model: "gpt-5.4",
           },
+          ...thread,
         });
 
       const approvalRequired = yield* build("approval-required");
@@ -237,6 +250,39 @@ describe("CodexAdapterV2 runtime policy", () => {
       });
       assert.equal(fullAccess.approvalsReviewer, "user");
       assert.equal(fullAccess.sandboxPolicy?.type, "dangerFullAccess");
+      assert.deepEqual(
+        (yield* build("full-access", { appThread: userThread, browserToolsAvailable: true }))
+          .approvalPolicy,
+        fullAccess.approvalPolicy,
+      );
+
+      // Granular still asks before commands Codex flags as dangerous; nobody answers those here.
+      const delegated = {
+        ...userThread,
+        createdBy: "agent",
+        lineage: {
+          ...userThread.lineage,
+          parentThreadId: ThreadId.make("p"),
+          relationshipToParent: "subagent",
+        },
+      } as const;
+      const launchedByAgent = { ...userThread, createdBy: "agent" } as const;
+      for (const thread of [
+        { appThread: delegated, browserToolsAvailable: true },
+        { appThread: { ...delegated, createdBy: "user" }, browserToolsAvailable: true },
+        { appThread: launchedByAgent, browserToolsAvailable: true },
+        { appThread: userThread, browserToolsAvailable: false },
+      ] as const) {
+        const params = yield* build("full-access", thread);
+        assert.equal(params.approvalPolicy, "never", JSON.stringify(thread));
+        assert.equal(params.sandboxPolicy?.type, "dangerFullAccess");
+      }
+      const narrower = yield* build("auto-accept-edits", {
+        appThread: delegated,
+        browserToolsAvailable: false,
+      });
+      assert.equal(narrower.approvalPolicy, "on-request");
+      assert.equal(narrower.sandboxPolicy?.type, "workspaceWrite");
     }),
   );
 
@@ -2012,93 +2058,67 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   );
 
   it.effect.each([
-    { name: "dangerous command", networkApprovalContext: undefined, asks: false },
-    {
-      name: "managed-network command",
-      networkApprovalContext: { host: "example.com", protocol: "https" },
-      asks: true,
-    },
-  ] as const)("full access asks about a $name: $asks", ({ networkApprovalContext, asks }) =>
-    Effect.gen(function* () {
-      const nativeThreadId = "command-approval-thread";
-      const nativeTurnId = "command-approval-turn";
-      const prompt = "Clean node_modules.";
-      const pending = yield* Queue.unbounded<OrchestrationV2RuntimeRequest>();
-      const harness = yield* makeCodexReplayHarness(
-        makeCodexReplayTranscript({
-          scenario: "full-access-command-approval",
-          entries: [
-            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
-            {
-              type: "emit_inbound",
-              frame: {
-                id: 0,
-                method: "item/commandExecution/requestApproval",
-                params: {
-                  threadId: nativeThreadId,
-                  turnId: nativeTurnId,
-                  itemId: "exec-rm",
-                  command: "/bin/bash -lc 'rm -rf ./node_modules'",
-                  startedAtMs: 0,
-                  ...(networkApprovalContext === undefined ? {} : { networkApprovalContext }),
+    { createdBy: "user", approvalPolicy: "granular" },
+    { createdBy: "agent", approvalPolicy: "never" },
+  ] as const)(
+    "starts a full-access turn in a $createdBy-created thread with $approvalPolicy approvals",
+    ({ createdBy, approvalPolicy }) =>
+      Effect.gen(function* () {
+        const nativeThreadId = `full-access-${createdBy}-thread`;
+        const nativeTurnId = `full-access-${createdBy}-turn`;
+        const prompt = "Run the tests.";
+        const starts: Array<unknown> = [];
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario: `full-access-${createdBy}`,
+            entries: [
+              ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+              {
+                type: "emit_inbound",
+                frame: {
+                  method: "turn/completed",
+                  params: {
+                    threadId: nativeThreadId,
+                    turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                  },
                 },
               },
-            },
-            ...(asks
-              ? []
-              : ([
-                  { type: "expect_outbound", frame: { id: 0, result: { decision: "accept" } } },
-                  {
-                    type: "emit_inbound",
-                    frame: {
-                      method: "turn/completed",
-                      params: {
-                        threadId: nativeThreadId,
-                        turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
-                      },
-                    },
-                  },
-                ] as const)),
-          ],
-        }),
-        (event) =>
-          event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending"
-            ? Queue.offer(pending, event.runtimeRequest)
-            : Effect.void,
-      );
-      const turnInput = makeCodexTestTurnInput({
-        threadId: harness.threadId,
-        providerThread: harness.providerThread,
-        now: yield* DateTime.now,
-        attemptId: RunAttemptId.make("command-approval-attempt"),
-        text: prompt,
-      });
-      yield* harness.runtime.startTurn({
-        ...turnInput,
-        runtimePolicy: { ...turnInput.runtimePolicy, runtimeMode: "full-access" },
-      });
-      const request = yield* Effect.raceFirst(
-        harness.firstTerminal.pipe(Effect.as(undefined)),
-        Queue.take(pending),
-      );
-      assert.equal(request?.kind, asks ? "command" : undefined);
-      if (!asks) {
-        assert.deepEqual(
-          harness.terminalEvents().map((event) => event.status),
-          ["completed"],
+            ],
+          }),
+          undefined,
+          (method, params) =>
+            Effect.sync(() => {
+              if (method === "turn/start") starts.push(params);
+            }),
         );
-      }
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(
-          IdAllocator.layer,
-          McpProviderSessions.layer,
-          NodeServices.layer,
-          NodeCrypto.layer,
+        const turnInput = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(`full-access-${createdBy}-attempt`),
+          text: prompt,
+        });
+        yield* harness.runtime.startTurn({
+          ...turnInput,
+          appThread: { ...turnInput.appThread, createdBy, creationSource: "mcp" },
+        });
+        yield* harness.firstTerminal;
+        const policy = (starts[0] as { approvalPolicy?: unknown } | undefined)?.approvalPolicy;
+        assert.equal(
+          typeof policy === "object" && policy !== null ? Object.keys(policy)[0] : policy,
+          approvalPolicy,
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
         ),
       ),
-    ),
   );
 
   it.effect.each(["native", "ordinary"] as const)(
