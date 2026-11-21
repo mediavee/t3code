@@ -42,15 +42,28 @@ describe("failedSessionsGroups", () => {
         failedShell("settled", 60_000, { settledOverride: "settled" }),
         failedShell("snoozed", 60_000, { snoozedUntil: DateTime.makeUnsafe(nowMs + 60_000) }),
         failedShell("completed", 60_000, { status: "completed" }),
+        failedShell("subagent", 60_000, {
+          lineage: {
+            parentThreadId: ThreadId.make("parent"),
+            relationshipToParent: "subagent",
+            rootThreadId: ThreadId.make("parent"),
+          },
+        }),
+        failedShell("delegated", 60_000, {
+          delegatedFrom: {
+            environmentId: remote,
+            threadId: ThreadId.make("parent"),
+            title: "Parent",
+          },
+        }),
       ],
       nowMs,
       new Map(),
     );
 
-    const since = new Date(nowMs - FAILED_SESSIONS_WINDOW_MS).toISOString();
     expect(groups).toEqual([
-      { environmentId: local, count: 2, since },
-      { environmentId: remote, count: 1, since },
+      { environmentId: local, count: 2 },
+      { environmentId: remote, count: 1 },
     ]);
     expect(expiresAtMs).toBe(nowMs - 50 * 60_000 + FAILED_SESSIONS_WINDOW_MS);
   });

@@ -4,7 +4,6 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ServerCommand,
-  ProviderInstanceId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -24,7 +23,6 @@ import * as ThreadManagement from "./ThreadManagementService.ts";
 import * as TransientFailureRecoveryWorker from "./TransientFailureRecoveryWorker.ts";
 
 const threadId = ThreadId.make("thread:transient");
-const providerInstanceId = ProviderInstanceId.make("claudeAgent");
 const gateway502: OrchestrationV2ProviderFailure = {
   class: "provider_error",
   message: "API Error: 502 Bad Gateway",
@@ -39,19 +37,24 @@ interface FakeRun {
   status: "running" | "failed";
   completedAt: DateTime.Utc | null;
   failure: OrchestrationV2ProviderFailure | null;
-  stopRequested: boolean;
 }
 
-/** One thread whose runs the test fails by hand; dispatched retries start a run unless told not to. */
+/**
+ * One thread whose runs the test fails by hand. A dispatched retry starts a run, or is held
+ * (recorded, run not started yet) or declined (the orchestrator's accepted no-op).
+ */
 const makeWorld = Effect.gen(function* () {
   const commands = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
   const events = yield* Queue.unbounded<OrchestrationV2DomainEvent>();
   const runs: Array<FakeRun> = [];
-  const messages = new Set<MessageId>();
-  let startRuns = true;
+  const messages = new Map<MessageId, { readonly id: MessageId; readonly text: string }>();
+  let mode: "start" | "hold" | "decline" = "start";
+  let candidateQueries = 0;
+  const accepted = new Set<string>();
   const changed = Queue.offer(events, { type: "run.updated" } as never);
 
-  const addRun = (userMessageId: MessageId) => {
+  const addRun = (userMessageId: MessageId, text = "Build it") => {
+    messages.set(userMessageId, { id: userMessageId, text });
     runs.push({
       id: RunId.make(`run:${runs.length + 1}`),
       ordinal: runs.length + 1,
@@ -59,34 +62,15 @@ const makeWorld = Effect.gen(function* () {
       status: "running",
       completedAt: null,
       failure: null,
-      stopRequested: false,
     });
   };
   addRun(MessageId.make("message:user"));
-
-  const asRun = (run: FakeRun) => ({
-    ...run,
-    providerInstanceId,
-    modelSelection: { instanceId: providerInstanceId, model: "claude-haiku-5-5" },
-    activeAttemptId: null,
-    startedAt: DateTime.makeUnsafe(0),
-    requestedAt: DateTime.makeUnsafe(0),
-  });
-  const thread = {
-    id: threadId,
-    providerInstanceId,
-    archivedAt: null,
-    deletedAt: null,
-    settledOverride: null,
-    snoozedUntil: null,
-    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-    forkedFrom: null,
-  };
 
   const layer = Layer.mergeAll(
     Layer.mock(ProjectionStore.ProjectionStoreV2)({
       getTransientFailureCandidates: (since) =>
         Effect.sync(() => {
+          candidateQueries += 1;
           const latest = runs.at(-1)!;
           return latest.status === "failed" &&
             latest.failure !== null &&
@@ -105,30 +89,35 @@ const makeWorld = Effect.gen(function* () {
         }),
     }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
-      getThreadRecords: ((_threadId: ThreadId, _fields: unknown, filter: any) =>
+      getThreadRecords: ((
+        _threadId: ThreadId,
+        _fields: unknown,
+        filter: { readonly messageIds: ReadonlyArray<MessageId> },
+      ) =>
         Effect.sync(() => ({
-          thread,
-          messages: [...messages]
-            .filter((id) => filter.messageIds?.includes(id))
-            .map((id) => ({ id })),
-          runs: runs.map(asRun),
-          providerTurns: [],
-          runtimeRequests: [],
-          turnItems: filter.turnItemTypes?.includes("run_interrupt_request")
-            ? runs
-                .filter((run) => run.stopRequested)
-                .map((run) => ({ type: "run_interrupt_request", runId: run.id }))
-            : [],
+          messages: filter.messageIds.flatMap((id) => {
+            const message = messages.get(id);
+            return message === undefined ? [] : [{ ...message, attachments: [] }];
+          }),
         }))) as never,
       dispatch: (command) =>
         Effect.gen(function* () {
-          if (command.type === "message.dispatch") {
-            messages.add(command.messageId);
-            if (startRuns) addRun(command.messageId);
-          }
           yield* Queue.offer(commands, command);
+          // A replayed command id returns its first receipt and records nothing new.
+          if (accepted.has(command.commandId)) return { storedEvents: [] } as never;
+          accepted.add(command.commandId);
+          let started = false;
+          if (command.type === "message.dispatch" && mode !== "decline") {
+            messages.set(command.messageId, { id: command.messageId, text: command.text });
+            if (mode === "start") {
+              addRun(command.messageId, command.text);
+              started = true;
+            }
+          }
           yield* changed;
-          return {} as never;
+          return {
+            storedEvents: started ? [{ event: { type: "run.created" } }] : [],
+          } as never;
         }),
     }),
     Layer.mock(Orchestrator.OrchestratorV2)({ streamDomainEvents: Stream.fromQueue(events) }),
@@ -141,13 +130,12 @@ const makeWorld = Effect.gen(function* () {
     Layer.provide(Layer.merge(layer, Scheduler.layer)),
   );
 
-  const failLatest = (failure: OrchestrationV2ProviderFailure, stopRequested = false) =>
+  const failLatest = (failure: OrchestrationV2ProviderFailure) =>
     Effect.gen(function* () {
       const run = runs.at(-1)!;
       run.status = "failed";
       run.completedAt = yield* DateTime.now;
       run.failure = failure;
-      run.stopRequested = stopRequested;
       yield* changed;
     });
   const nextCommandId = Queue.take(commands).pipe(
@@ -158,13 +146,11 @@ const makeWorld = Effect.gen(function* () {
     commands,
     failLatest,
     nextCommandId,
-    holdRuns: () => {
-      startRuns = false;
+    setMode: (next: typeof mode) => {
+      mode = next;
     },
-    startHeldRun: (messageId: MessageId) => {
-      startRuns = true;
-      addRun(messageId);
-    },
+    startRun: addRun,
+    candidateQueries: () => candidateQueries,
   };
 });
 
@@ -200,34 +186,52 @@ it.effect("resumes a 502 failure after 15 s, 60 s and 3 min, then leaves it fail
   }),
 );
 
-it.effect("never resumes a cyber-filter refusal or a run the user stopped", () =>
+it.effect("never resumes a cyber-filter refusal or a native maintenance command", () =>
   Effect.gen(function* () {
-    for (const [failure, stopped] of [
-      [
-        {
-          class: "provider_error",
-          message: "This content was flagged for possible cybersecurity risk.",
-          code: "cyberPolicy",
-          retryable: false,
-        },
-        false,
-      ],
-      [gateway502, true],
-    ] as const) {
-      const world = yield* makeWorld;
-      yield* Effect.gen(function* () {
-        yield* world.failLatest(failure, stopped);
-        yield* TestClock.adjust("1 hour");
-        assert.equal(yield* Queue.size(world.commands), 0);
-      }).pipe(Effect.provide(world.worker));
-    }
+    const cyber = yield* makeWorld;
+    yield* Effect.gen(function* () {
+      yield* cyber.failLatest({
+        class: "provider_error",
+        message: "This content was flagged for possible cybersecurity risk.",
+        code: "cyberPolicy",
+        retryable: false,
+      });
+      yield* TestClock.adjust("1 hour");
+      assert.equal(yield* Queue.size(cyber.commands), 0);
+    }).pipe(Effect.provide(cyber.worker));
+
+    const compact = yield* makeWorld;
+    compact.startRun(MessageId.make("message:compact"), "/compact");
+    yield* Effect.gen(function* () {
+      yield* compact.failLatest(gateway502);
+      yield* TestClock.adjust("1 hour");
+      assert.equal(yield* Queue.size(compact.commands), 0);
+    }).pipe(Effect.provide(compact.worker));
+  }),
+);
+
+it.effect("a try the orchestrator declines waits for a change instead of polling", () =>
+  Effect.gen(function* () {
+    const world = yield* makeWorld;
+    world.setMode("decline");
+    yield* Effect.gen(function* () {
+      yield* world.failLatest(gateway502);
+      yield* TestClock.adjust("15 seconds");
+      assert.equal(yield* world.nextCommandId, "command:transient-retry:run:1:1");
+      yield* TestClock.adjust("1 minute");
+      const queries = world.candidateQueries();
+      yield* TestClock.adjust("5 minutes");
+      assert.equal(world.candidateQueries(), queries);
+      // The no-op receipt's event brings one re-check, which replays the same command id.
+      assert.isAtMost(yield* Queue.size(world.commands), 1);
+    }).pipe(Effect.provide(world.worker));
   }),
 );
 
 it.effect("a restart between tries does not resume the same try twice", () =>
   Effect.gen(function* () {
     const world = yield* makeWorld;
-    world.holdRuns();
+    world.setMode("hold");
     yield* world.failLatest(gateway502);
     yield* Effect.gen(function* () {
       yield* TestClock.adjust("15 seconds");
@@ -238,7 +242,8 @@ it.effect("a restart between tries does not resume the same try twice", () =>
     yield* Effect.gen(function* () {
       yield* TestClock.adjust("1 minute");
       assert.equal(yield* Queue.size(world.commands), 0);
-      world.startHeldRun(MessageId.make("message:transient-retry:run:1:1"));
+      world.setMode("start");
+      world.startRun(MessageId.make("message:transient-retry:run:1:1"));
       yield* world.failLatest(gateway502);
       yield* TestClock.adjust("60 seconds");
       assert.equal(yield* world.nextCommandId, "command:transient-retry:run:1:2");

@@ -8897,17 +8897,61 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         retryable: null,
       });
 
-      assert.deepEqual(yield* store.getTransientFailureCandidates(now), [
-        { ...gateway, completedAt: now },
-      ]);
+      const candidates = store.getTransientFailureCandidates(now, now);
+      assert.deepEqual(yield* candidates, [{ ...gateway, completedAt: now }]);
       assert.deepEqual(
-        yield* store.getTransientFailureCandidates(DateTime.add(now, { milliseconds: 1 })),
+        yield* store.getTransientFailureCandidates(DateTime.add(now, { milliseconds: 1 }), now),
         [],
       );
       const shell = (yield* store.getShellSnapshot()).threads.find(
         (row) => row.id === gateway.threadId,
       );
       assert.isTrue(shell?.lastErrorRetryable);
+
+      // Delegated tasks and snoozed threads are not candidates; the thread comes back after each.
+      const thread = yield* store.getThread(gateway.threadId);
+      for (const [key, payload] of [
+        [
+          "subagent",
+          {
+            ...thread,
+            lineage: {
+              ...thread.lineage,
+              parentThreadId: ThreadId.make("thread:transient-parent"),
+              relationshipToParent: "subagent" as const,
+            },
+          },
+        ],
+        [
+          "delegated",
+          {
+            ...thread,
+            delegatedFrom: {
+              environmentId: EnvironmentId.make("environment:transient-parent"),
+              threadId: ThreadId.make("thread:transient-parent"),
+              title: "Parent there",
+            },
+          },
+        ],
+        ["snoozed", { ...thread, snoozedUntil: DateTime.add(now, { minutes: 5 }) }],
+      ] as const) {
+        yield* store.apply({
+          id: EventId.make(`event:transient-candidates:${key}`),
+          type: "thread.metadata-updated",
+          threadId: gateway.threadId,
+          occurredAt: now,
+          payload,
+        });
+        assert.deepEqual(yield* candidates, [], key);
+        yield* store.apply({
+          id: EventId.make(`event:transient-candidates:${key}:restore`),
+          type: "thread.metadata-updated",
+          threadId: gateway.threadId,
+          occurredAt: now,
+          payload: thread,
+        });
+        assert.lengthOf(yield* candidates, 1, key);
+      }
     }),
   );
 

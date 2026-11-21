@@ -15,7 +15,11 @@ import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { InlineButton } from "../ui/button";
 import { toastManager } from "../ui/toast";
-import { failedSessionsGroups, type FailedSessionsGroup } from "./failedSessionsBanner.logic";
+import {
+  failedSessionsGroups,
+  failedSessionsSince,
+  type FailedSessionsGroup,
+} from "./failedSessionsBanner.logic";
 
 /** Offers Resume all while sessions failed on a provider error in the last hour. */
 export function SidebarFailedSessionsBanner() {
@@ -65,7 +69,7 @@ function FailedSessionsResume({
     const clickedAtMs = Date.now();
     const result = await resume({
       environmentId: group.environmentId,
-      input: { since: group.since },
+      input: { since: failedSessionsSince(clickedAtMs) },
     });
     setPending(false);
     if (result._tag === "Failure") {

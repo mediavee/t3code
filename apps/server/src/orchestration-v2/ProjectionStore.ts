@@ -677,6 +677,7 @@ export interface ProjectionStoreV2Shape {
   /** Threads whose latest run failed on a transient provider failure at or after `since`. */
   readonly getTransientFailureCandidates: (
     since: DateTime.Utc,
+    now: DateTime.Utc,
   ) => Effect.Effect<ReadonlyArray<ProjectionTransientFailureCandidate>, ProjectionStoreV2Error>;
   /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
   readonly getLimitRecoveryWakeAt: (
@@ -5102,8 +5103,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
     const getTransientFailureCandidates = Effect.fn(
       "ProjectionStore.getTransientFailureCandidates",
     )(
-      function* (since: DateTime.Utc) {
+      function* (since: DateTime.Utc, now: DateTime.Utc) {
         const sinceIso = DateTime.formatIso(since);
+        const nowIso = DateTime.formatIso(now);
         const rows = yield* sql<{
           readonly thread_id: string;
           readonly run_id: string;
@@ -5150,17 +5152,21 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             AND json_valid(item.payload_json)
             AND json_extract(item.payload_json, '$.failure.retryable') = 1
             AND json_extract(item.payload_json, '$.failure.class') IS NOT 'usage_limit'
-            -- A subagent of a settled, archived or deleted parent is abandoned work.
-            AND json_extract(t.payload_json, '$.delegatedFrom.parentDoneAt') IS NULL
+            AND (
+              json_extract(t.payload_json, '$.snoozedUntil') IS NULL
+              OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${nowIso})
+            )
+            -- A delegated task's failure already woke its parent, which owns the retry.
+            AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
+            AND json_extract(t.payload_json, '$.delegatedFrom') IS NULL
             AND NOT EXISTS (
-              SELECT 1 FROM orchestration_v2_projection_threads parent
-              WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
-                AND parent.thread_id = json_extract(t.payload_json, '$.lineage.parentThreadId')
-                AND (
-                  json_extract(parent.payload_json, '$.settledOverride') = 'settled'
-                  OR json_extract(parent.payload_json, '$.archivedAt') IS NOT NULL
-                  OR parent.deleted_at IS NOT NULL
-                )
+              SELECT 1 FROM orchestration_v2_projection_runtime_requests request
+              WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_turn_items stop
+              WHERE stop.thread_id = t.thread_id AND stop.run_id = r.run_id
+                AND stop.type = 'run_interrupt_request'
             )
           ORDER BY r.completed_at, t.thread_id
         `;

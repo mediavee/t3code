@@ -272,8 +272,9 @@ retry and the normal snooze choices.
 A turn that fails on a provider server error (5xx), a dropped connection, or a
 lost provider process resumes on its own: T3 Code sends "Continue where you left
 off" after 15 seconds, then 1 minute, then 3 minutes, and stops after the third
-try, leaving the failure visible. Refusals, sign-in errors, usage limits and
-turns you stopped are not resumed. Turn this off with **Resume after provider
+try, leaving the failure visible. Refusals, sign-in errors, usage limits,
+turns you stopped, and delegated tasks (their parent hears of the failure) are
+not resumed. Turn this off with **Resume after provider
 errors** in **Settings → Threads**. When sessions failed this way in the last
 hour, the sidebar footer offers **Resume all** for them.
 

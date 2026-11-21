@@ -8087,6 +8087,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           completionErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: null } },
           expectedClass: "provider_error",
         },
+        // Only the terminal notification carries the 401, so it decides the retry.
+        {
+          name: "generic-exhaustion-unauthorized",
+          status: null,
+          terminalMessage: "Connection lost.",
+          terminalErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 401 } },
+          completionErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: null } },
+          expectedClass: "provider_error",
+          expectedRetryable: false,
+        },
       ] as const
     ).map((scenario) => ({
       ...scenario,

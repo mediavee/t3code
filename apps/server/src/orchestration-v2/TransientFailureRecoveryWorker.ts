@@ -1,4 +1,3 @@
-import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import {
   CommandId,
   MessageId,
@@ -22,12 +21,8 @@ import { forkParked } from "../serverActivation.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { cancelledBeforeStart } from "./RestartBackgroundNote.ts";
-import {
-  CONTINUE_PROMPT,
-  restartContinuationBlocked,
-  restartStopRequested,
-} from "./RestartContinuation.ts";
+import { isNativeMaintenanceCommand } from "./CommandPolicy.ts";
+import { CONTINUE_PROMPT } from "./RestartContinuation.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 /** Wait before each automatic try; its length is the number of tries per original run. */
@@ -86,33 +81,18 @@ const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const settings = yield* ServerSettings.ServerSettingsService;
 
-  /** Re-reads the thread so a stale candidate cannot resume work that moved on. */
+  /** The orchestrator re-checks the run is still due under the thread lock; a stale try is a no-op. */
   const resumeRun = Effect.fn("TransientFailureRecovery.resumeRun")(function* (
     candidate: ProjectionStore.ProjectionTransientFailureCandidate,
   ) {
     const next = transientRetryTry(candidate);
-    const projection = yield* threads.getThreadRecords(
-      candidate.threadId,
-      ["messages", "runs", "providerTurns", "runtimeRequests", "turnItems"],
-      { messageIds: [next.messageId], turnItemTypes: ["secret_request"] },
-    );
-    if (projection.messages.some((message) => message.id === next.messageId)) return false;
-    const source = projection.runs.find((run) => run.id === candidate.runId);
-    if (
-      source?.status !== "failed" ||
-      projection.thread.providerInstanceId !== source.providerInstanceId ||
-      restartContinuationBlocked(projection, source, yield* DateTime.now, true) ||
-      projection.runs.some(
-        (run) =>
-          run.id !== source.id &&
-          run.status !== "queued" &&
-          !cancelledBeforeStart(run) &&
-          runRanAfter(run, source),
-      ) ||
-      (yield* restartStopRequested(threads.getThreadRecords, projection.thread, source))
-    )
-      return false;
-    yield* threads.dispatch({
+    const { messages } = yield* threads.getThreadRecords(candidate.threadId, ["messages"], {
+      messageIds: [next.messageId, candidate.userMessageId],
+    });
+    if (messages.some((message) => message.id === next.messageId)) return false;
+    const sourceMessage = messages.find((message) => message.id === candidate.userMessageId);
+    if (sourceMessage !== undefined && isNativeMaintenanceCommand(sourceMessage)) return false;
+    const dispatched = yield* threads.dispatch({
       type: "message.dispatch",
       commandId: next.commandId,
       threadId: candidate.threadId,
@@ -125,12 +105,12 @@ const make = Effect.gen(function* () {
         detail: CONTINUE_PROMPT,
       },
       attachments: [],
-      modelSelection: source.modelSelection,
+      transientFailureContinuationOfRunId: candidate.runId,
       dispatchMode: { type: "start_immediately" },
       createdBy: "agent",
       creationSource: "server",
     });
-    return true;
+    return dispatched.storedEvents.some((stored) => stored.event.type === "run.created");
   });
 
   const tryResume = (candidate: ProjectionStore.ProjectionTransientFailureCandidate) =>
@@ -162,6 +142,7 @@ const make = Effect.gen(function* () {
     }
     const candidates = yield* projections.getTransientFailureCandidates(
       DateTime.makeUnsafe(nowMs - AUTO_RETRY_LOOKBACK_MS),
+      DateTime.makeUnsafe(nowMs),
     );
     let wakeAt = Infinity;
     let acted = false;
@@ -172,10 +153,9 @@ const make = Effect.gen(function* () {
         wakeAt = Math.min(wakeAt, dueAt);
         continue;
       }
-      acted = true;
-      yield* tryResume(candidate);
+      if (yield* tryResume(candidate)) acted = true;
     }
-    // A sweep that acted, or failed to, re-checks on the next tick.
+    // A sweep that resumed a run re-checks on the next tick; a declined one waits for a change.
     if (!acted) yield* due.record(readVersion, wakeAt, nowMs);
   });
 
@@ -188,7 +168,7 @@ const make = Effect.gen(function* () {
         const since = DateTime.make(input.since);
         if (Option.isNone(since)) return yield* new OrchestrationV2ResumeFailedThreadsError({});
         const candidates = yield* projections
-          .getTransientFailureCandidates(DateTime.toUtc(since.value))
+          .getTransientFailureCandidates(DateTime.toUtc(since.value), yield* DateTime.now)
           .pipe(Effect.mapError((cause) => new OrchestrationV2ResumeFailedThreadsError({ cause })));
         const resumedThreadIds: Array<ThreadId> = [];
         for (const candidate of candidates) {

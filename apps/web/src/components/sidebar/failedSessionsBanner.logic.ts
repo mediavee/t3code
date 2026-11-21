@@ -7,9 +7,11 @@ export const FAILED_SESSIONS_WINDOW_MS = 60 * 60 * 1_000;
 export interface FailedSessionsGroup {
   readonly environmentId: EnvironmentId;
   readonly count: number;
-  /** Start of the window, sent as Resume all's `since`. */
-  readonly since: string;
 }
+
+/** Resume all's `since`, taken when the user clicks so a long-open banner covers the same hour. */
+export const failedSessionsSince = (nowMs: number) =>
+  new Date(nowMs - FAILED_SESSIONS_WINDOW_MS).toISOString();
 
 /**
  * Threads per environment whose latest run failed on a transient provider error in the last
@@ -35,6 +37,9 @@ export function failedSessionsGroups(
       completedAt == null ||
       shell.archivedAt !== null ||
       shell.settledOverride === "settled" ||
+      // A delegated task's failure already woke its parent, which owns the retry.
+      shell.lineage.relationshipToParent === "subagent" ||
+      shell.delegatedFrom !== null ||
       (shell.snoozedUntil !== null && Date.parse(shell.snoozedUntil) > nowMs) ||
       !isTransientProviderFailure({
         class: shell.runtime?.lastErrorClass,
@@ -51,9 +56,8 @@ export function failedSessionsGroups(
     counts.set(shell.environmentId, (counts.get(shell.environmentId) ?? 0) + 1);
     oldestMs = oldestMs === null ? failedMs : Math.min(oldestMs, failedMs);
   }
-  const since = new Date(windowStartMs).toISOString();
   return {
-    groups: [...counts].map(([environmentId, count]) => ({ environmentId, count, since })),
+    groups: [...counts].map(([environmentId, count]) => ({ environmentId, count })),
     expiresAtMs: oldestMs === null ? null : oldestMs + FAILED_SESSIONS_WINDOW_MS,
   };
 }

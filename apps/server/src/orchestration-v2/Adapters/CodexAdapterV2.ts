@@ -1270,12 +1270,13 @@ const CODEX_TRANSIENT_ERROR_CODES = new Set([
 /** A 4xx, a policy refusal or a limit fails the same way again; a 5xx or a dropped stream may not. */
 function codexFailureRetryable(
   failure: OrchestrationV2ProviderFailure,
-  errorInfo: CodexErrorInfo | null | undefined,
+  errorInfos: ReadonlyArray<CodexErrorInfo | null | undefined>,
 ): boolean | null {
   if (failure.class === "usage_limit") return failure.retryable;
   if (failure.code === "cyberPolicy") return false;
-  const status = codexErrorHttpStatus(errorInfo);
-  if (status !== null) return status >= 500;
+  // The turn, its error notification and the retry notice each may or may not carry the status.
+  const status = errorInfos.map(codexErrorHttpStatus).find((value) => value !== null);
+  if (status !== undefined) return status >= 500;
   return failure.class === "transport_error" || CODEX_TRANSIENT_ERROR_CODES.has(failure.code ?? "")
     ? true
     : failure.retryable;
@@ -6506,10 +6507,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }
               failure = {
                 ...failure,
-                retryable: codexFailureRetryable(
-                  failure,
-                  input.failureErrorInfo ?? notification?.errorInfo ?? retry?.errorInfo,
-                ),
+                retryable: codexFailureRetryable(failure, [
+                  input.failureErrorInfo,
+                  notification?.errorInfo,
+                  retry?.errorInfo,
+                ]),
               };
               return {
                 type: "turn.terminal",
