@@ -13045,5 +13045,21 @@
   "ae62ee82e0c146bb": "erneut versuchen fehlgeschlagen fehler 502 503 gateway verbindung wiederherstellen fortsetzen",
   "0d1c02eb9bb693c4": "Die fehlgeschlagenen Sitzungen konnten nicht fortgesetzt werden",
   "72516ad01a8e3386": "{count, plural, one {{count} Sitzung ist in der letzten Stunde fehlgeschlagen} other {{count} Sitzungen sind in der letzten Stunde fehlgeschlagen}}",
-  "253a12fc99873da8": "Alle fortsetzen"
+  "253a12fc99873da8": "Alle fortsetzen",
+  "8da6072f5854cc90": "Implementierung",
+  "4cd3a0ae6907eec5": "Review",
+  "1738f499d0c9cf60": "Recherche",
+  "7810d54298dc35ed": "Design",
+  "186b1da30c46df95": "Rollenmodell nicht gespeichert",
+  "9b956a2e78983634": "Wird jedem Agenten in diesem Bereich gegeben, bei jedem Anbieter, auch den Agenten, die er startet.",
+  "2ad0fcb6553dd859": "Dauerhafte Anweisungen zurücksetzen",
+  "9c66fa8659d60792": "Dauerhafte Anweisungen",
+  "9227dca0f915c2c8": "Mergen und deployen, wenn die Checks bestehen. Vor dem Neustart gemeinsamer Dienste fragen.",
+  "731c9be7011a1a27": "{role}-Modell",
+  "f0cbaf4d64034115": "Delegierte Aufgaben mit dieser Rolle laufen hier, außer der Agent nennt einen Anbieter oder ein Modell. Aus übernimmt das Modell des Elternthreads.",
+  "053cd07366c3b6d3": "Die ausgewählten Ziele verwenden unterschiedliche Rollenmodelle. Wähle eines zum Bearbeiten.",
+  "185aca00f0cc4446": "Ein Modell für die Rolle {role} verwenden",
+  "afefb672d4c5c274": "Agent Richtlinie Regeln Berechtigungen Autonomie Prompt jeder Thread Subagenten",
+  "8a3aabfbbfb30487": "Modelle nach Rolle",
+  "69bad5ed2f17955e": "Aufgabe delegieren Routing Review Recherche Design Test Implementierung Modell"
 }

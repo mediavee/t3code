@@ -13045,5 +13045,21 @@
   "ae62ee82e0c146bb": "tentar novamente falha erro 502 503 gateway conexão recuperar continuar",
   "0d1c02eb9bb693c4": "Não foi possível retomar as sessões com falha",
   "72516ad01a8e3386": "{count, plural, one {{count} sessão falhou na última hora} other {{count} sessões falharam na última hora}}",
-  "253a12fc99873da8": "Retomar todas"
+  "253a12fc99873da8": "Retomar todas",
+  "8da6072f5854cc90": "Implementação",
+  "4cd3a0ae6907eec5": "Revisão",
+  "1738f499d0c9cf60": "Pesquisa",
+  "7810d54298dc35ed": "Design",
+  "186b1da30c46df95": "Modelo do papel não salvo",
+  "9b956a2e78983634": "Dado a cada agente neste escopo, em cada provedor, incluindo os agentes que ele inicia.",
+  "2ad0fcb6553dd859": "Redefinir instruções permanentes",
+  "9c66fa8659d60792": "Instruções permanentes",
+  "9227dca0f915c2c8": "Fazer merge e deploy quando as verificações passarem. Perguntar antes de reiniciar serviços compartilhados.",
+  "731c9be7011a1a27": "Modelo de {role}",
+  "f0cbaf4d64034115": "Tarefas delegadas com este papel rodam aqui, a menos que o agente indique um provedor ou modelo. Desligado herda o modelo do pai.",
+  "053cd07366c3b6d3": "Os destinos selecionados usam modelos de papel diferentes. Selecione um para editar.",
+  "185aca00f0cc4446": "Usar um modelo para o papel {role}",
+  "afefb672d4c5c274": "agente política regras permissões autonomia prompt cada thread subagentes",
+  "8a3aabfbbfb30487": "Modelos por papel",
+  "69bad5ed2f17955e": "delegar tarefa roteamento revisão pesquisa design teste implementação modelo"
 }

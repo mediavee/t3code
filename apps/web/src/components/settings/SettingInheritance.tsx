@@ -96,6 +96,12 @@ function formatValue(
     );
   }
   if (typeof value === "object") {
+    if (key === "agentRoleModels") {
+      const count = Object.keys(value).length;
+      return count === 0
+        ? resolve(msg("Not set"))
+        : resolve(msg("{count, plural, one {{count} item} other {{count} items}}", { count }));
+    }
     if (key === "backgroundActivity" && "profile" in value && typeof value.profile === "string") {
       const label = BACKGROUND_ACTIVITY_PROFILE_LABELS[value.profile];
       return label ? resolve(label) : value.profile;

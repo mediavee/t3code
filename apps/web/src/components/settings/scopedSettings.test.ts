@@ -971,6 +971,22 @@ describe("model selection patches at project scope", () => {
     });
   });
 
+  it("replaces a project's role model table so a turned-off role and old options are gone", () => {
+    const withRoles = environment("Server", {
+      settings: {
+        projectSettingsOverrides: {
+          [projectId]: { agentRoleModels: { review: saved, test: saved } },
+        },
+      },
+    });
+    const plan = planScopedSettingsPatch(checkout, [withRoles], {
+      agentRoleModels: { review: { instanceId: claude, model: "claude-opus-4-8" } },
+    });
+    expect(
+      plan.serverWrites[0]?.patch.projectSettingsOverrides?.[projectId]?.agentRoleModels,
+    ).toEqual({ review: { instanceId: claude, model: "claude-opus-4-8" } });
+  });
+
   it("completes partial text-generation selections without retaining old options", () => {
     const modelPlan = planScopedSettingsPatch(checkout, [customized], {
       textGenerationModelSelection: { model: "gpt-5.6-mini" },

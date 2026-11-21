@@ -35,6 +35,7 @@ import {
   ProviderOptionSelections,
 } from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
+import type { OrchestratorMcpTaskRole } from "./orchestratorMcp.ts";
 import { ProjectScript, type ProjectMutation } from "./project.ts";
 import { DEFAULT_RUNTIME_MODE, RuntimeMode } from "./providerPolicy.ts";
 import { BrowserProfile, BrowserProfileId, DEFAULT_BROWSER_PROFILE_ID } from "./browserProfile.ts";
@@ -1208,6 +1209,24 @@ export const WorktreeCleanup = Schema.NullOr(
 );
 export type WorktreeCleanup = typeof WorktreeCleanup.Type;
 
+/** Reaches every thread's provider prompt, so keep it short enough to fit each provider's context entry. */
+export const STANDING_INSTRUCTIONS_MAX_LENGTH = 4000;
+export const StandingInstructions = TrimmedString.check(
+  Schema.isMaxLength(STANDING_INSTRUCTIONS_MAX_LENGTH),
+);
+export type StandingInstructions = typeof StandingInstructions.Type;
+
+/** delegate_task uses a role's row when its target names no provider or model. */
+export const AgentRoleModels = Schema.Struct({
+  implementation: Schema.optionalKey(ModelSelection),
+  review: Schema.optionalKey(ModelSelection),
+  research: Schema.optionalKey(ModelSelection),
+  design: Schema.optionalKey(ModelSelection),
+  test: Schema.optionalKey(ModelSelection),
+  general: Schema.optionalKey(ModelSelection),
+} satisfies Record<OrchestratorMcpTaskRole, unknown>);
+export type AgentRoleModels = typeof AgentRoleModels.Type;
+
 export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "worktreeCleanup",
   "defaultModelSelection",
@@ -1236,6 +1255,8 @@ export const PROJECT_SCOPED_SERVER_SETTING_KEYS = [
   "continueThreadsAfterServerUpdate",
   "responseStreamingMode",
   "speechProjectCustomWords",
+  "standingInstructions",
+  "agentRoleModels",
 ] as const;
 export type ProjectScopedServerSettingKey = (typeof PROJECT_SCOPED_SERVER_SETTING_KEYS)[number];
 
@@ -1274,6 +1295,8 @@ export const ProjectSettingsOverrides = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
+  standingInstructions: Schema.optionalKey(StandingInstructions),
+  agentRoleModels: Schema.optionalKey(AgentRoleModels),
   providerInstances: Schema.optionalKey(
     Schema.Record(ProviderInstanceId, ProjectProviderInstanceOverride),
   ),
@@ -1457,6 +1480,8 @@ export const ServerSettings = Schema.Struct({
   ),
   // Vocabulary shared by everyone who dictates in a project; it lives with the project's environment.
   speechProjectCustomWords: SpeechCustomWords.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  standingInstructions: StandingInstructions.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  agentRoleModels: AgentRoleModels.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
   // Null follows textGenerationModelSelection; a selection pins transcript cleanup to its own model.
   speechPostProcessingModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -1929,6 +1954,8 @@ export const ServerSettingsPatch = Schema.Struct({
   speechModelUnloadTimeout: Schema.optionalKey(SpeechModelUnloadTimeout),
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
   speechPostProcessingModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  standingInstructions: Schema.optionalKey(StandingInstructions),
+  agentRoleModels: Schema.optionalKey(AgentRoleModels),
   projectAgentBrowserAccessOverrides: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
   ),
