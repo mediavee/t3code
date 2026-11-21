@@ -1,6 +1,6 @@
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
-import { removeAgentCredits } from "@t3tools/source-control-core/server/mergeMessage";
+import { removeAgentCreditFooter } from "@t3tools/source-control-core/server/mergeMessage";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -289,14 +289,15 @@ export class PullRequestService extends Context.Service<
       input: PullRequestRef & { readonly check?: string },
     ) => Effect.Effect<ReadonlyArray<ProviderCheckRerun>, PullRequestError>;
     readonly update: (input: PullRequestUpdateInput) => Effect.Effect<void, PullRequestError>;
-    /** `body` without agent credit lines when its project removes them, else unchanged. */
+    /** An agent's `body` without its credit footer when the project removes agent credits. */
     readonly withoutAgentCredits: (input: {
       readonly projectId: ProjectId;
       readonly body: string;
     }) => Effect.Effect<string>;
     /**
-     * Edits agent credit lines out of a change request's description when its project removes
-     * them. True when it edited; a read or edit the host refuses is logged, not failed.
+     * Once per server run, edits the credit footer out of a change request the forge account T3
+     * acts as opened, when its project removes agent credits. True when it edited; a read or
+     * edit the host refuses is logged, not failed.
      */
     readonly removeAgentCreditsFromBody: (input: PullRequestRef) => Effect.Effect<boolean>;
     readonly comment: (input: PullRequestCommentInput) => Effect.Effect<void, PullRequestError>;
@@ -2448,29 +2449,45 @@ export const make = Effect.gen(function* () {
 
   const withoutAgentCredits: PullRequestService["Service"]["withoutAgentCredits"] = (input) =>
     removesAgentCredits(input.projectId).pipe(
-      Effect.map((removes) => (removes ? removeAgentCredits(input.body) : input.body)),
+      Effect.map((removes) => (removes ? removeAgentCreditFooter(input.body) : input.body)),
     );
+
+  // A cleaned body stays clean, so one look per change request and server run is enough.
+  const creditCleanupsAttempted = new Set<string>();
 
   const removeAgentCreditsFromBody = Effect.fn("PullRequestService.removeAgentCreditsFromBody")(
     function* (input: PullRequestRef) {
-      if (!(yield* removesAgentCredits(input.projectId))) return false;
       const project = yield* requireProject(input);
+      if (!(yield* removesAgentCredits(project.project.id))) return false;
       const rewrite = project.api.updateChangeRequest;
       if (project.api.capabilities.edit?.changeRequest !== true || rewrite === undefined) {
         return false;
       }
+      const key = `${project.project.id}\0${project.host}\0${project.repository.toLowerCase()}\0${input.number}`;
+      if (creditCleanupsAttempted.has(key)) return false;
+      creditCleanupsAttempted.add(key);
       const ref = {
         cwd: project.project.workspaceRoot,
         repository: project.repository,
         host: project.host,
         number: input.number,
       };
-      const { body } = yield* project.api
-        .getChangeRequest(ref)
-        .pipe(Effect.mapError(toPullRequestError("detail")));
-      const cleaned = removeAgentCredits(body);
-      if (cleaned === body) return false;
-      yield* rewrite({ ...ref, body: cleaned }).pipe(Effect.mapError(toPullRequestError("update")));
+      const [changeRequest, viewer] = yield* Effect.all(
+        [
+          project.api.getChangeRequest(ref).pipe(Effect.mapError(toPullRequestError("detail"))),
+          viewerOf(project),
+        ],
+        { concurrency: 2 },
+      );
+      // Only T3's own account's PRs: a teammate's or contributor's description is theirs.
+      if (viewer === null || changeRequest.author?.login.toLowerCase() !== viewer.toLowerCase()) {
+        return false;
+      }
+      const cleaned = removeAgentCreditFooter(changeRequest.body);
+      if (cleaned === changeRequest.body) return false;
+      yield* invalidatedByMutation((_: PullRequestRef) =>
+        rewrite({ ...ref, body: cleaned }).pipe(Effect.mapError(toPullRequestError("update"))),
+      )(input);
       return true;
     },
     (effect, input) =>
@@ -2522,25 +2539,17 @@ export const make = Effect.gen(function* () {
             }),
           );
         }
-        const body: Effect.Effect<string | undefined> =
-          input.body === undefined
-            ? Effect.undefined
-            : withoutAgentCredits({ projectId: project.project.id, body: input.body });
-        return body.pipe(
-          Effect.flatMap((body) =>
-            rewrite({
-              cwd: project.project.workspaceRoot,
-              repository: project.repository,
-              host: project.host,
-              number: input.number,
-              ...(input.maintainerCanModify === undefined
-                ? {}
-                : { maintainerCanModify: input.maintainerCanModify }),
-              ...(input.title === undefined ? {} : { title: input.title }),
-              ...(body === undefined ? {} : { body }),
-            }).pipe(Effect.mapError(toPullRequestError("update"))),
-          ),
-        );
+        return rewrite({
+          cwd: project.project.workspaceRoot,
+          repository: project.repository,
+          host: project.host,
+          number: input.number,
+          ...(input.maintainerCanModify === undefined
+            ? {}
+            : { maintainerCanModify: input.maintainerCanModify }),
+          ...(input.title === undefined ? {} : { title: input.title }),
+          ...(input.body === undefined ? {} : { body: input.body }),
+        }).pipe(Effect.mapError(toPullRequestError("update")));
       }),
     );
 
@@ -3903,28 +3912,6 @@ export const make = Effect.gen(function* () {
     (revision) => revision + 1,
   );
 
-  const removeAgentCreditsFromBodyAndInvalidate = Effect.fn(
-    "PullRequestService.removeAgentCreditsFromBodyAndInvalidate",
-  )(function* (input: PullRequestRef) {
-    const edited = yield* removeAgentCreditsFromBody(input);
-    if (edited) {
-      yield* canonicalRef(input).pipe(
-        Effect.flatMap((ref) =>
-          readCache.invalidate(refScope(ref)).pipe(
-            Effect.andThen(
-              Effect.sync(() => {
-                bumpRefEpoch(ref);
-                listingsEpoch = ++epochCounter;
-              }),
-            ),
-          ),
-        ),
-        Effect.ignore,
-      );
-    }
-    return edited;
-  });
-
   const invalidatedByMutation =
     <I extends PullRequestRef>(
       method: (input: I) => Effect.Effect<void, PullRequestError>,
@@ -4256,7 +4243,7 @@ export const make = Effect.gen(function* () {
     rerunChecks,
     update: invalidatedByMutation(update),
     withoutAgentCredits,
-    removeAgentCreditsFromBody: removeAgentCreditsFromBodyAndInvalidate,
+    removeAgentCreditsFromBody,
     comment: invalidatedByMutation(comment),
     updateComment: invalidatedByMutation(updateComment),
     submitReview: invalidatedByMutation(submitReview),

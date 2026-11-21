@@ -1065,7 +1065,15 @@ const make = Effect.gen(function* () {
             .update({
               ...ref,
               ...(input.title === undefined ? {} : { title: input.title }),
-              ...(input.body === undefined ? {} : { body: input.body }),
+              // An agent's write, so its credit footer goes as on create; UI edits keep theirs.
+              ...(input.body === undefined
+                ? {}
+                : {
+                    body: yield* pullRequests.withoutAgentCredits({
+                      projectId: ref.projectId,
+                      body: input.body,
+                    }),
+                  }),
             })
             .pipe(Effect.mapError(forgeFailure));
         }

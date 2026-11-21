@@ -1330,15 +1330,21 @@ describe("source control tools", () => {
           requestReviewers: (input) =>
             Effect.sync(() => void calls.push(["reviewers", input.reviewers])),
           runAction: (input) => Effect.sync(() => void calls.push(["action", input.action])),
+          withoutAgentCredits: ({ body }) =>
+            Effect.succeed(body.replace("\n\nMade with Cursor", "")),
+          update: (input) => Effect.sync(() => void calls.push(["body", input.body])),
         },
       });
       yield* harness.call("pull_request_update", {
+        body: "Fixes it.\n\nMade with Cursor",
         addLabels: ["bug"],
         removeLabels: ["wip"],
         requestReviewers: ["Octo", "acme/core"],
         state: "closed",
       });
       expect(calls).toEqual([
+        // An agent's body loses its credit footer as on create.
+        ["body", "Fixes it."],
         ["labels", ["bug"], true],
         ["labels", ["wip"], false],
         [

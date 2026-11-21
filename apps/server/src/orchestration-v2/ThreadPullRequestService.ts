@@ -348,6 +348,7 @@ export const make = Effect.gen(function* () {
             }
           }
 
+          let linksAgentPullRequest = false;
           yield* Effect.forEach(
             updates,
             ({ thread, branchPullRequest, replacement }) =>
@@ -375,6 +376,16 @@ export const make = Effect.gen(function* () {
                   ...(replacement === undefined ? {} : { linkedPullRequest: replacement }),
                 });
                 pendingBackfill.delete(thread.id);
+                // T3 opened or linked an explicit PR already; only a branch PR it first saves is new.
+                linksAgentPullRequest ||=
+                  detectedReference !== null &&
+                  samePullRequest(branchPullRequest, detectedReference) &&
+                  !samePullRequest(thread.branchPullRequest, detectedReference) &&
+                  !(thread.pullRequests ?? []).some(
+                    (link) =>
+                      link.number === detectedReference.number &&
+                      link.repository.toLowerCase() === detectedReference.repository.toLowerCase(),
+                  );
               }).pipe(
                 Effect.catchCauseIf(
                   (cause) => !Cause.hasInterruptsOnly(cause),
@@ -387,16 +398,8 @@ export const make = Effect.gen(function* () {
               ),
             { discard: true },
           );
-          // A PR an agent opened outside T3 loses its credit lines once, when T3 first links it.
-          if (
-            detected?.state === "open" &&
-            detectedReference !== null &&
-            updates.some(
-              ({ thread, branchPullRequest }) =>
-                samePullRequest(branchPullRequest, detectedReference) &&
-                !samePullRequest(thread.branchPullRequest, detectedReference),
-            )
-          ) {
+          // A PR an agent opened outside T3 loses its credit footer once T3 has saved the link.
+          if (linksAgentPullRequest && detected?.state === "open" && detectedReference !== null) {
             yield* pullRequests.removeAgentCreditsFromBody(detectedReference);
           }
         }).pipe(

@@ -686,6 +686,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
         let sweepStarted = yield* Deferred.make<void>();
         const commands: Array<OrchestrationV2ServerCommand> = [];
         const creditCleanups: Array<unknown> = [];
+        let refusedThread: string | null = null;
         const dependencies = Layer.mergeAll(
           Layer.mock(Orchestrator.OrchestratorV2)({
             streamDomainEvents: Stream.never,
@@ -694,10 +695,12 @@ describe("ThreadPullRequestServiceV2 reads", () => {
                 Effect.as({ snapshotSequence: 1, threads }),
               ),
             dispatch: (command) =>
-              Effect.sync(() => {
-                commands.push(command);
-                return { sequence: 2, storedEvents: [] };
-              }),
+              "threadId" in command && command.threadId === refusedThread
+                ? Effect.die("dispatch refused")
+                : Effect.sync(() => {
+                    commands.push(command);
+                    return { sequence: 2, storedEvents: [] };
+                  }),
           }),
           Layer.mock(ProjectStore.ProjectStoreV2)({
             listShells: () => Effect.succeed([project]),
@@ -769,6 +772,32 @@ describe("ThreadPullRequestServiceV2 reads", () => {
         // An open PR T3 just linked loses its agent credit lines once; a saved one is not edited again.
         expect(creditCleanups).toEqual(state === "open" ? [reference] : []);
         threads = threads.map((thread) => ({ ...thread, branchPullRequest: reference }));
+        activation = yield* Deferred.make<void>();
+        sweepStarted = yield* Deferred.make<void>();
+        yield* sweep;
+        expect(creditCleanups).toEqual(state === "open" ? [reference] : []);
+
+        // No cleanup when the link was not saved or the thread already had the PR in its list.
+        refusedThread = "refused";
+        threads = [
+          { ...threadShell("refused"), branch: "staging" },
+          {
+            ...threadShell("listed"),
+            branch: "staging",
+            pullRequests: [
+              {
+                host: "github.com",
+                repository: "ACME/project",
+                number: 42,
+                url: reference.url,
+                source: "agent",
+                linkedAt: terminalAt,
+                snapshot: null,
+                stack: null,
+              },
+            ],
+          },
+        ];
         activation = yield* Deferred.make<void>();
         sweepStarted = yield* Deferred.make<void>();
         yield* sweep;

@@ -149,92 +149,97 @@ it.effect("reads maintainer edits and changes them through the update command", 
   }),
 );
 
-it.effect.each([true, false])(
-  "removes agent credit lines from a PR body only when the project asks (setting %s)",
-  (removes) =>
-    Effect.gen(function* () {
-      const credited = "Fixes the build.\n\nMade with [Cursor](https://cursor.com)";
-      let hosted = credited;
-      const written: Array<string | undefined> = [];
-      const provider = fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-        getChangeRequest: () => Effect.sync(() => hostedChangeRequest(hosted)),
-        updateChangeRequest: (input) =>
-          Effect.sync(() => {
-            written.push(input.body);
-            if (input.body !== undefined) hosted = input.body;
-          }),
-      });
-      const service = yield* makeService({
-        settings: { ...DEFAULT_SERVER_SETTINGS, removeAgentCreditsOnMerge: removes },
-        projects: [
-          project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" }),
-        ],
-        providers: [
-          {
-            ...provider,
-            capabilities: {
-              ...provider.capabilities,
-              edit: { changeRequest: true, comment: true, maintainerEdits: true },
-            },
-          },
-        ],
-      });
-      const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
-      const clean = removes ? "Fixes the build." : credited;
-
-      assert.strictEqual(
-        yield* service.withoutAgentCredits({ projectId: ref.projectId, body: credited }),
-        clean,
-      );
-      yield* service.update({ ...ref, body: credited });
-      assert.deepStrictEqual(written, [clean]);
-
-      // A PR opened another way: one edit, then nothing once the body is clean.
-      hosted = credited;
-      assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), removes);
-      assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), false);
-      assert.deepStrictEqual(written, removes ? [clean, clean] : [clean]);
-    }),
-);
-
-it.effect("leaves a credit-free body alone and logs a refused edit instead of failing", () =>
-  Effect.gen(function* () {
-    let hosted = "Fixes the build.";
-    let writes = 0;
-    const provider = fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-      getChangeRequest: () => Effect.sync(() => hostedChangeRequest(hosted)),
-      updateChangeRequest: () =>
-        Effect.suspend(() => {
-          writes += 1;
-          return Effect.fail(
+/** A GitHub PR by `author`; T3 acts as the fake provider's viewer, `bilal`. */
+const makeCreditService = Effect.fn(function* (input: {
+  readonly removes: boolean;
+  readonly body: string;
+  readonly author?: string;
+  readonly refuseEdit?: boolean;
+}) {
+  const forge = { hosted: input.body, reads: 0, written: [] as Array<string | undefined> };
+  const provider = fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+    getChangeRequest: () =>
+      Effect.sync(() => {
+        forge.reads += 1;
+        return {
+          ...hostedChangeRequest(forge.hosted),
+          author: { login: input.author ?? "Bilal", name: null, avatarUrl: null },
+        };
+      }),
+    updateChangeRequest: (update) =>
+      input.refuseEdit === true
+        ? Effect.fail(
             new PullRequestProviderError({
               provider: SourceControlProviderKind.make("github"),
               operation: "updateChangeRequest",
               reason: "forbidden",
               detail: "Resource not accessible by integration",
             }),
-          );
-        }),
-    });
-    const service = yield* makeService({
-      settings: { ...DEFAULT_SERVER_SETTINGS, removeAgentCreditsOnMerge: true },
-      projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
-      providers: [
-        {
-          ...provider,
-          capabilities: {
-            ...provider.capabilities,
-            edit: { changeRequest: true, comment: true, maintainerEdits: true },
-          },
+          )
+        : Effect.sync(() => {
+            forge.written.push(update.body);
+            if (update.body !== undefined) forge.hosted = update.body;
+          }),
+  });
+  const service = yield* makeService({
+    settings: { ...DEFAULT_SERVER_SETTINGS, removeAgentCreditsOnMerge: input.removes },
+    projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+    providers: [
+      {
+        ...provider,
+        capabilities: {
+          ...provider.capabilities,
+          edit: { changeRequest: true, comment: true, maintainerEdits: true },
         },
-      ],
+      },
+    ],
+  });
+  return {
+    service,
+    forge,
+    ref: { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 },
+  };
+});
+
+const creditFree = "Fixes the build.\n\n- Made with Cursor\n- Adds a test";
+const credited = `${creditFree}\n\nMade with [Cursor](https://cursor.com)`;
+
+it.effect.each([true, false])(
+  "cleans only an agent's PR body, and only when the project asks (setting %s)",
+  (removes) =>
+    Effect.gen(function* () {
+      const { service, forge, ref } = yield* makeCreditService({ removes, body: credited });
+      assert.strictEqual(
+        yield* service.withoutAgentCredits({ projectId: ref.projectId, body: credited }),
+        removes ? creditFree : credited,
+      );
+      // A person's edit or task tick from the client is saved as typed.
+      yield* service.update({ ...ref, body: credited });
+      assert.deepStrictEqual(forge.written, [credited]);
+
+      // A PR T3's account opened another way: one edit, then not even a read this run.
+      assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), removes);
+      const reads = forge.reads;
+      forge.hosted = credited;
+      assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), false);
+      assert.strictEqual(forge.reads, reads);
+      assert.deepStrictEqual(forge.written, removes ? [credited, creditFree] : [credited]);
+    }),
+);
+
+it.effect.each([
+  ["a teammate's PR", { author: "alice" }, 0],
+  ["a credit-free body", { body: creditFree }, 0],
+  ["an edit the host refuses", { refuseEdit: true }, 0],
+] as const)("leaves %s alone without failing", ([, overrides, writes]) =>
+  Effect.gen(function* () {
+    const { service, forge, ref } = yield* makeCreditService({
+      removes: true,
+      body: credited,
+      ...overrides,
     });
-    const ref = { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 };
     assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), false);
-    assert.strictEqual(writes, 0);
-    hosted = "Fixes the build.\n\nCo-authored-by: Claude <noreply@anthropic.com>";
-    assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), false);
-    assert.strictEqual(writes, 1);
+    assert.strictEqual(forge.written.length, writes);
   }),
 );
 
