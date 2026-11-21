@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 
 import { m } from "~/i18n/messages";
 import { useQuietThreadShells, useServerConfigs } from "../../state/entities";
+import { useEnvironmentIdentities } from "../../state/environments";
 import { orchestrationEnvironment } from "../../state/orchestration";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { InlineButton } from "../ui/button";
@@ -26,7 +27,9 @@ export function SidebarFailedSessionsBanner() {
   const shells = useQuietThreadShells();
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [resumedAt, setResumedAt] = useState<ReadonlyMap<EnvironmentId, number>>(() => new Map());
-  const { groups, expiresAtMs } = failedSessionsGroups(shells, nowMs, resumedAt);
+  const identities = useEnvironmentIdentities();
+  const labels = new Map(identities.map((identity) => [identity.environmentId, identity.label]));
+  const { groups, expiresAtMs } = failedSessionsGroups(shells, nowMs, resumedAt, labels);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the count follows the wall clock, which React cannot observe
   useEffect(() => {
@@ -87,6 +90,12 @@ function FailedSessionsResume({
   return (
     <div className="flex min-w-0 items-center gap-1.5 px-2 text-2xs leading-6 text-warning">
       <TriangleAlertIcon className="size-3 shrink-0" />
+      {group.environmentLabel === null ? null : (
+        <>
+          <span className="min-w-0 max-w-[40%] truncate">{group.environmentLabel}</span>
+          <span aria-hidden>·</span>
+        </>
+      )}
       <span className="min-w-0 truncate">
         {t(
           msg(

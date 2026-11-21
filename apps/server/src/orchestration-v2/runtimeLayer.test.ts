@@ -95,6 +95,7 @@ import * as RuntimeLayer from "./runtimeLayer.ts";
 import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
+import * as TransientFailureRecoveryWorker from "./TransientFailureRecoveryWorker.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ScratchThreadPromotion from "../project/ScratchThreadPromotion.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
@@ -14836,6 +14837,7 @@ it.layer(layerTest)("transient-failure continuation", (it) => {
     key: string,
     failure: OrchestrationV2ProviderFailure,
     delegatedFrom?: OrchestrationV2DelegatedFrom,
+    errorItem?: Record<string, unknown>,
   ) {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const eventSink = yield* EventSink.EventSinkV2;
@@ -14871,20 +14873,20 @@ it.layer(layerTest)("transient-failure continuation", (it) => {
     });
     const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
     const now = yield* DateTime.now;
-    const item = (id: string, payload: Record<string, unknown>) => ({
+    const item = (itemRun: OrchestrationV2Run, id: string, payload: Record<string, unknown>) => ({
       id: EventId.make(`${threadId}:${id}`),
       type: "turn-item.updated" as const,
       threadId,
-      runId: run.id,
-      nodeId: run.rootNodeId,
-      providerInstanceId: run.providerInstanceId,
+      runId: itemRun.id,
+      nodeId: itemRun.rootNodeId,
+      providerInstanceId: itemRun.providerInstanceId,
       occurredAt: now,
       payload: {
         id: TurnItemId.make(`${threadId}:${id}`),
         threadId,
-        runId: run.id,
-        nodeId: run.rootNodeId,
-        providerThreadId: run.providerThreadId,
+        runId: itemRun.id,
+        nodeId: itemRun.rootNodeId,
+        providerThreadId: itemRun.providerThreadId,
         providerTurnId: null,
         nativeItemRef: null,
         parentItemId: null,
@@ -14896,7 +14898,7 @@ it.layer(layerTest)("transient-failure continuation", (it) => {
     });
     const writeStop = eventSink.write({
       events: [
-        item("stop", {
+        item(run, "stop", {
           type: "run_interrupt_request",
           ordinal: 3,
           status: "completed",
@@ -14905,27 +14907,35 @@ it.layer(layerTest)("transient-failure continuation", (it) => {
         }),
       ] as never,
     });
-    yield* eventSink.write({
-      events: [
-        item("error", {
-          type: "error",
-          ordinal: 2,
-          status: "failed",
-          title: "Provider failure",
-          failure,
-        }),
-        {
-          id: EventId.make(`${threadId}:failed`),
-          type: "run.updated",
-          threadId,
-          runId: run.id,
-          nodeId: run.rootNodeId,
-          providerInstanceId: run.providerInstanceId,
-          occurredAt: now,
-          payload: { ...run, status: "failed", completedAt: now },
-        },
-      ] as never,
-    });
+    /** Ends `failedRun` as a provider adapter reports a terminal failure. */
+    const failRun = (
+      failedRun: OrchestrationV2Run,
+      runFailure: OrchestrationV2ProviderFailure,
+      errorItem: Record<string, unknown> = {},
+    ) =>
+      eventSink.write({
+        events: [
+          item(failedRun, `${failedRun.id}:error`, {
+            type: "error",
+            ordinal: 2,
+            status: "failed",
+            title: "Provider failure",
+            failure: runFailure,
+            ...errorItem,
+          }),
+          {
+            id: EventId.make(`${threadId}:${failedRun.id}:failed`),
+            type: "run.updated",
+            threadId,
+            runId: failedRun.id,
+            nodeId: failedRun.rootNodeId,
+            providerInstanceId: failedRun.providerInstanceId,
+            occurredAt: now,
+            payload: { ...failedRun, status: "failed", completedAt: now },
+          },
+        ] as never,
+      });
+    yield* failRun(run, failure, errorItem);
     const resume = orchestrator
       .dispatch({
         type: "message.dispatch",
@@ -14948,7 +14958,7 @@ it.layer(layerTest)("transient-failure continuation", (it) => {
     const runCount = orchestrator
       .getThreadProjection(threadId)
       .pipe(Effect.map((projection) => projection.runs.length));
-    return { orchestrator, threadId, run, resume, runCount, writeStop };
+    return { orchestrator, eventSink, threadId, run, resume, runCount, writeStop, failRun };
   });
 
   it.effect("starts the continuation of a run that failed on a 502", () =>
@@ -15012,6 +15022,79 @@ it.layer(layerTest)("transient-failure continuation", (it) => {
       );
       assert.isFalse(yield* delegated.resume);
       assert.equal(yield* delegated.runCount, 1);
+    }),
+  );
+
+  /** Runs the real worker's Resume all and returns the run it started. */
+  const resumeAll = Effect.fnUntraced(function* (seeded: { readonly threadId: ThreadId }) {
+    const result = yield* TransientFailureRecoveryWorker.TransientFailureRecovery.use((recovery) =>
+      recovery.resumeFailedThreads({ since: DateTime.formatIso(DateTime.makeUnsafe(0)) }),
+    ).pipe(
+      Effect.provide(
+        TransientFailureRecoveryWorker.layer.pipe(
+          Layer.provide(Layer.merge(Scheduler.layer, ServerSettings.layerTest())),
+        ),
+      ),
+    );
+    assert.deepEqual(result.resumedThreadIds, [seeded.threadId]);
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    return (yield* orchestrator.getThreadProjection(seeded.threadId)).runs.at(-1)!;
+  });
+
+  it.effect("counts tries across restart continuations from the original run", () =>
+    Effect.gen(function* () {
+      const seeded = yield* seedFailedRun("chain", gateway502);
+      const firstTry = yield* resumeAll(seeded);
+      assert.equal(firstTry.userMessageId, `message:transient-retry:${seeded.run.id}:1`);
+
+      // A server restart cut the first try short and continued it in a new run.
+      const now = yield* DateTime.now;
+      yield* seeded.eventSink.write({
+        events: [
+          {
+            id: EventId.make(`${seeded.threadId}:first-try-cancelled`),
+            type: "run.updated",
+            threadId: seeded.threadId,
+            runId: firstTry.id,
+            nodeId: firstTry.rootNodeId,
+            providerInstanceId: firstTry.providerInstanceId,
+            occurredAt: now,
+            payload: { ...firstTry, status: "cancelled", startedAt: now, completedAt: now },
+          },
+        ] as never,
+      });
+      yield* seeded.orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "agent",
+        creationSource: "server",
+        commandId: CommandId.make(`${seeded.threadId}:restart-continuation`),
+        threadId: seeded.threadId,
+        messageId: MessageId.make(`message:restart-continuation:${firstTry.id}`),
+        text: "Continue where you left off.",
+        attachments: [],
+        restartContinuationOfRunId: firstTry.id,
+        dispatchMode: { type: "start_immediately" },
+      });
+      const continuation = (yield* seeded.orchestrator.getThreadProjection(
+        seeded.threadId,
+      )).runs.at(-1)!;
+      assert.equal(continuation.restartContinuationOfRunId, firstTry.id);
+      yield* seeded.failRun(continuation, gateway502);
+
+      const secondTry = yield* resumeAll(seeded);
+      assert.equal(secondTry.userMessageId, `message:transient-retry:${seeded.run.id}:2`);
+    }),
+  );
+
+  it.effect("gives a run that spent the provider's retry budget only the last try", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const seeded = yield* seedFailedRun("stalled", gateway502, undefined, {
+        retry: { attempt: 7, maxAttempts: null, retryDelayMs: 30_000 },
+        startedAt: DateTime.subtract(now, { minutes: 10 }),
+      });
+      const lastTry = yield* resumeAll(seeded);
+      assert.equal(lastTry.userMessageId, `message:transient-retry:${seeded.run.id}:3`);
     }),
   );
 });

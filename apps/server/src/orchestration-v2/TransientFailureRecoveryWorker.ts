@@ -2,6 +2,7 @@ import {
   CommandId,
   MessageId,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
   type OrchestrationV2ResumeFailedThreadsInput,
   OrchestrationV2ResumeFailedThreadsError,
   type OrchestrationV2ResumeFailedThreadsResult,
@@ -30,32 +31,19 @@ const TRANSIENT_RETRY_DELAYS_MS = [15_000, 60_000, 180_000] as const;
 // Covers every backoff, with room for a server that was down when a try fell due.
 const AUTO_RETRY_LOOKBACK_MS = 60 * 60 * 1_000;
 
-// Retries carry their origin and try number in their ids, so a restart re-derives the same
-// next try instead of keeping a counter, and a replayed dispatch collides with the first.
+// Retries carry their chain's original run and try number in their ids, so a restart
+// re-derives the same next try instead of keeping a counter, and a replayed dispatch collides
+// with the first.
 const RETRY_MESSAGE_PREFIX = "message:transient-retry:";
 const RETRY_MESSAGE_ID = /^message:transient-retry:(.+):([1-9]\d*)$/u;
+// Bounds the walk over restart and limit-resume runs back to the last try or original run.
+const MAX_CHAIN_HOPS = 64;
 
-function transientRetryTry(failedRun: {
-  readonly runId: RunId;
-  readonly userMessageId: MessageId;
-}) {
-  const match = RETRY_MESSAGE_ID.exec(failedRun.userMessageId);
-  const originRunId = match === null ? failedRun.runId : match[1]!;
-  const attempt = match === null ? 1 : Number(match[2]) + 1;
-  return {
-    attempt,
-    messageId: MessageId.make(`${RETRY_MESSAGE_PREFIX}${originRunId}:${attempt}`),
-    commandId: CommandId.make(`command:transient-retry:${originRunId}:${attempt}`),
-  };
-}
-
-/** When the next automatic try for this failed run falls due; null once the tries are spent. */
-function transientRetryDueAtMs(
-  candidate: ProjectionStore.ProjectionTransientFailureCandidate,
-): number | null {
-  const delay = TRANSIENT_RETRY_DELAYS_MS[transientRetryTry(candidate).attempt - 1];
-  return delay === undefined ? null : DateTime.toEpochMillis(candidate.completedAt) + delay;
-}
+const transientRetryTry = (originRunId: string, attempt: number) => ({
+  attempt,
+  messageId: MessageId.make(`${RETRY_MESSAGE_PREFIX}${originRunId}:${attempt}`),
+  commandId: CommandId.make(`command:transient-retry:${originRunId}:${attempt}`),
+});
 
 const affectsTransientRecovery = (event: OrchestrationV2DomainEvent) =>
   event.type === "run.created" ||
@@ -81,11 +69,63 @@ const make = Effect.gen(function* () {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const settings = yield* ServerSettings.ServerSettingsService;
 
+  const readRun = (threadId: ThreadId, runId: RunId) =>
+    threads
+      .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
+      .pipe(Effect.map(({ runs }) => runs[0]));
+
+  /**
+   * The next try of the chain this failed run ends. Restart and limit-resume runs continue the
+   * same chain, so tries count from its original run. A run that spent the provider's own
+   * retry budget gets only the chain's last try.
+   */
+  const nextTry = Effect.fn("TransientFailureRecovery.nextTry")(function* (
+    candidate: ProjectionStore.ProjectionTransientFailureCandidate,
+  ) {
+    const after = (originRunId: string, tries: number) => {
+      const attempt = candidate.spentRetryBudget
+        ? Math.max(tries + 1, TRANSIENT_RETRY_DELAYS_MS.length)
+        : tries + 1;
+      const delay = TRANSIENT_RETRY_DELAYS_MS[attempt - 1];
+      return {
+        ...transientRetryTry(originRunId, attempt),
+        dueAtMs: delay === undefined ? null : DateTime.toEpochMillis(candidate.completedAt) + delay,
+      };
+    };
+    let runId = candidate.runId;
+    let messageId = candidate.userMessageId;
+    let run: OrchestrationV2Run | undefined;
+    for (let hop = 0; hop < MAX_CHAIN_HOPS; hop += 1) {
+      const match = RETRY_MESSAGE_ID.exec(messageId);
+      if (match !== null) return after(match[1]!, Number(match[2]));
+      run ??= yield* readRun(candidate.threadId, runId);
+      const previousRunId = run?.restartContinuationOfRunId ?? run?.usageLimitContinuationOfRunId;
+      const previous =
+        previousRunId === undefined ? undefined : yield* readRun(candidate.threadId, previousRunId);
+      if (previous === undefined) return after(runId, 0);
+      run = previous;
+      runId = previous.id;
+      messageId = previous.userMessageId;
+    }
+    return null;
+  });
+
+  const nextTryOrNull = (candidate: ProjectionStore.ProjectionTransientFailureCandidate) =>
+    nextTry(candidate).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("orchestration-v2.transient-recovery.chain-read-failed", {
+          threadId: candidate.threadId,
+          runId: candidate.runId,
+          cause,
+        }).pipe(Effect.as(null)),
+      ),
+    );
+
   /** The orchestrator re-checks the run is still due under the thread lock; a stale try is a no-op. */
   const resumeRun = Effect.fn("TransientFailureRecovery.resumeRun")(function* (
     candidate: ProjectionStore.ProjectionTransientFailureCandidate,
+    next: ReturnType<typeof transientRetryTry>,
   ) {
-    const next = transientRetryTry(candidate);
     const { messages } = yield* threads.getThreadRecords(candidate.threadId, ["messages"], {
       messageIds: [next.messageId, candidate.userMessageId],
     });
@@ -113,8 +153,11 @@ const make = Effect.gen(function* () {
     return dispatched.storedEvents.some((stored) => stored.event.type === "run.created");
   });
 
-  const tryResume = (candidate: ProjectionStore.ProjectionTransientFailureCandidate) =>
-    resumeRun(candidate).pipe(
+  const tryResume = (
+    candidate: ProjectionStore.ProjectionTransientFailureCandidate,
+    next: ReturnType<typeof transientRetryTry>,
+  ) =>
+    resumeRun(candidate, next).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("orchestration-v2.transient-recovery.dispatch-failed", {
           threadId: candidate.threadId,
@@ -147,13 +190,13 @@ const make = Effect.gen(function* () {
     let wakeAt = Infinity;
     let acted = false;
     for (const candidate of candidates) {
-      const dueAt = transientRetryDueAtMs(candidate);
-      if (dueAt === null) continue;
-      if (dueAt > nowMs) {
-        wakeAt = Math.min(wakeAt, dueAt);
+      const next = yield* nextTryOrNull(candidate);
+      if (next?.dueAtMs == null) continue;
+      if (next.dueAtMs > nowMs) {
+        wakeAt = Math.min(wakeAt, next.dueAtMs);
         continue;
       }
-      if (yield* tryResume(candidate)) acted = true;
+      if (yield* tryResume(candidate, next)) acted = true;
     }
     // A sweep that resumed a run re-checks on the next tick; a declined one waits for a change.
     if (!acted) yield* due.record(readVersion, wakeAt, nowMs);
@@ -172,7 +215,9 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError((cause) => new OrchestrationV2ResumeFailedThreadsError({ cause })));
         const resumedThreadIds: Array<ThreadId> = [];
         for (const candidate of candidates) {
-          if (yield* tryResume(candidate)) resumedThreadIds.push(candidate.threadId);
+          const next = yield* nextTryOrNull(candidate);
+          if (next !== null && (yield* tryResume(candidate, next)))
+            resumedThreadIds.push(candidate.threadId);
         }
         return { resumedThreadIds };
       },

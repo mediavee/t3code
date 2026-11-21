@@ -83,6 +83,7 @@ const makeWorld = Effect.gen(function* () {
                   runId: latest.id,
                   userMessageId: latest.userMessageId,
                   completedAt: latest.completedAt,
+                  spentRetryBudget: false,
                 },
               ]
             : [];
@@ -92,13 +93,17 @@ const makeWorld = Effect.gen(function* () {
       getThreadRecords: ((
         _threadId: ThreadId,
         _fields: unknown,
-        filter: { readonly messageIds: ReadonlyArray<MessageId> },
+        filter: {
+          readonly messageIds?: ReadonlyArray<MessageId>;
+          readonly runIds?: ReadonlyArray<RunId>;
+        },
       ) =>
         Effect.sync(() => ({
-          messages: filter.messageIds.flatMap((id) => {
+          messages: (filter.messageIds ?? []).flatMap((id) => {
             const message = messages.get(id);
             return message === undefined ? [] : [{ ...message, attachments: [] }];
           }),
+          runs: runs.filter((run) => filter.runIds?.includes(run.id)),
         }))) as never,
       dispatch: (command) =>
         Effect.gen(function* () {
