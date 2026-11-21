@@ -45,6 +45,8 @@ import {
 import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import { AutoSettleSettingsRows } from "./ThreadSettingsSections";
 import { supportsSharedSettingsSync } from "@t3tools/client-runtime/state/shared-settings";
+import { StandingInstructionsSettings } from "./components/StandingInstructionsSettings";
+import { agentMemoryCeilingChoices, agentMemoryCeilingSupported } from "./agent-settings.logic";
 
 type SettingsPage = "threads" | "source-control" | "worktrees" | "maintenance";
 
@@ -63,6 +65,7 @@ const PAGE_PROJECT_KEYS: Record<SettingsPage, readonly ProjectScopedServerSettin
     "enableAgentBrowserAccess",
     "sidebarAutoSettleOnMerge",
     "sidebarAutoSettleAfterDays",
+    "standingInstructions",
   ],
   "source-control": ["defaultAutoPull", "removeAgentCreditsOnMerge"],
   worktrees: [
@@ -408,6 +411,30 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   />
                 </SettingsSection>
                 <AutoSettleSettingsRows write={write} pending={pendingWrites > 0} />
+                <SettingsSection title={gt("Provider errors")}>
+                  <SettingsSwitchRow
+                    icon="arrow.clockwise"
+                    label={gt("Resume after provider errors")}
+                    subtitle={managedSubtitle(
+                      "autoRetryTransientFailures",
+                      projectSelected
+                        ? gt("Environment-wide setting. Select All projects to change it.")
+                        : gt(
+                            "Resume a turn that failed on a provider server or connection error, up to three times, after 15 seconds, 1 minute and 3 minutes.",
+                          ),
+                    )}
+                    value={uniform("autoRetryTransientFailures")}
+                    disabled={disabledFor("autoRetryTransientFailures")}
+                    onValueChange={(value) => write({ autoRetryTransientFailures: value })}
+                  />
+                </SettingsSection>
+                <StandingInstructionsSettings
+                  key={targetsKey}
+                  value={uniform("standingInstructions")}
+                  disabled={disabledFor("standingInstructions")}
+                  footer={managed("standingInstructions")}
+                  onChange={write}
+                />
               </>
             ) : null}
 
@@ -596,12 +623,65 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                     />
                   </View>
                 </SettingsSection>
+                <AgentMemorySection
+                  value={uniform("agentMemoryMaxGiB")}
+                  mixed={isMixed("agentMemoryMaxGiB")}
+                  pending={pendingWrites > 0}
+                  projectSelected={projectSelected}
+                  supported={agentMemoryCeilingSupported(targets)}
+                  managedReason={managed("agentMemoryMaxGiB")}
+                  disabled={disabledFor("agentMemoryMaxGiB")}
+                  onChange={(agentMemoryMaxGiB) => write({ agentMemoryMaxGiB })}
+                />
               </>
             ) : null}
           </>
         )}
       </ScrollView>
     </SettingsScreen>
+  );
+}
+
+function AgentMemorySection(props: {
+  readonly value: number | null;
+  readonly mixed: boolean;
+  readonly pending: boolean;
+  readonly projectSelected: boolean;
+  readonly supported: boolean;
+  readonly managedReason: string | undefined;
+  readonly disabled: boolean;
+  readonly onChange: (gib: number | null) => void;
+}) {
+  const gt = useGT();
+  const footer = !props.supported
+    ? gt("Available on Linux servers, where agents run in systemd scopes.")
+    : props.projectSelected
+      ? gt("Environment-wide setting. Select All projects to change it.")
+      : (props.managedReason ??
+        gt(
+          "Memory each agent and the commands it runs can use, without swap, before the system stops it.",
+        ));
+  return (
+    <SettingsSection
+      title={gt("Agent memory ceiling")}
+      footer={footer}
+      trailing={
+        !props.pending && props.mixed ? (
+          <MixedValuesLabel projectSelected={props.projectSelected} />
+        ) : null
+      }
+    >
+      {agentMemoryCeilingChoices(props.mixed ? null : props.value).map((gib, index) => (
+        <SettingsChoiceRow
+          key={gib ?? "off"}
+          label={gib === null ? gt("No ceiling") : gt("{gib} GiB", { gib })}
+          selected={!props.mixed && props.value === gib}
+          separated={index > 0}
+          disabled={props.disabled || !props.supported}
+          onPress={() => props.onChange(gib)}
+        />
+      ))}
+    </SettingsSection>
   );
 }
 

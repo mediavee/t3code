@@ -9,6 +9,11 @@ const { Children, mocks } = vi.hoisted(() => ({
   Children: ({ children }: { children?: ReactNode }) => children,
   mocks: {
     branchNaming: { onChange: (_patch: ServerSettingsPatch) => {} },
+    standingInstructions: {
+      onChange: (_patch: ServerSettingsPatch) => {},
+      value: null as string | null,
+      disabled: false,
+    },
     updateSettings: vi.fn(),
     alert: vi.fn(),
     targets: [] as ReturnType<typeof environment>[],
@@ -95,8 +100,31 @@ vi.mock("./components/SettingsEnvironmentFilterHeader", () => ({
   }),
 }));
 vi.mock("./components/DatabaseStorageNotice", () => ({ DatabaseStorageNotice: () => null }));
-vi.mock("./components/SettingsSection", () => ({ SettingsSection: Children }));
-vi.mock("../../components/ui/ListChoiceRow", () => ({ ListChoiceRow: () => null }));
+vi.mock("./components/SettingsSection", () => ({
+  SettingsSection: ({ children, footer }: { children?: ReactNode; footer?: ReactNode }) => (
+    <>
+      {children}
+      {footer}
+    </>
+  ),
+}));
+vi.mock("../../components/ui/ListChoiceRow", () => ({
+  ListChoiceRow: ({
+    label,
+    selected,
+    disabled,
+    onPress,
+  }: {
+    label: string;
+    selected: boolean;
+    disabled?: boolean;
+    onPress: () => void;
+  }) => (
+    <button role="radio" aria-checked={selected} disabled={disabled} onClick={onPress}>
+      {label}
+    </button>
+  ),
+}));
 vi.mock("./components/SettingsSwitchRow", () => ({
   SettingsSwitchRow: ({
     label,
@@ -126,6 +154,16 @@ vi.mock("./components/BranchNamingSettings", () => ({
     return null;
   },
 }));
+vi.mock("./components/StandingInstructionsSettings", () => ({
+  StandingInstructionsSettings: (props: {
+    value: string | null;
+    disabled: boolean;
+    onChange: (patch: ServerSettingsPatch) => void;
+  }) => {
+    mocks.standingInstructions = props;
+    return null;
+  },
+}));
 vi.mock("./settings-environment-filter", () => ({
   useSettingsEnvironmentFilter: () => ({
     selectedTargets: mocks.targets,
@@ -143,11 +181,12 @@ vi.mock("./settings-environment-filter", () => ({
 }));
 
 import {
+  SettingsEnvironmentMaintenanceRouteScreen,
   SettingsThreadsRouteScreen,
   SettingsWorktreesRouteScreen,
 } from "./SettingsServerControlsRouteScreen";
 
-function environment(environmentId: string, label: string) {
+function environment(environmentId: string, label: string, os = "linux") {
   return {
     environmentId,
     label,
@@ -159,6 +198,7 @@ function environment(environmentId: string, label: string) {
         sidebarAutoSettleOnMerge: false,
       },
       environment: {
+        platform: { os },
         capabilities: { projectSettingsOverrides: true, threadAutoSettlement: true },
       },
     },
@@ -221,6 +261,63 @@ describe("SettingsServerControlsRouteScreen", () => {
     // Both rewrite the whole project override, so a second write planned now would drop the first.
     expect(mocks.updateSettings).toHaveBeenCalledOnce();
     await act(async () => pending.resolve(AsyncResult.success(undefined)));
+  });
+
+  it("saves provider-error resume and standing instructions from the threads page", () => {
+    act(() => root.render(<SettingsThreadsRouteScreen />));
+    const resume = [...container.querySelectorAll<HTMLButtonElement>('[role="switch"]')].find(
+      (button) => button.textContent === "Resume after provider errors",
+    )!;
+    expect(resume.getAttribute("aria-checked")).toBe("true");
+    expect(mocks.standingInstructions.value).toBe("");
+    expect(mocks.standingInstructions.disabled).toBe(false);
+
+    act(() => resume.click());
+    expect(mocks.updateSettings).toHaveBeenLastCalledWith({
+      environmentId: "local",
+      input: { patch: { autoRetryTransientFailures: false } },
+    });
+  });
+
+  it("keeps the agent settings read-only without settings access", () => {
+    mocks.readOnly = new Set(["local"]);
+    act(() => root.render(<SettingsThreadsRouteScreen />));
+    const resume = [...container.querySelectorAll<HTMLButtonElement>('[role="switch"]')].find(
+      (button) => button.textContent === "Resume after provider errors",
+    )!;
+    expect(resume.disabled).toBe(true);
+    expect(mocks.standingInstructions.disabled).toBe(true);
+
+    act(() => root.render(<SettingsEnvironmentMaintenanceRouteScreen />));
+    const ceilings = [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    expect(ceilings.length).toBeGreaterThan(0);
+    expect(ceilings.every((button) => button.disabled)).toBe(true);
+  });
+
+  it("sets the agent memory ceiling on Linux", () => {
+    act(() => root.render(<SettingsEnvironmentMaintenanceRouteScreen />));
+    const ceiling = (label: string) =>
+      [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(
+        (button) => button.textContent === label,
+      )!;
+    expect(ceiling("No ceiling").getAttribute("aria-checked")).toBe("true");
+    act(() => ceiling("8 GiB").click());
+    expect(mocks.updateSettings).toHaveBeenLastCalledWith({
+      environmentId: "local",
+      input: { patch: { agentMemoryMaxGiB: 8 } },
+    });
+  });
+
+  it("explains that the agent memory ceiling needs Linux on every target", () => {
+    mocks.targets = [environment("local", "Local"), environment("mac", "Mac", "darwin")];
+    act(() => root.render(<SettingsEnvironmentMaintenanceRouteScreen />));
+    const ceiling = [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(
+      (button) => button.textContent === "8 GiB",
+    )!;
+    expect(ceiling.disabled).toBe(true);
+    expect(container.textContent).toContain(
+      "Available on Linux servers, where agents run in systemd scopes.",
+    );
   });
 
   it("disables auto-settle when a selected environment cannot save settings", () => {
