@@ -9927,6 +9927,7 @@
   "5a3f881a6bc1c4ff": "Create a new worktree",
   "3b91d2c532294f88": "Use the project checkout",
   "08dfe6dcf5ae8c40": "Use a specific checkout",
+  "5f2880bcab957d87": "Plan mode",
   "038b86fd8ba9a6aa": "This task uses a legacy interval below one minute. Saving updates it to at least one minute.",
   "2f3f300a16007bd8": "Schedule",
   "ce1b005dfc83db03": "At a time",
