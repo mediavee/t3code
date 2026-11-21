@@ -22,6 +22,7 @@ import {
   changeDraftProject,
   scheduledTaskDefaultModel,
   defaultScheduledTaskProjectId,
+  gateFromDraft,
   matchesScheduledTaskScope,
   pickScheduledTaskModel,
   scheduleFromDraft,
@@ -214,6 +215,21 @@ describe("fixed-time scheduled tasks", () => {
     expect(scheduleFromDraft(draft)).toEqual({ type: "fixed_time", timeOfDay: "14:30" });
     // A native time input reports "" when it is cleared or only partly filled.
     expect(scheduleFromDraft({ ...draft, timeOfDay: "" })).toBeNull();
+  });
+});
+
+describe("scheduled task gate", () => {
+  const gate = { command: "./new-nightly.sh", cwd: "scripts", timeoutMs: 60_000 };
+
+  it("sends a gate only when the form changed it", () => {
+    const draft = taskToDraft({ ...legacyTask, gate });
+    expect(gateFromDraft(draft)).toBeUndefined();
+    expect(gateFromDraft({ ...draft, gateTimeoutSeconds: "" })).toEqual({
+      command: gate.command,
+      cwd: gate.cwd,
+    });
+    expect(gateFromDraft({ ...draft, gateCommand: "  " })).toBeNull();
+    expect(gateFromDraft(taskToDraft(legacyTask))).toBeUndefined();
   });
 });
 

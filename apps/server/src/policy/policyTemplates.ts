@@ -114,6 +114,12 @@ const policies = (): ReadonlyArray<Policy> => [
     toggle: "WebhookTasks",
   },
   {
+    id: "TaskGates",
+    title: "Allow scheduled task gate commands",
+    help: "Disabled stops scheduled tasks from running a gate command before each run. Gated tasks are kept but do not run.",
+    toggle: "TaskGates",
+  },
+  {
     id: "BrowserCookieImport",
     title: "Allow importing browser cookies",
     help: "Disabled stops users from importing cookies from another browser into T3 Code's browser.",

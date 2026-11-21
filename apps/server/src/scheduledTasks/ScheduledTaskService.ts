@@ -26,6 +26,10 @@ import {
   type ScheduledTaskUpsertInput,
   managedPolicyDeniedMessage,
   scheduledTaskThreadMode,
+  DEFAULT_SCHEDULED_TASK_GATE_TIMEOUT_MS,
+  SCHEDULED_TASK_GATE_SKIP_EXIT_CODE,
+  ScheduledTaskGate,
+  ScheduledTaskGateResult,
   managedRuntimeModeDenial,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -38,6 +42,8 @@ import * as Effect from "effect/Effect";
 import { splitsSurrogatePair } from "@t3tools/shared/assistantCitations";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Duration from "effect/Duration";
 import * as Metric from "effect/Metric";
 import * as Layer from "effect/Layer";
@@ -61,10 +67,13 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as DueHint from "../scheduling/DueHint.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
+import { isAbsolutePath, resolveWorkspaceFilePath } from "@t3tools/shared/path";
 import { isMissedFixedTimeRun, isSameSchedule, nextScheduledRunAt } from "./Schedule.ts";
+import * as GateRunner from "./gateRunner.ts";
 import {
   redactHeaders,
   redactQuery,
+  renderGateOutputPrompt,
   renderWebhookPrompt,
   type WebhookRequest,
 } from "./webhookTemplate.ts";
@@ -90,6 +99,8 @@ export const scheduledTaskIdForCommand = (commandId: CommandId) =>
 const isScheduledTaskError = Schema.is(ScheduledTaskError);
 const isOrchestratorDispatchError = Schema.is(OrchestratorDispatchError);
 const PROMPT_TOO_LONG = "The filled-in prompt is too long.";
+const GATE_PROMPT_OUTPUT_BYTES = 16 * 1024;
+const GATE_STDERR_TAIL_CHARS = 2_000;
 const WEBHOOK_DELIVERY_RETENTION = 50;
 const WEBHOOK_DEDUPE_DELIVERY_RETENTION = 20;
 const WEBHOOK_FILTERED_DELIVERY_RETENTION = 20;
@@ -204,6 +215,12 @@ const decodeWorkspaceStrategyJson = Schema.decodeUnknownEffect(
 const decodeModelSelectionJson = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ScheduledTask.fields.modelSelection),
 );
+const GateJson = Schema.fromJsonString(ScheduledTaskGate);
+const GateResultJson = Schema.fromJsonString(ScheduledTaskGateResult);
+const decodeGateJson = Schema.decodeUnknownEffect(GateJson);
+const decodeGateResultJson = Schema.decodeUnknownEffect(GateResultJson);
+const encodeGateJson = Schema.encodeSync(GateJson);
+const encodeGateResultJson = Schema.encodeSync(GateResultJson);
 const HeadersJson = Schema.fromJsonString(Schema.Record(Schema.String, Schema.String));
 const MissingFieldsJson = Schema.fromJsonString(Schema.Array(Schema.String));
 const decodeHeadersJson = Schema.decodeUnknownOption(HeadersJson);
@@ -248,6 +265,8 @@ interface ScheduledTaskRow {
   readonly run_count: number;
   readonly webhook_token: string | null;
   readonly webhook_secret: string | null;
+  readonly gate_json: string | null;
+  readonly gate_result_json: string | null;
 }
 
 interface WebhookDeliveryRow {
@@ -380,6 +399,16 @@ function requireFutureOnce(
     : Effect.void;
 }
 
+/** Cuts at a character boundary, so the kept text stays valid. */
+function capUtf8(text: string, maxBytes: number): string {
+  const bytes = Buffer.from(text);
+  if (bytes.length <= maxBytes) return text;
+  return `${bytes
+    .subarray(0, maxBytes)
+    .toString()
+    .replace(/\uFFFD$/u, "")}\n[truncated]`;
+}
+
 function errorMessage(error: unknown): string {
   const failure = Cause.isCause(error) ? Cause.squash(error) : error;
   return failure instanceof Error ? failure.message : String(failure);
@@ -417,6 +446,14 @@ const decodeRow = Effect.fnUntraced(
     const webhook = schedule.type === "webhook" ? webhookEndpoint(row, origin) : undefined;
     const workspaceStrategy = yield* decodeWorkspaceStrategyJson(row.workspace_strategy_json);
     const modelSelection = yield* decodeModelSelectionJson(row.model_selection_json);
+    const gate = row.gate_json === null ? undefined : yield* decodeGateJson(row.gate_json);
+    // A result a newer build wrote in another shape is only display state.
+    const gateResult =
+      row.gate_result_json === null
+        ? undefined
+        : yield* decodeGateResultJson(row.gate_result_json).pipe(
+            Effect.orElseSucceed(() => undefined),
+          );
     return yield* decodeTask({
       id: row.task_id,
       title: row.title,
@@ -440,6 +477,8 @@ const decodeRow = Effect.fnUntraced(
       lastRunError: row.last_run_error,
       runCount: row.run_count,
       ...(webhook === undefined ? {} : { webhook }),
+      ...(gate === undefined ? {} : { gate }),
+      ...(gateResult === undefined ? {} : { gateResult }),
     });
   },
   (effect, row, _origin?) =>
@@ -508,10 +547,28 @@ export const layer = Layer.effect(
       webhookPolicyOrganization === undefined
         ? undefined
         : managedPolicyDeniedMessage(webhookPolicyOrganization, "webhook tasks");
+    const gatePolicyOrganization = ManagedPolicy.deniedBy(managedPolicy, "taskGates");
+    const gatePolicyBlock =
+      gatePolicyOrganization === undefined
+        ? undefined
+        : managedPolicyDeniedMessage(gatePolicyOrganization, "scheduled task gate commands");
     const withPolicy = (task: ScheduledTask): ScheduledTask =>
       webhookPolicyBlock !== undefined && task.schedule.type === "webhook"
         ? { ...task, blockedByPolicy: webhookPolicyBlock }
-        : task;
+        : gatePolicyBlock !== undefined && task.gate !== undefined
+          ? { ...task, blockedByPolicy: gatePolicyBlock }
+          : task;
+    // Optional so test layers need not spawn; production provides the server's spawner.
+    const providedGateRunner = yield* Effect.serviceOption(GateRunner.ScheduledTaskGateRunner);
+    const spawner = yield* Effect.serviceOption(ChildProcessSpawner.ChildProcessSpawner);
+    const gateRunner = Option.isSome(providedGateRunner)
+      ? providedGateRunner
+      : Option.isSome(spawner)
+        ? Option.some(yield* GateRunner.make(spawner.value))
+        : Option.none<GateRunner.ScheduledTaskGateRunner["Service"]>();
+    const runningGates = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Fiber.Fiber<unknown>>>(
+      new Map(),
+    );
     const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
       new Map(),
     );
@@ -564,7 +621,9 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        gate_json,
+        gate_result_json
       FROM scheduled_tasks
       -- Not updated_at: toggles, runs and edits rewrite it, and clients render
       -- this order as-is, so rows would move under the pointer.
@@ -606,7 +665,9 @@ export const layer = Layer.effect(
         last_run_error,
         run_count,
         webhook_token,
-        webhook_secret
+        webhook_secret,
+        gate_json,
+        gate_result_json
       FROM scheduled_tasks
       WHERE task_id = ${id}
     `.pipe(NodeSqliteClient.readOnly);
@@ -661,6 +722,8 @@ export const layer = Layer.effect(
         readonly secret: string | null;
         readonly secretChanged: boolean;
       },
+      /** Unchanged keeps the stored gate, so a save that never saw it cannot drop it. */
+      gate: { readonly changed: boolean; readonly json: string | null },
     ) =>
       sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
@@ -686,7 +749,8 @@ export const layer = Layer.effect(
           last_run_error,
           run_count,
           webhook_token,
-          webhook_secret
+          webhook_secret,
+          gate_json
         )
         SELECT
           ${task.id},
@@ -711,7 +775,8 @@ export const layer = Layer.effect(
           ${task.lastRunError},
           ${task.runCount},
           ${webhook.token},
-          ${webhook.secret}
+          ${webhook.secret},
+          ${gate.json}
         WHERE ${requireExisting ? 0 : 1} = 1
            OR EXISTS (SELECT 1 FROM scheduled_tasks WHERE task_id = ${task.id})
         ON CONFLICT (task_id)
@@ -756,6 +821,17 @@ export const layer = Layer.effect(
           webhook_secret = CASE
             WHEN ${webhook.secretChanged ? 1 : 0} = 1 THEN excluded.webhook_secret
             ELSE scheduled_tasks.webhook_secret
+          END,
+          gate_json = CASE
+            WHEN ${gate.changed ? 1 : 0} = 1 THEN excluded.gate_json
+            ELSE scheduled_tasks.gate_json
+          END,
+          -- A new command starts with no remembered output.
+          gate_last_hash = CASE
+            WHEN ${gate.changed ? 1 : 0} = 1 THEN NULL ELSE scheduled_tasks.gate_last_hash
+          END,
+          gate_result_json = CASE
+            WHEN ${gate.changed ? 1 : 0} = 1 THEN NULL ELSE scheduled_tasks.gate_result_json
           END
         RETURNING task_id
       `.pipe(
@@ -995,6 +1071,156 @@ export const layer = Layer.effect(
       if (updated.length > 0) yield* notifyChanged;
     });
 
+    // Guarded by the gate it ran, so an edit that changed the command keeps its fresh state.
+    const recordGate = Effect.fn("ScheduledTaskService.recordGate")(function* (
+      task: ScheduledTask,
+      result: ScheduledTaskGateResult,
+      hash?: string,
+    ) {
+      yield* sql`
+        UPDATE scheduled_tasks
+        SET gate_result_json = ${encodeGateResultJson(result)},
+            gate_last_hash = COALESCE(${hash ?? null}, gate_last_hash)
+        WHERE task_id = ${task.id} AND created_at = ${task.createdAt}
+          AND gate_json IS ${task.gate === undefined ? null : encodeGateJson(task.gate)}
+      `;
+      yield* notifyChanged;
+    });
+
+    const gateDirectory = Effect.fn("ScheduledTaskService.gateDirectory")(function* (
+      task: ScheduledTask,
+      cwd: string | undefined,
+    ) {
+      if (cwd !== undefined && isAbsolutePath(cwd)) return cwd;
+      const [project] = yield* sql<{ readonly workspace_root: string }>`
+        SELECT workspace_root FROM projection_projects
+        WHERE project_id = ${task.projectId} AND deleted_at IS NULL
+      `.pipe(NodeSqliteClient.readOnly);
+      if (project === undefined) return null;
+      return cwd === undefined
+        ? project.workspace_root
+        : resolveWorkspaceFilePath(cwd, project.workspace_root);
+    });
+
+    // An edit, pause, deletion or recreation while the gate ran makes its verdict stale.
+    const sameGatedTask = (ran: ScheduledTask, current: ScheduledTask | null) =>
+      current !== null &&
+      current.createdAt === ran.createdAt &&
+      current.enabled &&
+      current.gate !== undefined &&
+      ran.gate !== undefined &&
+      encodeGateJson(current.gate) === encodeGateJson(ran.gate) &&
+      current.runtimeMode === ran.runtimeMode &&
+      current.interactionMode === ran.interactionMode;
+
+    /**
+     * Runs a due occurrence's gate. Returns the task as it stands once the gate passed, the prompt
+     * to send and the output hash to remember once it starts, or null when the gate skipped or
+     * failed the occurrence (already recorded) or the task changed meanwhile.
+     */
+    const runGate = Effect.fn("ScheduledTaskService.runGate")(function* (
+      task: ScheduledTask,
+      gate: ScheduledTaskGate,
+      startedAt: DateTime.DateTime,
+    ) {
+      const at = iso(startedAt);
+      const stop = Effect.fnUntraced(function* (
+        outcome: ScheduledTaskGateResult["outcome"],
+        exitCode: number | null,
+        detail: string | null,
+        runError?: string,
+      ) {
+        yield* recordGate(task, { at, outcome, exitCode, detail });
+        // Like a finished run: an interval counts from when the gate ended.
+        const finishedAt = task.schedule.type === "once" ? startedAt : yield* localNow;
+        yield* rescheduleMissedRun(task, finishedAt, `gate ${outcome}`, runError);
+        return null;
+      });
+      if (gatePolicyBlock !== undefined) {
+        return yield* stop("blocked", null, gatePolicyBlock, gatePolicyBlock);
+      }
+      if (Option.isNone(gateRunner)) {
+        const message = "This server cannot run gate commands.";
+        return yield* stop("failed", null, message, message);
+      }
+      const cwd = yield* gateDirectory(task, gate.cwd).pipe(Effect.orElseSucceed(() => null));
+      if (cwd === null) {
+        const message = "The gate command has no folder: the task's project is gone.";
+        return yield* stop("failed", null, message, message);
+      }
+      const timeoutMs = gate.timeoutMs ?? DEFAULT_SCHEDULED_TASK_GATE_TIMEOUT_MS;
+      // Forked into the service scope so deleting the task or stopping the server kills it.
+      const fiber = yield* gateRunner.value
+        .run({ command: gate.command, cwd, timeoutMs })
+        .pipe(Effect.forkIn(serviceScope, { startImmediately: true }));
+      yield* Ref.update(runningGates, (all) => new Map(all).set(task.id, fiber));
+      // A pause, edit or deletion that ran before the fiber was registered could not stop it.
+      if (!sameGatedTask(task, yield* findTask(task.id))) yield* Fiber.interrupt(fiber);
+      const exit = yield* Fiber.await(fiber).pipe(
+        Effect.ensuring(
+          Ref.update(runningGates, (all) => {
+            if (all.get(task.id) !== fiber) return all;
+            const next = new Map(all);
+            next.delete(task.id);
+            return next;
+          }),
+        ),
+      );
+      if (Exit.isFailure(exit)) return null;
+      const ran = exit.value;
+      if (ran._tag === "TimedOut") {
+        const message = `The gate command timed out after ${Math.round(timeoutMs / 1000)} s.`;
+        return yield* stop("timed_out", null, message, message);
+      }
+      if (ran._tag === "SpawnFailed") return yield* stop("failed", null, ran.message, ran.message);
+      if (ran.code === SCHEDULED_TASK_GATE_SKIP_EXIT_CODE)
+        return yield* stop("skipped", ran.code, null);
+      if (ran.code !== 0) {
+        const tail = ran.stderr.trim().slice(-GATE_STDERR_TAIL_CHARS);
+        const message = `The gate command exited with code ${ran.code}.${tail === "" ? "" : `\n${tail}`}`;
+        return yield* stop("failed", ran.code, tail === "" ? null : tail, message);
+      }
+      const current = yield* findTask(task.id);
+      if (current === null || !sameGatedTask(task, current)) return null;
+      const output = ran.stdout.trim();
+      // A silent gate says only "go", so it never counts as unchanged.
+      const hash =
+        output === ""
+          ? null
+          : Buffer.from(
+              yield* digest
+                .digest(Digest.sha256, new TextEncoder().encode(output))
+                .pipe(Effect.orDie),
+            ).toString("hex");
+      if (hash !== null) {
+        const [stored] = yield* sql<{ readonly gate_last_hash: string | null }>`
+          SELECT gate_last_hash FROM scheduled_tasks WHERE task_id = ${task.id}
+        `.pipe(NodeSqliteClient.readOnly);
+        if (stored?.gate_last_hash === hash) return yield* stop("unchanged", 0, null);
+      }
+      const frameId = yield* random
+        .randomBytes(6)
+        .pipe(Effect.map((bytes) => Buffer.from(bytes).toString("hex")));
+      const prompt = renderGateOutputPrompt(
+        current.prompt,
+        capUtf8(output, GATE_PROMPT_OUTPUT_BYTES),
+        frameId,
+      );
+      if (prompt.length > PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+        return yield* stop("failed", 0, PROMPT_TOO_LONG, PROMPT_TOO_LONG);
+      }
+      yield* recordGate(task, { at, outcome: "passed", exitCode: 0, detail: null });
+      return { task: current, prompt, hash };
+    });
+
+    const stopGate = (id: ScheduledTaskId) =>
+      Ref.get(runningGates).pipe(
+        Effect.flatMap((all) => {
+          const fiber = all.get(id);
+          return fiber === undefined ? Effect.void : Fiber.interrupt(fiber);
+        }),
+      );
+
     const runTask = Effect.fn("ScheduledTaskService.runTask")(function* (
       task: ScheduledTask,
       trigger: "scheduled" | "manual" | "webhook",
@@ -1098,12 +1324,22 @@ export const layer = Layer.effect(
           if (reason !== null) return yield* new WebhookDeliverySkipped({ reason });
         }
 
-        if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
+        const passed =
+          trigger === "scheduled" && active.gate !== undefined
+            ? yield* runGate(active, active.gate, startedAt)
+            : undefined;
+        if (passed === null) return { task: active, threadId: null, dispatchFailed: false };
+        // A gate can run for minutes, so a passed one dispatches the task as it stands now.
+        const target = passed?.task ?? active;
+        const prompt = passed?.prompt ?? webhook?.prompt ?? active.prompt;
+        const gateHash = passed?.hash ?? null;
+
+        if (webhook === undefined) yield* markRunning(target.id, startedAtIso);
         else
           yield* sql
             .withTransaction(
               Effect.gen(function* () {
-                yield* markRunning(active.id, startedAtIso, webhook.deliveryId);
+                yield* markRunning(target.id, startedAtIso, webhook.deliveryId);
                 // Recovery must distinguish this delivery from other windows waiting on the same task.
                 yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
               }),
@@ -1118,12 +1354,11 @@ export const layer = Layer.effect(
 
         const fireKey =
           webhook === undefined
-            ? `${active.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
-            : `${active.id}:webhook:${webhook.deliveryId}`;
+            ? `${target.id}:${DateTime.toEpochMillis(startedAt)}:${trigger}`
+            : `${target.id}:webhook:${webhook.deliveryId}`;
         const commandId = CommandId.make(`scheduled-task:${fireKey}`);
         const messageId = MessageId.make(`scheduled-task-message:${fireKey}`);
-        const prompt = webhook?.prompt ?? active.prompt;
-        const threadMode = scheduledTaskThreadMode(active);
+        const threadMode = scheduledTaskThreadMode(target);
 
         // A bound thread can move to another project (No project to a project) while
         // this fires. Follow it; one move needs at most two retries. Same ids replay safely.
@@ -1138,13 +1373,13 @@ export const layer = Layer.effect(
               commandId,
               threadId,
               messageId,
-              scheduledTaskId: active.id,
+              scheduledTaskId: target.id,
               text: prompt,
               attachments: [],
               mode: "queue",
               ...(threadMode === "fresh_session" ? { freshContext: true } : {}),
-              createdBy: active.createdBy,
-              creationSource: active.creationSource,
+              createdBy: target.createdBy,
+              creationSource: target.creationSource,
             })
             .pipe(
               Effect.catchTags({
@@ -1164,39 +1399,39 @@ export const layer = Layer.effect(
 
         // Capture defects and interrupts too so dispatch failures still reach markCompleted.
         const result =
-          active.threadId === null
+          target.threadId === null
             ? yield* Effect.exit(
                 threadLaunch
                   .launch({
                     commandId,
-                    projectId: active.projectId,
-                    title: active.title,
+                    projectId: target.projectId,
+                    title: target.title,
                     titleRenamed: true,
-                    modelSelection: active.modelSelection,
-                    runtimeMode: active.runtimeMode,
-                    interactionMode: active.interactionMode,
-                    workspaceStrategy: active.workspaceStrategy,
+                    modelSelection: target.modelSelection,
+                    runtimeMode: target.runtimeMode,
+                    interactionMode: target.interactionMode,
+                    workspaceStrategy: target.workspaceStrategy,
                     initialMessage: {
                       messageId,
-                      scheduledTaskId: active.id,
+                      scheduledTaskId: target.id,
                       text: prompt,
                       attachments: [],
                     },
-                    createdBy: active.createdBy,
-                    creationSource: active.creationSource,
+                    createdBy: target.createdBy,
+                    creationSource: target.creationSource,
                   })
                   .pipe(
                     Effect.map((launched) => launched.threadId),
                     Effect.tap((threadId) =>
-                      threadMode === "new_thread" ? Effect.void : bindThread(active, threadId),
+                      threadMode === "new_thread" ? Effect.void : bindThread(target, threadId),
                     ),
                   ),
               )
             : yield* Effect.exit(
                 // The stored selection only seeds fresh threads. A bound run
                 // follows the thread's current provider, so it passes none.
-                sendBound(ThreadId.make(active.threadId), active.projectId, 2).pipe(
-                  Effect.as(ThreadId.make(active.threadId)),
+                sendBound(ThreadId.make(target.threadId), target.projectId, 2).pipe(
+                  Effect.as(ThreadId.make(target.threadId)),
                 ),
               );
 
@@ -1270,12 +1505,20 @@ export const layer = Layer.effect(
                   ),
             ),
           );
+        // Before the completion is announced, so whoever sees the run done also sees its hash.
+        if (runSucceeded && gateHash !== null) {
+          yield* recordGate(
+            target,
+            { at: startedAtIso, outcome: "passed", exitCode: 0, detail: null },
+            gateHash,
+          ).pipe(Effect.orElseSucceed(() => undefined));
+        }
         if (written) yield* notifyChanged;
         if (written && threadId !== null) {
-          yield* recordRunOutcome(active.id, startedAtIso, threadId, messageId).pipe(
+          yield* recordRunOutcome(target.id, startedAtIso, threadId, messageId).pipe(
             Effect.catchCause((cause) =>
               Effect.logWarning("Could not record scheduled run outcome", {
-                taskId: active.id,
+                taskId: target.id,
                 cause,
               }),
             ),
@@ -1388,8 +1631,8 @@ export const layer = Layer.effect(
         );
         yield* Effect.forEach(
           due,
-          ({ task, dueAt }) =>
-            Effect.suspend(() =>
+          ({ task, dueAt }) => {
+            const occurrence = Effect.suspend(() =>
               isMissedFixedTimeRun(task.schedule, dueAt, now)
                 ? rescheduleMissedRun(
                     task,
@@ -1402,7 +1645,12 @@ export const layer = Layer.effect(
               Effect.catch((cause) =>
                 Effect.logWarning("Scheduled task run failed", { taskId: task.id, cause }),
               ),
-            ),
+            );
+            // A gate can take minutes; later polls skip the task while its run is reserved.
+            return task.gate === undefined
+              ? occurrence
+              : Effect.asVoid(Effect.forkIn(occurrence, serviceScope));
+          },
           { concurrency: 1, discard: true },
         );
       },
@@ -1560,6 +1808,20 @@ export const layer = Layer.effect(
           ? managedRuntimeModeDenial(managedPolicy.summary, input.runtimeMode)
           : undefined;
       if (modeDenial !== undefined) return yield* taskError(modeDenial, { taskId: id });
+      // Omitted keeps the stored gate: only the owner's editor sends one.
+      const storedGate = existingTask?.gate;
+      const gate = input.gate === undefined ? storedGate : (input.gate ?? undefined);
+      if (gate !== undefined && input.schedule.type === "webhook") {
+        return yield* taskError("A webhook task cannot have a gate command.", { taskId: id });
+      }
+      // Like a blocked webhook task, a gated one can still be edited while it is off.
+      if (gate !== undefined && input.enabled && gatePolicyBlock !== undefined) {
+        return yield* taskError(gatePolicyBlock, { taskId: id });
+      }
+      const gateJson = gate === undefined ? null : encodeGateJson(gate);
+      const gateChanged =
+        input.gate !== undefined &&
+        gateJson !== (storedGate === undefined ? null : encodeGateJson(storedGate));
       // Keep the existing next_run_at when the schedule itself is untouched:
       // editing a title or prompt must not postpone (or resurrect) a due
       // run — only schedule/enabled changes restart the clock.
@@ -1667,6 +1929,7 @@ export const layer = Layer.effect(
         lastRunStatus: existingTask?.lastRunStatus ?? "never",
         lastRunError: existingTask?.lastRunError ?? null,
         runCount: existingTask?.runCount ?? 0,
+        ...(gate === undefined ? {} : { gate }),
       };
       yield* saveTask(
         task,
@@ -1674,7 +1937,10 @@ export const layer = Layer.effect(
         scheduleUnchanged ? existingTask.schedule : null,
         threadId === null && input.unbindThread === true ? (existingTask?.threadId ?? null) : null,
         webhook,
+        { changed: gateChanged, json: gateJson },
       );
+      // A running gate checked the command or the enabled state this save replaced.
+      if (gateChanged || !input.enabled) yield* stopGate(id);
       yield* notifyChanged;
       return { task: (yield* findTask(id)) ?? task };
     });
@@ -1690,6 +1956,9 @@ export const layer = Layer.effect(
         webhookPolicyBlock !== undefined
       ) {
         return yield* taskError(webhookPolicyBlock, { taskId: input.id });
+      }
+      if (input.enabled && existing.gate !== undefined && gatePolicyBlock !== undefined) {
+        return yield* taskError(gatePolicyBlock, { taskId: input.id });
       }
       const modeDenial =
         input.enabled && existing.threadId === null
@@ -1722,6 +1991,7 @@ export const layer = Layer.effect(
       if (updated.length === 0) {
         return yield* taskError("Schedule task not found.", { taskId: input.id });
       }
+      if (!input.enabled) yield* stopGate(input.id);
       yield* notifyChanged;
       return {
         task: { ...existing, enabled: input.enabled, nextRunAt: next, updatedAt: iso(now) },
@@ -1762,6 +2032,7 @@ export const layer = Layer.effect(
 
     const deleteTask: ScheduledTaskService["Service"]["delete"] = (input) =>
       deleteRow(input.id).pipe(
+        Effect.andThen(stopGate(input.id)),
         Effect.andThen(forgetWebhookTask(input.id)),
         Effect.andThen(notifyChanged),
         Effect.as({ id: input.id }),
@@ -1789,9 +2060,11 @@ export const layer = Layer.effect(
             taskError("Could not delete thread's schedule tasks.", { cause }),
           ),
         );
-      yield* Effect.forEach(removed, ({ task_id }) => forgetWebhookTask(task_id), {
-        discard: true,
-      });
+      yield* Effect.forEach(
+        removed,
+        ({ task_id }) => stopGate(task_id).pipe(Effect.andThen(forgetWebhookTask(task_id))),
+        { discard: true },
+      );
       if (removed.length > 0) yield* notifyChanged;
     });
 

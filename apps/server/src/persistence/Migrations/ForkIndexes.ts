@@ -42,6 +42,23 @@ const forkColumns = [
     column: "last_run_thread_id",
     statement: "ALTER TABLE scheduled_tasks ADD COLUMN last_run_thread_id TEXT",
   },
+  {
+    // An owner-set command run before each scheduled occurrence.
+    table: "scheduled_tasks",
+    column: "gate_json",
+    statement: "ALTER TABLE scheduled_tasks ADD COLUMN gate_json TEXT",
+  },
+  {
+    // The hash of the gate output that last started a run, so unchanged output skips.
+    table: "scheduled_tasks",
+    column: "gate_last_hash",
+    statement: "ALTER TABLE scheduled_tasks ADD COLUMN gate_last_hash TEXT",
+  },
+  {
+    table: "scheduled_tasks",
+    column: "gate_result_json",
+    statement: "ALTER TABLE scheduled_tasks ADD COLUMN gate_result_json TEXT",
+  },
 ] as const;
 
 const FORK_COLUMN_CONDITION = forkColumns

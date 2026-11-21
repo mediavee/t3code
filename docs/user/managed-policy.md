@@ -110,6 +110,7 @@ When `maxRuntimeMode` is set, users cannot modify provider launch settings (`bin
 ### Other capabilities
 
 - `webhookTasks: false`: Disables scheduled-task and workflow webhooks.
+- `taskGates: false`: Scheduled tasks cannot run a [gate command](./project-settings.md#scheduled-tasks-and-webhooks) before their runs. Gated tasks stay but do not run; each skipped occurrence records why.
 - `browserCookieImport: false`: Disables importing cookies from other browsers.
 - `previewTunnel: false`: Disables remote `localhost` tunneling and port forwarding (streams tabs instead).
 - `worktreeLayoutCommands: false`: Disables `t3.json` `worktreeLayout` `create`/`remove` commands.

@@ -2,7 +2,9 @@ import { isWebhookDedupeTemplate } from "@t3tools/contracts";
 import {
   EnvironmentId,
   MAX_WEBHOOK_DELIVERY_AGE_MINUTES,
+  MAX_SCHEDULED_TASK_GATE_TIMEOUT_MS,
   type ProjectId,
+  type ScheduledTaskGate,
   ScheduledTaskId,
   type ScheduledTask,
   type ScheduledTaskSchedule,
@@ -156,6 +158,80 @@ export interface DraftState {
   readonly filters: ReadonlyArray<WebhookFilterDraft>;
   /** The filter rows the form opened with. */
   readonly savedFilters: ReadonlyArray<WebhookFilterDraft>;
+  /** Empty means no gate. */
+  readonly gateCommand: string;
+  readonly gateCwd: string;
+  /** Whole seconds; empty uses the server's default. */
+  readonly gateTimeoutSeconds: string;
+  /** The gate the form opened with, so a save that left it alone does not send it. */
+  readonly savedGate: ScheduledTaskGate | null;
+}
+
+export const GATE_DRAFT_DEFAULTS = {
+  gateCommand: "",
+  gateCwd: "",
+  gateTimeoutSeconds: "",
+  savedGate: null,
+} as const;
+
+function parseGateTimeoutSeconds(value: string): number | null | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const seconds = Number(trimmed);
+  return Number.isInteger(seconds) &&
+    seconds >= 1 &&
+    seconds * 1_000 <= MAX_SCHEDULED_TASK_GATE_TIMEOUT_MS
+    ? seconds
+    : undefined;
+}
+
+export function gateDraftErrors(draft: DraftState, resolve: MessageResolver = m) {
+  if (!draft.gateCommand.trim()) return [];
+  if (draft.scheduleMode === "webhook")
+    return [
+      {
+        title: resolve(msg("Invalid gate")),
+        description: resolve(msg("A webhook task cannot have a gate command.")),
+      },
+    ];
+  if (parseGateTimeoutSeconds(draft.gateTimeoutSeconds) === undefined)
+    return [
+      {
+        title: resolve(msg("Invalid gate")),
+        description: resolve(
+          msg("Enter whole seconds from 1 to {max}, or leave it blank.", {
+            max: MAX_SCHEDULED_TASK_GATE_TIMEOUT_MS / 1_000,
+          }),
+        ),
+      },
+    ];
+  return [];
+}
+
+/**
+ * The gate to send: undefined keeps the stored one, which is all a client without terminal
+ * access can do, and null removes it.
+ */
+export function gateFromDraft(draft: DraftState): ScheduledTaskGate | null | undefined {
+  const command = draft.gateCommand.trim();
+  const cwd = draft.gateCwd.trim();
+  const seconds = parseGateTimeoutSeconds(draft.gateTimeoutSeconds);
+  const gate: ScheduledTaskGate | null = command
+    ? {
+        command,
+        ...(cwd ? { cwd } : {}),
+        ...(seconds ? { timeoutMs: seconds * 1_000 } : {}),
+      }
+    : null;
+  const saved = draft.savedGate;
+  const unchanged =
+    gate === null
+      ? saved === null
+      : saved !== null &&
+        saved.command === gate.command &&
+        saved.cwd === gate.cwd &&
+        saved.timeoutMs === gate.timeoutMs;
+  return unchanged ? undefined : gate;
 }
 
 export const WEBHOOK_SIGNATURE_DEFAULTS = {
@@ -370,6 +446,11 @@ export function taskToDraft(task: ScheduledTask): DraftState {
         : "",
     filters,
     savedFilters: filters,
+    gateCommand: task.gate?.command ?? "",
+    gateCwd: task.gate?.cwd ?? "",
+    gateTimeoutSeconds:
+      task.gate?.timeoutMs === undefined ? "" : String(Math.round(task.gate.timeoutMs / 1_000)),
+    savedGate: task.gate ?? null,
   };
 }
 
