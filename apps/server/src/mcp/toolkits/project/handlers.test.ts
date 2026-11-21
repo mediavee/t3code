@@ -477,6 +477,12 @@ it.effect("a launch with a model its provider does not advertise creates no thre
     expect(String(yield* launchWith("claudeAgent", "claude-opus", { effort: "max" }))).toContain(
       'Unknown key "effort" in modelSelection.',
     );
+    // A record-form value the coercion would drop is refused before the advertised-options check.
+    for (const effort of [3, ""]) {
+      expect(
+        String(yield* launchWith("claudeAgent", "claude-opus", { options: { effort } })),
+      ).toContain('Option "effort" in modelSelection.options needs');
+    }
     expect(launched).toHaveLength(0);
 
     expect(yield* launchWith("claudeAgent", "Opus")).toMatchObject({
