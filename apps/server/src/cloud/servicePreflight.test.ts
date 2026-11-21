@@ -67,6 +67,13 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
       expect(preflight().status).toBe("ready");
       expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
 
+      // Startup removes the ledger rows earlier fork builds wrote for their unnumbered indexes.
+      insert.run(103, "RemoteParentDoneIndex");
+      insert.run(104, "TransientFailureIndex");
+      expect(preflight().status).toBe("ready");
+      expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
+      db.exec("DELETE FROM effect_sql_migrations WHERE migration_id IN (103, 104)");
+
       db.prepare("UPDATE effect_sql_migrations SET name = ? WHERE migration_id = ?").run(
         "ForkMigration",
         BUILD_MIGRATION_HEAD,

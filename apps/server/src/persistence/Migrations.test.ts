@@ -17,7 +17,7 @@ import {
 } from "@t3tools/shared/databaseMigrationLog";
 import * as DatabaseMigrationProgress from "./DatabaseMigrationProgress.ts";
 
-import { migrationManifest, runMigrations } from "./Migrations.ts";
+import { hasPendingMigrations, migrationManifest, runMigrations } from "./Migrations.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -238,6 +238,50 @@ describe("runMigrations", () => {
       );
       assert.deepStrictEqual(yield* history, migrationManifest);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect.each(["fresh", "numbered-head", "fork-recorded", "fork-recorded-behind"] as const)(
+    "creates the fork indexes without ledger rows on a %s database",
+    (state) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        if (state === "numbered-head") {
+          yield* runMigrations({ toMigrationInclusive: 102 });
+          yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_subagents_remote_parent_done_idx`;
+          yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_turn_items_transient_failure_idx`;
+        }
+        // With the indexes present, only the ledger rows make the database pending.
+        if (state === "fork-recorded") yield* runMigrations();
+        // The rows must be gone before the highest recorded id decides which migrations run.
+        if (state === "fork-recorded-behind") yield* runMigrations({ toMigrationInclusive: 101 });
+        if (state === "fork-recorded" || state === "fork-recorded-behind") {
+          yield* sql`
+            INSERT INTO effect_sql_migrations (migration_id, name)
+            VALUES (103, 'RemoteParentDoneIndex'), (104, 'TransientFailureIndex')
+          `;
+          assert.isTrue(yield* hasPendingMigrations());
+        }
+
+        yield* runMigrations();
+
+        const indexes = yield* sql<{ readonly name: string }>`
+          SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (
+            'orchestration_v2_projection_subagents_remote_parent_done_idx',
+            'orchestration_v2_projection_turn_items_transient_failure_idx'
+          ) ORDER BY name
+        `;
+        assert.deepStrictEqual(
+          indexes.map(({ name }) => name),
+          [
+            "orchestration_v2_projection_subagents_remote_parent_done_idx",
+            "orchestration_v2_projection_turn_items_transient_failure_idx",
+          ],
+        );
+        const recorded = yield* history;
+        assert.strictEqual(Math.max(...recorded.map(([id]) => id)), 102);
+        assert.deepStrictEqual(recorded, migrationManifest);
+        assert.isFalse(yield* hasPendingMigrations());
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
   it.effect("still starts after a newer build recorded a later V2 migration", () =>
