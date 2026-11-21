@@ -11,6 +11,7 @@ import {
   type OrchestrationV2ProviderFailure,
   type OrchestrationV2ProviderRetry,
   type OrchestrationV2ProviderSession,
+  type OrchestrationV2PendingBackgroundTask,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ProviderTurn,
@@ -2097,6 +2098,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                 defaultCwd: input.runtimePolicy.cwd ?? process.cwd(),
                 environment: options.clientTerminals.environment,
                 shellCommands: options.clientTerminals.shellCommands,
+                onRunningChange: (sessionId) =>
+                  Effect.suspend(() => publishCommandRoster(sessionId)),
                 environmentForSession: (sessionId) => {
                   const remembered = terminalEnvironmentBySessionId.get(sessionId);
                   if (remembered !== undefined) return remembered;
@@ -2653,8 +2656,61 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             }
           });
 
+        // Terminals the client runs and those the agent reports, until they exit or are released.
+        const commandRoster = (sessionId: string) => {
+          const roster: Array<OrchestrationV2PendingBackgroundTask> = [];
+          for (const terminal of clientTerminals?.running(sessionId) ?? []) {
+            roster.push({
+              taskId: terminal.terminalId,
+              kind: "command",
+              description: terminal.commandLine,
+              ...(terminal.awaited ? { awaited: true } : {}),
+            });
+          }
+          for (const [key, terminal] of agentTerminalsById) {
+            const [terminalSessionId, terminalId] = JSON.parse(key) as [string, string];
+            if (terminalSessionId !== sessionId || terminal.exitStatus !== undefined) continue;
+            roster.push({
+              taskId: `acp-agent-terminal:${terminalId}`,
+              kind: "command",
+              ...(terminal.command === undefined ? {} : { description: terminal.command }),
+            });
+          }
+          return roster;
+        };
+        // Sessions that listed a command, so an emptied roster is still sent to clear it.
+        const rosterSessionIds = new Set<string>();
+        const withCommandRoster = (providerThread: OrchestrationV2ProviderThread) => {
+          const sessionId = providerThread.nativeThreadRef?.nativeId;
+          if (sessionId == null) return providerThread;
+          const pendingBackgroundTasks = commandRoster(sessionId);
+          if (pendingBackgroundTasks.length === 0 && !rosterSessionIds.has(sessionId)) {
+            return providerThread;
+          }
+          rosterSessionIds.add(sessionId);
+          return { ...providerThread, pendingBackgroundTasks };
+        };
         const emitProviderEvent = (event: ProviderAdapter.ProviderAdapterV2Event) =>
-          Queue.offer(events, event).pipe(Effect.asVoid);
+          Queue.offer(
+            events,
+            event.type === "provider_thread.updated"
+              ? { ...event, providerThread: withCommandRoster(event.providerThread) }
+              : event,
+          ).pipe(Effect.asVoid);
+        const publishCommandRoster = Effect.fnUntraced(function* (sessionId: string) {
+          const providerThread = (yield* Ref.get(providerThreadByNativeSessionId)).get(sessionId);
+          if (providerThread === undefined) return;
+          const turn = yield* Ref.get(activeTurn);
+          yield* emitProviderEvent({
+            type: "provider_thread.updated",
+            driver,
+            providerThread: { ...providerThread, updatedAt: yield* DateTime.now },
+            // No run reads the stream between turns, so the session stores the roster itself.
+            ...(turn === null || turn.finalized || turn.nativeThreadId !== sessionId
+              ? { sessionScoped: true }
+              : {}),
+          });
+        });
         let scheduleDeferredFinalize: (context: ActiveAcpTurn) => Effect.Effect<void> = () =>
           Effect.void;
         let refreshModelSwitchCapability: Effect.Effect<void> = Effect.void;
@@ -5443,8 +5499,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             return false;
           }
           const terminalKey = sessionScopedId(notification.sessionId, update.terminalId);
-          const next = applyAcpAgentTerminalUpdate(agentTerminalsById.get(terminalKey), update);
+          const previous = agentTerminalsById.get(terminalKey);
+          const next = applyAcpAgentTerminalUpdate(previous, update);
           agentTerminalsById.set(terminalKey, next);
+          if (
+            previous === undefined ||
+            (previous.exitStatus === undefined) !== (next.exitStatus === undefined) ||
+            previous.command !== next.command
+          ) {
+            yield* publishCommandRoster(notification.sessionId);
+          }
           if (context === null || notification.sessionId !== context.nativeThreadId) return true;
           const status =
             next.exitStatus === undefined
@@ -9758,6 +9822,8 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             return providerSession;
           },
           canResumeAfterRestart: canLoadSession || canResumeSession,
+          // Closing the session ends the agent process, and with it the terminals it listed.
+          backgroundTasksEndWithProcess: true,
           events: Stream.fromEffectRepeat(Queue.take(events)),
           ...(flavor.getModelContextWindow === undefined
             ? {}

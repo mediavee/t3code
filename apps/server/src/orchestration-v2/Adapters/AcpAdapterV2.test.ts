@@ -52,6 +52,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Result from "effect/Result";
 import * as Scope from "effect/Scope";
 import * as TestClock from "effect/testing/TestClock";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -1132,7 +1133,7 @@ const optionValues = (question: OrchestrationV2UserInputQuestion | undefined) =>
 describe("AcpAdapterV2", () => {
   beforeAll(() => bundleAgents);
 
-  it.live("keeps a completed tool's status when its linked ACP terminal streams output", () =>
+  it.live("lists a running ACP terminal and keeps its completed linked tool's status", () =>
     Effect.gen(function* () {
       const instanceId = ProviderInstanceId.make("acp-test-terminal-linked-tool");
       const threadId = ThreadId.make("thread-acp-terminal-linked-tool");
@@ -1178,6 +1179,16 @@ describe("AcpAdapterV2", () => {
                     data: Buffer.from("still running").toString("base64"),
                   });
                   yield* send({
+                    sessionUpdate: "terminal_update",
+                    terminalId: "build",
+                    command: "vp build",
+                  });
+                  yield* send({
+                    sessionUpdate: "terminal_update",
+                    terminalId: "build",
+                    exitStatus: { exitCode: 0, signal: null },
+                  });
+                  yield* send({
                     sessionUpdate: "state_update",
                     state: "idle",
                     stopReason: "end_turn",
@@ -1215,12 +1226,21 @@ describe("AcpAdapterV2", () => {
           ordinal: 1,
         }),
       );
-      const items = Array.from(
+      const events = Array.from(
         yield* runtime.events.pipe(
           Stream.takeUntil((event) => event.type === "turn.terminal"),
           Stream.runCollect,
         ),
-      ).flatMap((event) =>
+      );
+      const rosters = events.flatMap((event) =>
+        event.type === "provider_thread.updated" && event.providerThread.id === providerThread.id
+          ? [event.providerThread.pendingBackgroundTasks?.map((task) => task.taskId) ?? []]
+          : [],
+      );
+      assert.deepInclude(rosters, ["acp-agent-terminal:term", "acp-agent-terminal:build"]);
+      // The build exited; the dev server the turn left running is still listed when it ends.
+      assert.deepEqual(rosters.at(-1), ["acp-agent-terminal:term"]);
+      const items = events.flatMap((event) =>
         event.type === "turn_item.updated" && event.turnItem.nativeItemRef?.nativeId === "linked"
           ? [event.turnItem]
           : [],
@@ -6324,6 +6344,129 @@ describe("AcpAdapterV2", () => {
         terminalOutput.output,
         "thread-acp-native-fork-target\nBearer target-thread-token",
       );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("lists running client terminals as the thread's background commands", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const mockAgentPath = yield* bundledMockAgentPath;
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let createTerminal: Parameters<RuntimeService["handleCreateTerminal"]>[0] | undefined;
+      let waitForTerminalExit:
+        | Parameters<RuntimeService["handleTerminalWaitForExit"]>[0]
+        | undefined;
+      let killTerminal: Parameters<RuntimeService["handleTerminalKill"]>[0] | undefined;
+      const instanceId = ProviderInstanceId.make("acp-test-terminal-roster");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeMockRuntime({
+            childProcessSpawner,
+            mockAgentPath,
+            wrapRuntime: (runtime) => ({
+              ...runtime,
+              handleCreateTerminal: (handler) =>
+                Effect.sync(() => {
+                  createTerminal = handler;
+                }).pipe(Effect.andThen(runtime.handleCreateTerminal(handler))),
+              handleTerminalWaitForExit: (handler) =>
+                Effect.sync(() => {
+                  waitForTerminalExit = handler;
+                }).pipe(Effect.andThen(runtime.handleTerminalWaitForExit(handler))),
+              handleTerminalKill: (handler) =>
+                Effect.sync(() => {
+                  killTerminal = handler;
+                }).pipe(Effect.andThen(runtime.handleTerminalKill(handler))),
+            }),
+          }),
+        },
+        selfInvocation,
+        clientTerminals: {},
+      });
+      const threadId = ThreadId.make("thread-acp-terminal-roster");
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const sessionScope = yield* Scope.fork(yield* Scope.Scope);
+      const runtime = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-acp-terminal-roster"),
+          modelSelection,
+          runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, sessionScope));
+      const providerThread = yield* runtime.ensureThread({
+        threadId,
+        modelSelection,
+        runtimePolicy,
+      });
+      if (
+        createTerminal === undefined ||
+        waitForTerminalExit === undefined ||
+        killTerminal === undefined
+      ) {
+        return yield* Effect.die("ACP runtime must register terminal handlers");
+      }
+      const sessionId = providerThread.nativeThreadRef!.nativeId!;
+      const nextRoster = (matches: (tasks: ReadonlyArray<unknown>) => boolean) =>
+        runtime.events.pipe(
+          Stream.filterMap((event) =>
+            event.type === "provider_thread.updated" &&
+            event.providerThread.id === providerThread.id &&
+            event.providerThread.pendingBackgroundTasks !== undefined &&
+            matches(event.providerThread.pendingBackgroundTasks)
+              ? Result.succeed(event)
+              : Result.failVoid,
+          ),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+      const startServer = (name: string) =>
+        createTerminal!(
+          { sessionId, command: process.execPath, args: ["-e", "setInterval(() => {}, 1000)"] },
+          { requestId: `${name}-create`, method: "terminal/create" },
+        );
+      const commandLine = `${process.execPath} -e setInterval(() => {}, 1000)`;
+
+      const server = yield* startServer("server");
+      const listed = yield* nextRoster((tasks) => tasks.length === 1);
+      assert.deepEqual(listed.providerThread.pendingBackgroundTasks, [
+        { taskId: server.terminalId, kind: "command", description: commandLine },
+      ]);
+      // No turn reads the stream, so the session stores it.
+      assert.isTrue(listed.sessionScoped);
+
+      const waited = yield* waitForTerminalExit(
+        { sessionId, terminalId: server.terminalId },
+        { requestId: "server-wait", method: "terminal/wait_for_exit" },
+      ).pipe(Effect.forkChild);
+      const awaited = yield* nextRoster((tasks) => tasks.length === 1);
+      assert.deepEqual(awaited.providerThread.pendingBackgroundTasks, [
+        { taskId: server.terminalId, kind: "command", description: commandLine, awaited: true },
+      ]);
+
+      yield* killTerminal(
+        { sessionId, terminalId: server.terminalId },
+        { requestId: "server-kill", method: "terminal/kill" },
+      );
+      yield* Fiber.join(waited);
+      yield* nextRoster((tasks) => tasks.length === 0);
+
+      const second = yield* startServer("second");
+      yield* nextRoster((tasks) => tasks.length === 1);
+      yield* Scope.close(sessionScope, Exit.void);
+      const cleared = yield* nextRoster((tasks) => tasks.length === 0);
+      assert.deepEqual(cleared.providerThread.pendingBackgroundTasks, []);
+      assert.notEqual(second.terminalId, server.terminalId);
+      assert.isTrue(runtime.backgroundTasksEndWithProcess);
     }).pipe(Effect.provide(layerTest)),
   );
 
