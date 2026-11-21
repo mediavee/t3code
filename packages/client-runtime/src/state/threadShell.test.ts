@@ -432,6 +432,14 @@ describe("v2 thread shell lists", () => {
       threads: [parent, localTask],
     });
     expect(listed()).toEqual([`${environmentId}/${parent.id}`]);
+    // Its approval reaches the parent's row as a task in the same project's would.
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [parent, { ...localTask, pendingRuntimeRequest: approval }],
+    });
+    expect(registry.get(threads.threadShellAtom(parentRef))?.pendingSubagentRequest).toBe(
+      "approval",
+    );
     registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [parent] });
 
     // The helper the task started there asks for approval: the parent here hears of it.

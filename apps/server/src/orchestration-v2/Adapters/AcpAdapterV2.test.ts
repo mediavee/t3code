@@ -7189,17 +7189,19 @@ describe("AcpAdapterV2", () => {
         },
         { requestId: "id-only-permission-request", method: "session/request_permission" },
       ).pipe(Effect.forkScoped);
-      const approvalEvent = Option.getOrThrow(
-        yield* runtime.events.pipe(
-          Stream.filter(
-            (event) =>
-              event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
-          ),
-          Stream.runHead,
+      // Up to the pending request: its card, which a woken parent reads, must already be out.
+      const untilRequest = yield* runtime.events.pipe(
+        Stream.takeUntil(
+          (event) =>
+            event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending",
         ),
+        Stream.runCollect,
+      );
+      const approvalEvent = untilRequest.find(
+        (event) => event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
       );
       if (
-        approvalEvent.type !== "turn_item.updated" ||
+        approvalEvent?.type !== "turn_item.updated" ||
         approvalEvent.turnItem.type !== "approval_request" ||
         approvalEvent.turnItem.providerTurnId === null
       ) {

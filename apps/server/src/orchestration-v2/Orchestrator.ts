@@ -85,6 +85,7 @@ import {
   TurnItemId,
   TrimmedNonEmptyString,
   managedRuntimeModeCeilingMessage,
+  isParentWakeRequestKind,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
@@ -2480,12 +2481,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         .subagents[0];
     // An unknown task gives no evidence the question is obsolete.
     if (task === undefined) return false;
-    const childThreadId = task.childThreadId;
+    if (["completed", "failed", "cancelled", "interrupted"].includes(task.status)) return true;
+    const remoteThreadId = task.remoteChild?.threadId;
+    // A task in a linked environment is checked there, when it is answered.
     if (
-      childThreadId === null ||
-      ["completed", "failed", "cancelled", "interrupted"].includes(task.status)
+      task.childThreadId === null &&
+      (remoteThreadId === undefined ||
+        (yield* projectionStore
+          .getThreadShell(remoteThreadId)
+          .pipe(
+            Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })),
+          )) === null)
     )
-      return true;
+      return remoteThreadId === undefined;
+    const childThreadId = task.childThreadId ?? remoteThreadId!;
     const child = yield* projectionStore
       .getThreadRecords(childThreadId, ["runtimeRequests"])
       .pipe(
@@ -2495,7 +2504,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       );
     return !child.runtimeRequests.some(
       (request) =>
-        request.kind === "user_input" &&
+        isParentWakeRequestKind(request.kind) &&
         request.status === "pending" &&
         messageId === `message:delegated-task-question:${threadId}:${request.id}`,
     );
