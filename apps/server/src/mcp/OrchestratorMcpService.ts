@@ -296,6 +296,8 @@ export function threadManagementFailure(error: unknown): OrchestratorMcpFailure 
     case "ThreadManagementThreadArchivedError":
     case "ThreadManagementWorktreeRestoreError":
       return failure("thread_not_sendable", error.message);
+    case "ThreadManagementMessageDroppedError":
+      return failure("thread_not_sendable", error.message);
     case "ThreadManagementNoSteerableRunError":
       return failure(
         "thread_not_sendable",
@@ -3330,6 +3332,7 @@ const make = Effect.gen(function* () {
           commandId,
           threadId: childThreadId,
           stopDelegatedTasks: false,
+          cancelAgentMessages: true,
           reason,
         };
         yield* threadManagement
@@ -4067,13 +4070,25 @@ const make = Effect.gen(function* () {
       yield* assertTargetWithinLimits(limits, target.thread);
 
       const mode = input.mode ?? "auto";
+      if (
+        input.expireOnTurnEnd === true &&
+        (mode === "queue" ||
+          mode === "restart" ||
+          input.freshContext === true ||
+          input.outputSchema !== undefined)
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "`expireOnTurnEnd` only steers the running turn: use it with mode `auto` or `steer`, without `freshContext` or `outputSchema`.",
+        );
+      }
       const key = yield* requestKey(input.clientRequestId);
       const messageId = stableOperationMessageId({
         scope,
         requestKey: key,
         operation: "thread-send",
       });
-      const result = yield* threadManagement
+      const outcome = yield* threadManagement
         .sendToThread({
           projectId: target.thread.projectId,
           commandId: stableCommandId({
@@ -4093,10 +4108,18 @@ const make = Effect.gen(function* () {
           mode,
           ...(input.freshContext ? { freshContext: true } : {}),
           ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+          ...(input.expireOnTurnEnd === true ? { expireOnTurnEnd: true } : {}),
           createdBy: "agent",
           creationSource: "mcp",
         })
         .pipe(
+          Effect.map((sent) => ({ sent, droppedRun: undefined })),
+          Effect.catchTags({
+            ThreadManagementMessageDroppedError: (error) =>
+              error.run === null
+                ? Effect.fail(error)
+                : Effect.succeed({ sent: undefined, droppedRun: error.run }),
+          }),
           Effect.mapError((error) =>
             isThreadManagementError(error)
               ? threadManagementFailure(error)
@@ -4106,6 +4129,17 @@ const make = Effect.gen(function* () {
                 ),
           ),
         );
+      if (outcome.droppedRun !== undefined) {
+        return {
+          threadId: input.threadId,
+          link: threadLinkFor(scope, input.threadId, target.thread.title),
+          messageId,
+          runId: outcome.droppedRun.id,
+          status: outcome.droppedRun.status,
+          delivery: "dropped",
+        } satisfies OrchestratorMcpThreadSendResult;
+      }
+      const result = outcome.sent;
       const sent = {
         threadId: input.threadId,
         link: threadLinkFor(scope, input.threadId, target.thread.title),
@@ -4136,8 +4170,19 @@ const make = Effect.gen(function* () {
           ),
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
           ...(input.untilOutput === true ? { untilOutput: true } : {}),
+          ...(scope.thread === undefined ? {} : { interruptOnMessageTo: scope.thread.threadId }),
         })
         .pipe(Effect.mapError(threadManagementFailure));
+      if (result.waitingMessages !== undefined) {
+        return {
+          threadId: input.threadId,
+          runId: result.run?.id ?? null,
+          status: result.run === null ? "idle" : runOutcome(result.run),
+          timedOut: false,
+          interruptedByIncomingMessage: true,
+          waitingMessages: result.waitingMessages,
+        } satisfies OrchestratorMcpThreadWaitResult;
+      }
       const status = result.run === null ? "idle" : runOutcome(result.run);
       const taskId = result.run?.delegatedTaskId;
       const ownedTask =

@@ -29,7 +29,7 @@ import {
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2CreationSource,
   type OrchestrationV2LinkedSender,
-  type OrchestrationV2Run,
+  OrchestrationV2Run,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadTranscript,
@@ -166,6 +166,8 @@ export interface ThreadManagementSendInput {
   readonly freshContext?: boolean;
   /** Ask the run for a result as data matching this JSON Schema; it is queued, never steered. */
   readonly outputSchema?: Readonly<Record<string, Schema.Json>>;
+  /** Only steer the running turn; dropped, never queued, when that turn ends before reading it. */
+  readonly expireOnTurnEnd?: boolean;
   readonly createdBy: OrchestrationV2Actor;
   readonly creationSource: OrchestrationV2CreationSource;
 }
@@ -198,6 +200,8 @@ export interface ThreadManagementWaitInput {
    * its agent waits to be woken, and submit it from a later turn.
    */
   readonly untilOutput?: boolean;
+  /** Return early, unsettled, once a message for this thread, the caller's, arrives. */
+  readonly interruptOnMessageTo?: ThreadId;
 }
 
 export interface ThreadManagementWaitResult {
@@ -206,6 +210,8 @@ export interface ThreadManagementWaitResult {
   readonly timedOut: boolean;
   /** With `untilDelegatedWorkSettled`, once settled: the run with the thread's final answer. */
   readonly resultRun?: OrchestrationV2Run;
+  /** Set when a message for `interruptOnMessageTo` ended the wait: how many wait there. */
+  readonly waitingMessages?: number;
 }
 
 export interface ThreadManagementInterruptInput {
@@ -281,6 +287,19 @@ export class ThreadManagementNoSteerableRunError extends Schema.TaggedError<Thre
 ) {
   override get message(): string {
     return `Thread ${this.threadId} has no running turn that can be ${this.mode === "steer" ? "steered" : "restarted"}.`;
+  }
+}
+
+export class ThreadManagementMessageDroppedError extends Schema.TaggedError<ThreadManagementMessageDroppedError>()(
+  "ThreadManagementMessageDroppedError",
+  {
+    threadId: ThreadId,
+    /** The thread's latest run, whose turn the message would have joined. */
+    run: Schema.NullOr(OrchestrationV2Run),
+  },
+) {
+  override get message(): string {
+    return `Thread ${this.threadId} has no running turn, so the message expired unsent.`;
   }
 }
 
@@ -409,6 +428,7 @@ export const ThreadManagementError = Schema.Union([
   ThreadManagementRunNotFoundError,
   ThreadManagementThreadArchivedError,
   ThreadManagementNoSteerableRunError,
+  ThreadManagementMessageDroppedError,
   ThreadManagementRunOutputRejectedError,
   ThreadManagementThreadNotInterruptibleError,
   ThreadManagementProjectionLoadError,
@@ -517,6 +537,13 @@ export interface ThreadManagementServiceShape {
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
+  /**
+   * Resolves once a user message reaches the thread after the call, with how many wait for
+   * its agent: that one and the turns queued behind its running turn.
+   */
+  readonly awaitIncomingMessage: (
+    threadId: ThreadId,
+  ) => Effect.Effect<number, Orchestrator.OrchestratorV2Error>;
   /** Waits for the agent's run and automatic follow-ups before settling.
    * A new user turn or an unsuccessful ending leaves the thread active. */
   readonly settleAfterRun: (input: {
@@ -925,14 +952,17 @@ const make = Effect.gen(function* () {
       });
     }
     const steerableRun = latestSteerableRun(target);
+    const expireOnTurnEnd = input.expireOnTurnEnd === true;
     // A fresh send, or one that asks for a result, never joins a running turn.
-    const mode =
-      (input.freshContext || input.outputSchema !== undefined) &&
-      (input.mode === "steer" || input.mode === "restart")
+    const mode = expireOnTurnEnd
+      ? "steer"
+      : (input.freshContext || input.outputSchema !== undefined) &&
+          (input.mode === "steer" || input.mode === "restart")
         ? "queue"
         : input.mode;
     const explicitSteer = mode === "steer" || mode === "restart";
-    const missingSteeringTarget = explicitSteer && steerableRun === undefined;
+    // An expiring send without a turn to join is still dispatched, so its drop has a receipt.
+    const missingSteeringTarget = explicitSteer && steerableRun === undefined && !expireOnTurnEnd;
     // A command receipt outlives its target turn. Dispatch validates and replays it.
     if (missingSteeringTarget && !(yield* hasReceipt(input.commandId))) {
       return yield* new ThreadManagementNoSteerableRunError({
@@ -958,7 +988,7 @@ const make = Effect.gen(function* () {
 
     // Turn start would fail on its own after the send reported success; a replay keeps its answer.
     // A live steer and a receipt replay without a target turn need no workspace.
-    if (!missingSteeringTarget && dispatchMode.type !== "steer_active") {
+    if (!missingSteeringTarget && !expireOnTurnEnd && dispatchMode.type !== "steer_active") {
       yield* worktreeRestore
         .restore(target.thread)
         .pipe(
@@ -989,6 +1019,7 @@ const make = Effect.gen(function* () {
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       ...(input.freshContext ? { freshContext: true } : {}),
       ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+      ...(expireOnTurnEnd ? { expireOnTurnEnd: true } : {}),
       dispatchMode,
       ...(mode === "auto" ? { deliveryIntent: "auto" } : {}),
       createdBy: input.createdBy,
@@ -999,6 +1030,12 @@ const make = Effect.gen(function* () {
       turnItemTypes: ["user_message"],
     });
     const message = projection.messages.find((candidate) => candidate.id === input.messageId);
+    if (message === undefined && expireOnTurnEnd) {
+      return yield* new ThreadManagementMessageDroppedError({
+        threadId: input.threadId,
+        run: latestRun(projection) ?? null,
+      });
+    }
     const run =
       message?.runId === null || message?.runId === undefined
         ? undefined
@@ -1083,6 +1120,57 @@ const make = Effect.gen(function* () {
     return { runId: run.id };
   });
 
+  // Taken when the wait starts; the returned effect resolves on the first message after it.
+  // Runs once per wait and is already covered by its caller's span.
+  const watchIncomingMessages = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+    const queuedMessageIds = (records: Pick<OrchestrationV2ThreadProjection, "runs">) =>
+      records.runs.flatMap((run) =>
+        run.status === "queued" && run.queueHeld !== true ? [run.userMessageId] : [],
+      );
+    // A task wake joins a wake already queued: that message only grows its task list.
+    const queued = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+    const queuedIds = queuedMessageIds(queued);
+    const known = new Map(
+      queuedIds.length === 0
+        ? []
+        : (yield* orchestrator.getThreadRecords(threadId, ["messages"], {
+            messageIds: queuedIds,
+          })).messages.map((message) => [
+            message.id,
+            message.delegatedCompletion?.taskIds.length ?? 0,
+          ]),
+    );
+    return Effect.gen(function* () {
+      const arrived = yield* orchestrator
+        .streamStoredEventsFrom({ threadId, afterSequence, eventType: "message.updated" })
+        .pipe(
+          Stream.filterMap(({ event }) => {
+            if (event.type !== "message.updated" || event.payload.role !== "user") {
+              return Result.failVoid;
+            }
+            const before = known.get(event.payload.id);
+            return before === undefined ||
+              (event.payload.delegatedCompletion?.taskIds.length ?? 0) > before
+              ? Result.succeed(event.payload.id)
+              : Result.failVoid;
+          }),
+          Stream.runHead,
+        );
+      if (Option.isNone(arrived)) return yield* Effect.never;
+      // A provider may mark a steer read as soon as it takes it, while its agent still waits on
+      // this call, so the count is what arrived plus the turns queued behind the running one.
+      const current = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+      return new Set([arrived.value, ...queuedMessageIds(current)]).size;
+    });
+  });
+
+  const awaitIncomingMessage: ThreadManagementServiceShape["awaitIncomingMessage"] = Effect.fn(
+    "ThreadManagementService.awaitIncomingMessage",
+  )(function* (threadId) {
+    return yield* yield* watchIncomingMessages(threadId);
+  });
+
   const waitForThread: ThreadManagementServiceShape["waitForThread"] = Effect.fn(
     "ThreadManagementService.waitForThread",
   )(function* (input) {
@@ -1092,6 +1180,11 @@ const make = Effect.gen(function* () {
         threadId: input.threadId,
         cause,
       });
+    // Before any read, so a message to the caller during them still ends the wait.
+    const incomingMessage =
+      input.interruptOnMessageTo === undefined
+        ? undefined
+        : yield* watchIncomingMessages(input.interruptOnMessageTo).pipe(Effect.mapError(loadError));
     // Taken before the first read, so a run update between that read and
     // the subscription below still replays.
     const afterSequence = yield* orchestrator
@@ -1213,10 +1306,30 @@ const make = Effect.gen(function* () {
       ),
       Stream.filter((current) => current.settled),
       Stream.runHead,
+      Effect.map((settled) => ({ settled, waitingMessages: undefined })),
+    );
+    const incoming =
+      incomingMessage === undefined
+        ? Effect.never
+        : incomingMessage.pipe(
+            Effect.mapError(loadError),
+            Effect.map((waitingMessages) => ({
+              settled: Option.none<typeof initial>(),
+              waitingMessages,
+            })),
+          );
+    const ended = yield* Effect.raceFirst(wait, incoming).pipe(
       Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
     );
-    const waited = Option.flatten(yield* wait);
+    const waited = Option.flatMap(ended, ({ settled }) => settled);
     if (Option.isSome(waited)) return settledResult(waited.value);
+    const waitingMessages = Option.getOrUndefined(ended)?.waitingMessages;
+    if (waitingMessages !== undefined) {
+      const current = yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs);
+      return current.settled
+        ? settledResult(current)
+        : { ...settledResult(current), timedOut: false, waitingMessages };
+    }
     // The run may have reached a terminal status while the timeout was
     // winning the race; the final projection read decides what actually
     // happened, so only a still-active run counts as timed out.
@@ -1890,6 +2003,7 @@ const make = Effect.gen(function* () {
     isProviderInstanceEnabledForProject,
     hasReceipt,
     waitForThread,
+    awaitIncomingMessage,
     settleAfterRun,
     settleThread,
     interruptThread,
