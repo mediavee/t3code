@@ -31,6 +31,7 @@ import {
   type OrchestratorMcpScheduleTaskInput,
   type OrchestratorMcpScheduleTaskResult,
   type OrchestratorMcpTarget,
+  type OrchestratorMcpTaskRole,
   type OrchestratorMcpTaskCancelInput,
   type OrchestratorMcpTaskCancelResult,
   type OrchestratorMcpUpdateScheduledTaskInput,
@@ -242,6 +243,29 @@ export class OrchestratorMcpService extends Context.Service<
 >()("t3/mcp/OrchestratorMcpService") {}
 
 export const isThreadManagementError = Schema.is(ThreadManagementService.ThreadManagementError);
+
+/** A role's project row applies only when the caller picked neither a provider nor a model. */
+function targetNamesNoModel(target: OrchestratorMcpTarget | undefined): boolean {
+  return (
+    target?.providerInstanceId === undefined &&
+    target?.driverKind === undefined &&
+    target?.model === undefined
+  );
+}
+
+function roleRoutedTarget(
+  target: OrchestratorMcpTarget | undefined,
+  roleModel: ModelSelection,
+): OrchestratorMcpTarget {
+  return {
+    ...target,
+    providerInstanceId: roleModel.instanceId,
+    model: roleModel.model,
+    ...(target?.options === undefined && roleModel.options !== undefined
+      ? { options: roleModel.options }
+      : {}),
+  };
+}
 
 function failure(code: OrchestratorMcpFailure["code"], message: string): OrchestratorMcpFailure {
   return new OrchestratorMcpFailure({ code, message });
@@ -1636,6 +1660,17 @@ const make = Effect.gen(function* () {
       })
       .pipe(Effect.mapError(threadManagementFailure));
 
+  const projectRoleModel = Effect.fn("OrchestratorMcpService.projectRoleModel")(function* (
+    projectId: ProjectId,
+    role: OrchestratorMcpTaskRole | undefined,
+  ) {
+    if (role === undefined) return undefined;
+    const settings = yield* serverSettings.getSettings.pipe(
+      Effect.mapError(() => failure("orchestration_error", "Unable to read server settings.")),
+    );
+    return resolveProjectSettings(settings, projectId).settings.agentRoleModels[role];
+  });
+
   const resolveTargetRechecking = (
     input: Parameters<typeof resolveTarget>[0] & { readonly cwd: string | undefined },
   ) => {
@@ -2746,6 +2781,23 @@ const make = Effect.gen(function* () {
       );
       const inherited = parent?.thread.modelSelection;
       const searchTerms = input.search?.toLowerCase().split(/\s+/).filter(Boolean) ?? [];
+      const roleModels =
+        parent === undefined
+          ? []
+          : Object.entries(
+              resolveProjectSettings(settings, parent.thread.projectId).settings.agentRoleModels,
+            ).flatMap(([role, selection]) =>
+              selection === undefined
+                ? []
+                : [
+                    {
+                      role: role as OrchestratorMcpTaskRole,
+                      providerInstanceId: selection.instanceId,
+                      model: selection.model,
+                      ...(selection.options === undefined ? {} : { options: selection.options }),
+                    },
+                  ],
+            );
       return {
         parentThreadId: parent?.thread.id ?? null,
         inheritedProviderInstanceId: inherited?.instanceId ?? null,
@@ -2760,6 +2812,7 @@ const make = Effect.gen(function* () {
           ) ?? [],
         runtimeMode: limits.runtimeMode,
         interactionMode: limits.interactionMode,
+        ...(roleModels.length === 0 ? {} : { roleModels }),
         providers: providers.map((provider) => {
           // Snapshots list instances any project enables; delegate_task checks the caller's project.
           const enabledForCaller =
@@ -2874,13 +2927,25 @@ const make = Effect.gen(function* () {
         operation: "delegate-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      const roleModel = targetNamesNoModel(input.target)
+        ? yield* projectRoleModel(parent.thread.projectId, input.role)
+        : undefined;
       const target = yield* resolveTargetRechecking({
         parent,
-        target: input.target,
+        target: roleModel === undefined ? input.target : roleRoutedTarget(input.target, roleModel),
         providers,
         cwd: yield* parentWorkspaceCwd(parent),
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-      });
+      }).pipe(
+        Effect.mapError((error) =>
+          roleModel === undefined || error.code === "orchestration_error"
+            ? error
+            : failure(
+                error.code,
+                `Project settings route role "${input.role}" to ${roleModel.instanceId} model ${roleModel.model}, which cannot run: ${error.message} Fix that row in the project's settings, or pass target.model.`,
+              ),
+        ),
+      );
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,

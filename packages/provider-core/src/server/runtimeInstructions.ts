@@ -12,6 +12,7 @@ export function buildRuntimeInstructions(runtime: {
   readonly reasoningEffort?: string | undefined;
   /** False when the session's system prompt already carries the linking instructions. */
   readonly pullRequestLinking?: boolean;
+  readonly standingInstructions?: string | undefined;
 }): string {
   const harness = toSingleLine(runtime.harness);
   const model = toSingleLine(runtime.model ?? "");
@@ -22,9 +23,21 @@ export function buildRuntimeInstructions(runtime: {
   const modelInfo = model && model !== "auto" && model !== "default" ? `, as ${modelLabel}` : "";
   const effortInfo = effort ? ` with ${effort} reasoning effort` : "";
   const runtimeInfo = `<runtime_info>In case you're asked: you are running in T3 Code through the ${harness} harness${modelInfo}${effortInfo}. No need to mention this otherwise. You can embed images, video, and audio using Markdown image syntax with absolute file paths. Link every other file you cite or produce by its absolute path, as in [http.ts:42](/abs/path/http.ts:42), so the user can open it in T3 Code's files viewer.</runtime_info>`;
-  return runtime.pullRequestLinking === false
-    ? runtimeInfo
-    : `${runtimeInfo}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`;
+  return [
+    runtimeInfo,
+    runtime.pullRequestLinking === false ? undefined : PULL_REQUEST_LINKING_INSTRUCTIONS,
+    standingInstructionsBlock(runtime.standingInstructions),
+  ]
+    .filter((part) => part !== undefined)
+    .join("\n\n");
+}
+
+/** The project's standing instructions as a prompt block, or undefined when none are set. */
+export function standingInstructionsBlock(text: string | undefined): string | undefined {
+  const instructions = text?.trim();
+  return instructions
+    ? `<project_standing_instructions>\nThe user set these standing instructions for this project. Follow them in every turn and pass them on to the agents you start.\n\n${instructions}\n</project_standing_instructions>`
+    : undefined;
 }
 
 function toSingleLine(value: string): string {
