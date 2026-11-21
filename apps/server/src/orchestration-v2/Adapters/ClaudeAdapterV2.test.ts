@@ -91,7 +91,10 @@ import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
-import { standingInstructionsBlock } from "@t3tools/provider-core/server/runtimeInstructions";
+import {
+  AGENT_FEEDBACK_INSTRUCTIONS,
+  standingInstructionsBlock,
+} from "@t3tools/provider-core/server/runtimeInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
 import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
@@ -116,7 +119,6 @@ import {
 } from "../../provider/ClaudeCodeModelRoutes.ts";
 import { resolveProviderCatalog } from "../../provider/ModelManifest.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
-import { AGENT_FEEDBACK_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
@@ -940,11 +942,12 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
   });
 });
 
-describe("ClaudeAdapterV2 device instructions", () => {
+describe("ClaudeAdapterV2 T3 tool instructions", () => {
   const options = (input: {
     readonly mcp: boolean;
     readonly deviceToolsAvailable: boolean;
     readonly standingInstructions?: string;
+    readonly agentFeedback?: "off" | "on-request" | "auto";
   }) =>
     ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: {
@@ -961,6 +964,7 @@ describe("ClaudeAdapterV2 device instructions", () => {
       ...(input.standingInstructions === undefined
         ? {}
         : { standingInstructions: input.standingInstructions }),
+      agentFeedback: input.agentFeedback ?? "off",
       environment: {},
     });
   const append = (input: Parameters<typeof options>[0]) =>
@@ -975,6 +979,17 @@ describe("ClaudeAdapterV2 device instructions", () => {
   it("leaves the device block out without device access or without T3 tools", () => {
     assert.notInclude(append({ mcp: true, deviceToolsAvailable: false }), "## T3 Code devices");
     assert.notInclude(append({ mcp: false, deviceToolsAvailable: true }), "## T3 Code devices");
+  });
+
+  it("gives the agent feedback line only to a session with T3 tools", () => {
+    const feedback = (mcp: boolean, agentFeedback: "off" | "auto") =>
+      append({ mcp, deviceToolsAvailable: false, agentFeedback }).includes("t3_feedback");
+    assert.include(
+      append({ mcp: true, deviceToolsAvailable: false, agentFeedback: "auto" }),
+      AGENT_FEEDBACK_INSTRUCTIONS.auto,
+    );
+    assert.isFalse(feedback(true, "off"));
+    assert.isFalse(feedback(false, "auto"));
   });
 
   // Subagents start from their task prompt, not the parent's system prompt.
@@ -1465,10 +1480,8 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
       assert.isFunction(canUseTool);
 
       const requestEvent = yield* runtime.events.pipe(
-        Stream.takeUntil(
-          (event) =>
-            event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
-        ),
+        // The adapter emits the approval card before the request it belongs to.
+        Stream.takeUntil((event) => event.type === "runtime_request.updated"),
         Stream.runCollect,
         Effect.forkScoped,
       );
