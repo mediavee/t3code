@@ -128,6 +128,11 @@ import Migration0114 from "./Migrations/114_WorkflowRunIndexes.ts";
 import Migration0115 from "./Migrations/115_WorkflowRunTags.ts";
 import Migration0116 from "./Migrations/116_ForkHistoryMembership.ts";
 import Migration0117 from "./Migrations/117_WorkflowMailSender.ts";
+import {
+  applyForkIndexes,
+  forgetForkLedgerRows,
+  forkIndexesPending,
+} from "./Migrations/ForkIndexes.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -308,7 +313,8 @@ const assertV2MigrationsCanRun = Effect.fn("assertV2MigrationsCanRun")(function*
 
 const latestMigrationId = Math.max(...migrationEntries.map(([id]) => id));
 
-// Mirrors the Migrator, which runs only ids above the highest recorded, plus the V2-preview reconciliation.
+// Mirrors the Migrator, which runs only ids above the highest recorded, plus the V2-preview
+// reconciliation and the fork's unnumbered indexes.
 export const hasPendingMigrations = Effect.fn("hasPendingMigrations")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const tables = yield* sql`
@@ -322,7 +328,11 @@ export const hasPendingMigrations = Effect.fn("hasPendingMigrations")(function* 
     FROM effect_sql_migrations
   `;
   const row = rows[0];
-  return (row?.latestId ?? 0) < latestMigrationId || (row?.previewRows ?? 0) > 0;
+  return (
+    (row?.latestId ?? 0) < latestMigrationId ||
+    (row?.previewRows ?? 0) > 0 ||
+    (yield* forkIndexesPending())
+  );
 });
 
 const run = Migrator.make({});
@@ -342,6 +352,8 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   // The reconcile takes the write lock; CLI startup must not contend with the server for a no-op.
   const previewMigrations = includesV2 && hasPending ? yield* reconcileV2PreviewMigration() : [];
+  // Before the history check and the highest-id read, which must not count the fork's old rows.
+  const forgottenForkRows = includesV2 && hasPending ? yield* forgetForkLedgerRows() : [];
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
   }
@@ -383,7 +395,15 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
   }).pipe(
     Effect.ensuring(Option.isSome(progress) ? Ref.set(progress.value.current, null) : Effect.void),
   );
-  const migrations = executedMigrations.map(([id, name]) => `${id}_${name}`);
+  const forkIndexChanges =
+    hasPending && (toMigrationInclusive === undefined || toMigrationInclusive >= latestMigrationId)
+      ? yield* applyForkIndexes()
+      : [];
+  const migrations = [
+    ...executedMigrations.map(([id, name]) => `${id}_${name}`),
+    ...forgottenForkRows,
+    ...forkIndexChanges,
+  ];
   yield* migrations.length === 0
     ? Effect.logDebug("Database schema is current")
     : Effect.log(DATABASE_MIGRATIONS_FINISHED_MESSAGE).pipe(Effect.annotateLogs({ migrations }));
