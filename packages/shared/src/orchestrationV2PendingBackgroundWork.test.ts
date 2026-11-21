@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ProviderInstanceId, ProviderThreadId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import {
+  DELEGATED_CHILD_COMMAND_HOLD_MS,
   backgroundWorkHoldsCompletion,
+  delegatedChildBackgroundWorkHold,
   derivePendingBackgroundWork,
   monitorHoldsWakeCompletion,
 } from "./orchestrationV2PendingBackgroundWork.ts";
@@ -15,6 +18,36 @@ describe("backgroundWorkHoldsCompletion", () => {
   ] as const)("with %s pending, holds completion: %s", (_case, holds, tasks) => {
     expect(backgroundWorkHoldsCompletion(tasks)).toBe(holds);
   });
+});
+
+describe("delegatedChildBackgroundWorkHold", () => {
+  const turnEndedAt = DateTime.makeUnsafe("2026-11-21T10:00:00.000Z");
+  const boundAt = DateTime.add(turnEndedAt, { milliseconds: DELEGATED_CHILD_COMMAND_HOLD_MS });
+  // The last column is a top-level thread's hold, which only counts what the agent awaits.
+  it.each([
+    [
+      "a dev server, within the bound",
+      true,
+      [{ taskId: "dev", kind: "command" }],
+      turnEndedAt,
+      false,
+    ],
+    ["a dev server, at the bound", false, [{ taskId: "dev", kind: "command" }], boundAt, false],
+    ["a watchdog monitor", false, [{ taskId: "watch", kind: "monitor" }], turnEndedAt, false],
+    [
+      "an awaited command, past the bound",
+      true,
+      [{ taskId: "tests", kind: "command", awaited: true }],
+      boundAt,
+      true,
+    ],
+  ] as const)(
+    "with %s pending, holds a delegated child: %s",
+    (_case, holds, tasks, now, topLevelHolds) => {
+      expect(delegatedChildBackgroundWorkHold({ tasks, turnEndedAt, now }).holds).toBe(holds);
+      expect(backgroundWorkHoldsCompletion(tasks)).toBe(topLevelHolds);
+    },
+  );
 });
 
 describe("derivePendingBackgroundWork", () => {

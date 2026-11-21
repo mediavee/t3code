@@ -69,7 +69,7 @@ const handlers = {
       return yield* threads
         .awaitBackgroundTasks({
           threadId: caller.thread.threadId,
-          taskIds: input.taskIds,
+          ...(input.taskIds === undefined ? {} : { taskIds: input.taskIds }),
           awaited: input.waiting ?? true,
         })
         .pipe(

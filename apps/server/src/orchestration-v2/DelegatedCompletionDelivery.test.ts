@@ -59,6 +59,7 @@ import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.tes
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { DELEGATED_CHILD_COMMAND_HOLD_MS } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { PROVIDER_STOP_REASON_SIGNAL } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 
@@ -3463,6 +3464,160 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
         }),
     );
 
+    it.effect("holds each follow-up to its own bound on the commands its runs left running", () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const eventSink = yield* EventSink.EventSinkV2;
+        const start = yield* DateTime.now;
+        const parentThreadId = ThreadId.make("thread:followup-bounds-parent");
+        const projectId = ProjectId.make("project:followup-bounds");
+        const parentRunId = RunId.make("run:followup-bounds-parent");
+        const rootNodeId = NodeId.make("node:followup-bounds-parent");
+        yield* seedParentWithTerminalTask({
+          threadId: parentThreadId,
+          projectId,
+          runId: parentRunId,
+          rootNodeId,
+          taskId: NodeId.make("node:followup-bounds-seed"),
+          deliveryState: "acknowledged",
+          now: start,
+        });
+        const child = yield* seedRestartCancelledChild({
+          parentThreadId,
+          projectId,
+          parentRunId,
+          rootNodeId,
+          name: "followup-bounds-child",
+          completionWake: "always",
+          continuationPending: false,
+          runStatus: "completed",
+          now: start,
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        const parent = yield* orchestrator.getThreadProjection(parentThreadId);
+        const childProviderThread = {
+          ...parent.providerThreads[0]!,
+          id: ProviderThreadId.make("provider-thread:followup-bounds-child"),
+          appThreadId: child.childThreadId,
+        };
+        const send = Effect.fnUntraced(function* (name: string) {
+          const messageId = MessageId.make(`message:followup-bounds-${name}`);
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            createdBy: "agent",
+            creationSource: "mcp",
+            commandId: CommandId.make(`command:followup-bounds-${name}`),
+            threadId: child.childThreadId,
+            senderThreadId: parentThreadId,
+            messageId,
+            text: `Follow-up ${name}`,
+            attachments: [],
+            dispatchMode: { type: "queue_after_active" },
+          });
+          return (yield* orchestrator.getThreadProjection(child.childThreadId)).runs.find(
+            (run) => run.userMessageId === messageId,
+          )!;
+        });
+        const reply = (run: OrchestrationV2Run, text: string, at: DateTime.Utc) => ({
+          id: EventId.make(`event:followup-bounds-reply-${run.id}`),
+          type: "message.updated" as const,
+          threadId: child.childThreadId,
+          runId: run.id,
+          occurredAt: at,
+          payload: {
+            id: MessageId.make(`message:followup-bounds-reply-${run.id}`),
+            threadId: child.childThreadId,
+            runId: run.id,
+            nodeId: null,
+            role: "assistant" as const,
+            text,
+            attachments: [],
+            streaming: false,
+            createdBy: "agent" as const,
+            creationSource: "server" as const,
+            createdAt: at,
+            updatedAt: at,
+          },
+        });
+        const ended = (run: OrchestrationV2Run, at: DateTime.Utc) => ({
+          id: EventId.make(`event:followup-bounds-ended-${run.id}`),
+          type: "run.updated" as const,
+          threadId: child.childThreadId,
+          runId: run.id,
+          occurredAt: at,
+          payload: { ...run, status: "completed" as const, startedAt: at, completedAt: at },
+        });
+        const taskOf = (taskId: NodeId | undefined) =>
+          orchestrator
+            .getThreadProjection(parentThreadId)
+            .pipe(Effect.map(({ subagents }) => subagents.find((task) => task.id === taskId)));
+
+        // Follow-up A ends leaving a command running while follow-up B waits behind it.
+        const runA = yield* send("a");
+        const runB = yield* send("b");
+        assert.isDefined(runA.delegatedTaskId);
+        assert.isDefined(runB.delegatedTaskId);
+        yield* eventSink.write({
+          commandId: reconcileCommandId("followup-bounds-a-ended"),
+          events: [
+            {
+              id: EventId.make("event:followup-bounds-a-command"),
+              type: "provider-thread.updated",
+              threadId: child.childThreadId,
+              runId: runA.id,
+              driver,
+              providerInstanceId: modelSelection.instanceId,
+              occurredAt: start,
+              payload: {
+                ...childProviderThread,
+                pendingBackgroundTasks: [
+                  { taskId: "cmd-a", kind: "command" as const, description: "pnpm gate" },
+                ],
+              },
+            },
+            reply(runA, "A-REPLY", start),
+            ended(runA, start),
+          ],
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        assert.isNull((yield* taskOf(runA.delegatedTaskId))?.result ?? null);
+
+        // B ends later without commands: its result names none of A's, and its later turn
+        // does not move A's bound.
+        yield* TestClock.adjust("10 minutes");
+        const tenMinutes = yield* DateTime.now;
+        yield* eventSink.write({
+          commandId: reconcileCommandId("followup-bounds-b-ended"),
+          events: [reply(runB, "B-REPLY", tenMinutes), ended(runB, tenMinutes)],
+        });
+        yield* orchestrator.recoverDelegatedTasks;
+        assert.equal((yield* taskOf(runB.delegatedTaskId))?.result, "B-REPLY");
+        assert.isNull((yield* taskOf(runA.delegatedTaskId))?.result ?? null);
+
+        const aSettled = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "subagent.updated" &&
+              event.payload.id === runA.delegatedTaskId &&
+              event.payload.result !== null,
+          ),
+          Stream.runHead,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* TestClock.adjust(DELEGATED_CHILD_COMMAND_HOLD_MS - 10 * 60_000);
+        yield* Fiber.join(aSettled);
+        assert.equal(
+          (yield* taskOf(runA.delegatedTaskId))?.result,
+          [
+            "A-REPLY",
+            "",
+            "Background commands still running, not awaited, when this result was sent:",
+            "- cmd-a: pnpm gate",
+          ].join("\n"),
+        );
+      }),
+    );
+
     it.effect("settles a follow-up whose own run started no background work", () =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -4617,16 +4772,22 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
 
 it.layer(layerTest)("delegated tasks across a server restart", (it) => {
   it.effect.each([
-    { name: "releases", key: "", pendingBackgroundTasks: [], released: true },
+    { name: "releases", key: "", held: undefined, released: true },
     {
-      name: "keeps while an unawaited background command runs",
+      name: "past the hold on an unawaited background command, keeps",
       key: "-background",
-      pendingBackgroundTasks: [{ taskId: "dev-server", kind: "command" as const }],
+      held: "until-bound",
       released: false,
     },
-  ])(
+    {
+      name: "once its unawaited background command ends, releases",
+      key: "-command-ends",
+      held: "until-command-ends",
+      released: true,
+    },
+  ] as const)(
     "queues a child result without creating a provider history handoff and $name its process",
-    ({ key, pendingBackgroundTasks, released }) =>
+    ({ key, held, released }) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const eventSink = yield* EventSink.EventSinkV2;
@@ -4660,6 +4821,11 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         const providerThreadId = ProviderThreadId.make(
           `provider-thread:result-message${key}-child`,
         );
+        const childProviderThread = {
+          ...parent.providerThreads[0]!,
+          id: providerThreadId,
+          appThreadId: child.childThreadId,
+        };
         yield* eventSink.write({
           commandId: CommandId.make(`command:result-message${key}-child-provider`),
           events: [
@@ -4693,10 +4859,9 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
               threadId: child.childThreadId,
               occurredAt: now,
               payload: {
-                ...parent.providerThreads[0]!,
-                id: providerThreadId,
-                appThreadId: child.childThreadId,
-                pendingBackgroundTasks,
+                ...childProviderThread,
+                pendingBackgroundTasks:
+                  held === undefined ? [] : [{ taskId: "dev-server", kind: "command" }],
               },
             },
             {
@@ -4711,10 +4876,47 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         });
 
         yield* orchestrator.recoverDelegatedTasks;
+        if (held !== undefined) {
+          // A delegated child's lead reads its result as final, so a command it left running
+          // holds it until the command ends or the bound passes; past the bound it is named.
+          const heldTask = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+            (candidate) => candidate.id === child.taskId,
+          );
+          assert.isNull(heldTask?.result);
+          // A released child's process detaches after its result is recorded.
+          const ended = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter((event) =>
+              released
+                ? event.type === "provider-session.detached" &&
+                  event.threadId === child.childThreadId
+                : event.type === "subagent.updated" &&
+                  event.payload.id === child.taskId &&
+                  event.payload.result !== null,
+            ),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          if (held === "until-bound") yield* TestClock.adjust(DELEGATED_CHILD_COMMAND_HOLD_MS);
+          else
+            yield* eventSink.write({
+              commandId: CommandId.make(`command:result-message${key}-command-ended`),
+              events: [
+                {
+                  id: EventId.make(`event:result-message${key}-command-ended`),
+                  type: "provider-thread.updated",
+                  threadId: child.childThreadId,
+                  occurredAt: now,
+                  payload: { ...childProviderThread, pendingBackgroundTasks: [] },
+                },
+              ],
+            });
+          yield* Fiber.join(ended);
+        }
         const recovered = yield* orchestrator.getThreadProjection(threadId);
         const task = recovered.subagents.find((candidate) => candidate.id === child.taskId)!;
         assert.equal(task.status, "completed");
         assert.isNotNull(task.result);
+        assert.equal(task.result?.includes("- dev-server"), held === "until-bound");
         assert.isEmpty(recovered.contextHandoffs);
         assert.equal(recovered.contextTransfers.length, 1);
         // A one-process-per-thread child releases its process once its result is recorded,
