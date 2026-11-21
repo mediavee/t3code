@@ -5,11 +5,13 @@ import {
   DEFAULT_UNIFIED_SETTINGS,
   EnvironmentId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ScheduledTaskId,
   ThreadId,
   type ScheduledTask,
 } from "@t3tools/contracts";
+import { createModelCapabilities } from "@t3tools/shared/model";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
 
@@ -51,15 +53,73 @@ const threadFamilyRead = {
       id: task.threadId,
       title: "Fix login bug",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" },
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
     },
   ],
+};
+
+const effort = {
+  id: "reasoningEffort",
+  label: "Reasoning",
+  type: "select",
+  options: [
+    { id: "low", label: "Low" },
+    { id: "high", label: "High", isDefault: true },
+  ],
+} as const;
+const codex = ProviderInstanceId.make("codex");
+const providers = [
+  {
+    instanceId: codex,
+    driver: ProviderDriverKind.make("codex"),
+    displayName: "Codex",
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready" as const,
+    auth: { status: "authenticated" as const },
+    checkedAt: "2026-01-01T00:00:00.000Z",
+    models: [
+      {
+        slug: "model-a",
+        name: "Model A",
+        isCustom: false,
+        capabilities: createModelCapabilities({
+          optionDescriptors: [effort, { id: "fastMode", label: "Fast", type: "boolean" }],
+        }),
+      },
+      {
+        slug: "model-b",
+        name: "Model B",
+        isCustom: false,
+        capabilities: createModelCapabilities({ optionDescriptors: [effort] }),
+      },
+    ],
+    slashCommands: [],
+    skills: [],
+  },
+];
+const unboundTask: ScheduledTask = {
+  ...task,
+  threadId: null,
+  modelSelection: {
+    instanceId: codex,
+    model: "model-a",
+    options: [
+      { id: "reasoningEffort", value: "low" },
+      { id: "fastMode", value: true },
+    ],
+  },
 };
 
 const state = vi.hoisted(() => ({
   connected: true,
   tasksLoaded: true,
   secondary: false,
+  unbound: false,
   remove: vi.fn(),
+  upsert: vi.fn(),
 }));
 const secondaryId = EnvironmentId.make("secondary");
 const permissions = new Map<string, Atom.Writable<boolean>>();
@@ -69,6 +129,8 @@ function setup() {
   state.tasksLoaded = true;
   state.remove.mockReset().mockReturnValue(Effect.succeed({ id: task.id }));
   state.secondary = false;
+  state.unbound = false;
+  state.upsert.mockReset().mockImplementation(() => Effect.succeed({ task: unboundTask }));
   permissions.clear();
   permissions.set(environmentId, Atom.make(true));
   permissions.set(secondaryId, Atom.make(true));
@@ -129,8 +191,10 @@ vi.mock(import("../../state/server"), async (original) => {
       },
       upsertScheduledTask: {
         ...actual.serverEnvironment.upsertScheduledTask,
+        run: state.upsert,
         permissionAtom: (id: string | null) => permissions.get(id ?? "")!,
       },
+      providersValueAtom: (() => Atom.make(state.unbound ? providers : null)) as never,
     },
   };
 });
@@ -148,7 +212,7 @@ vi.mock(import("../../state/query"), async (original) => ({
     data:
       request === null || request === threadFamilyRead
         ? request
-        : { tasks: state.tasksLoaded ? [task] : [] },
+        : { tasks: state.tasksLoaded ? [state.unbound ? unboundTask : task] : [] },
     error: null,
     isPending: false,
     refresh: vi.fn(),
@@ -262,6 +326,41 @@ describe("ScheduledTasksSettings", () => {
     await expect
       .element(page.getByRole("dialog").getByRole("button", { name: "gpt-5.5", exact: true }))
       .toBeDisabled();
+    // Its modes are the thread's too.
+    await expect
+      .element(page.getByRole("dialog").getByLabelText("Permissions"))
+      .toHaveTextContent("Supervised");
+    await expect
+      .element(page.getByRole("dialog").getByRole("switch", { name: "Plan mode" }))
+      .toBeChecked();
+  });
+
+  it("edits a new-thread task's options and modes, and keeps supported options on a model change", async () => {
+    setup();
+    state.unbound = true;
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    await expect.element(dialog.getByRole("button", { name: /Low/ })).toBeVisible();
+    await expect.element(dialog.getByLabelText("Permissions")).toHaveTextContent("Full access");
+    await userEvent.click(dialog.getByRole("switch", { name: "Plan mode" }));
+
+    await userEvent.click(dialog.getByRole("button", { name: "Model A", exact: true }));
+    await userEvent.click(page.getByRole("option", { name: /Model B/ }));
+    await expect.element(dialog.getByRole("button", { name: /Low/ })).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Save task" }));
+
+    await vi.waitFor(() => expect(state.upsert).toHaveBeenCalledOnce());
+    expect(state.upsert.mock.calls[0]?.[1]).toMatchObject({
+      input: {
+        modelSelection: {
+          instanceId: codex,
+          model: "model-b",
+          options: [{ id: "reasoningEffort", value: "low" }],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+      },
+    });
   });
 
   it("keeps an editor the user opened when the linked task loads later", async () => {
