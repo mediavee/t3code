@@ -342,6 +342,11 @@ export function planScopedSettingsPatch(
                   delete next[key];
                   continue;
                 }
+                // A role left out of the table is turned off, so the table is never merged.
+                if (key === "agentRoleModels") {
+                  next[key] = value;
+                  continue;
+                }
                 const base: unknown = effective[key as keyof ServerSettings];
                 // A new model must not inherit the previous model's options.
                 if (
