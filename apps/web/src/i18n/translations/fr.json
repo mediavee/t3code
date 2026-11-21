@@ -12801,5 +12801,21 @@
   "ae62ee82e0c146bb": "réessayer échec erreur 502 503 passerelle connexion reprise continuer",
   "0d1c02eb9bb693c4": "Impossible de reprendre les sessions en échec",
   "72516ad01a8e3386": "{count, plural, one {{count} session a échoué dans la dernière heure} other {{count} sessions ont échoué dans la dernière heure}}",
-  "253a12fc99873da8": "Tout reprendre"
+  "253a12fc99873da8": "Tout reprendre",
+  "8da6072f5854cc90": "Implémentation",
+  "4cd3a0ae6907eec5": "Revue",
+  "1738f499d0c9cf60": "Recherche",
+  "7810d54298dc35ed": "Conception",
+  "186b1da30c46df95": "Modèle de rôle non enregistré",
+  "9b956a2e78983634": "Donné à chaque agent de cette portée, sur chaque fournisseur, y compris aux agents qu’ils démarrent.",
+  "2ad0fcb6553dd859": "Réinitialiser les instructions permanentes",
+  "9c66fa8659d60792": "Instructions permanentes",
+  "9227dca0f915c2c8": "Fusionner et déployer quand les vérifications passent. Demander avant de redémarrer les services partagés.",
+  "731c9be7011a1a27": "Modèle {role}",
+  "f0cbaf4d64034115": "Les tâches déléguées avec ce rôle s’exécutent ici, sauf si l’agent nomme un fournisseur ou un modèle. Désactivé : le modèle du parent s’applique.",
+  "053cd07366c3b6d3": "Les cibles sélectionnées utilisent des modèles de rôle différents. Sélectionnez-en une pour modifier.",
+  "185aca00f0cc4446": "Utiliser un modèle pour le rôle {role}",
+  "afefb672d4c5c274": "politique agent règles permissions autonomie prompt chaque fil sous-agents",
+  "8a3aabfbbfb30487": "Modèles par rôle",
+  "69bad5ed2f17955e": "déléguer tâche routage revue recherche conception test implémentation modèle"
 }

@@ -576,6 +576,25 @@ describe("serverSettings helpers", () => {
     });
   });
 
+  it("replaces the role model table so a turned-off role and old options are gone", () => {
+    const codex = ProviderInstanceId.make("codex");
+    const claude = ProviderInstanceId.make("claudeAgent");
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      agentRoleModels: {
+        review: { instanceId: codex, model: "gpt-5.6", options: [{ id: "effort", value: "high" }] },
+        test: { instanceId: codex, model: "gpt-5.6" },
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        agentRoleModels: { review: { instanceId: claude, model: "claude-opus-5-5" } },
+      }).agentRoleModels,
+    ).toEqual({ review: { instanceId: claude, model: "claude-opus-5-5" } });
+    expect(applyServerSettingsPatch(current, { agentRoleModels: {} }).agentRoleModels).toEqual({});
+  });
+
   it("keeps a project's providerInstances override when a patch entry omits the key", () => {
     const instanceId = ProviderInstanceId.make("codex_work");
     const projectId = ProjectId.make("project-a");

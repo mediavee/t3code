@@ -759,6 +759,19 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   inheritedOptions: Schema.optional(Schema.Array(ProviderOptionSelection)),
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
+  roleModels: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        role: OrchestratorMcpTaskRole,
+        providerInstanceId: ProviderInstanceId,
+        model: Schema.String,
+        options: Schema.optional(Schema.Array(ProviderOptionSelection)),
+      }),
+    ).annotate({
+      description:
+        "The project's model per delegate_task role. A role with no target provider or model runs on its row.",
+    }),
+  ),
   providers: Schema.Array(OrchestratorMcpProviderCapability),
   features: Schema.Struct({
     appOwnedSubagents: Schema.Boolean,
