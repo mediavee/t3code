@@ -1,4 +1,4 @@
-import { DEFAULT_SERVER_SETTINGS, type ServerSettingsPatch } from "@t3tools/contracts";
+import { DEFAULT_SERVER_SETTINGS, ProjectId, type ServerSettingsPatch } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import type { ReactNode } from "react";
 import { act } from "react";
@@ -277,6 +277,69 @@ describe("SettingsServerControlsRouteScreen", () => {
       environmentId: "local",
       input: { patch: { autoRetryTransientFailures: false } },
     });
+  });
+
+  it("saves standing instructions for the environment", () => {
+    act(() => root.render(<SettingsThreadsRouteScreen />));
+    act(() => mocks.standingInstructions.onChange({ standingInstructions: "Ask first." }));
+    expect(mocks.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "local",
+      input: { patch: { standingInstructions: "Ask first." } },
+    });
+  });
+
+  it("overrides standing instructions for a project and resets them", async () => {
+    mocks.projectSelected = true;
+    const pending = Promise.withResolvers<AsyncResult.Success<void>>();
+    mocks.updateSettings.mockReturnValueOnce(pending.promise);
+    act(() => root.render(<SettingsThreadsRouteScreen />));
+    act(() => mocks.standingInstructions.onChange({ standingInstructions: "Project rules." }));
+    expect(mocks.updateSettings).toHaveBeenCalledExactlyOnceWith({
+      environmentId: "local",
+      input: {
+        patch: {
+          projectSettingsOverrides: { project: { standingInstructions: "Project rules." } },
+        },
+      },
+    });
+    await act(async () => pending.resolve(AsyncResult.success(undefined)));
+
+    const local = environment("local", "Local");
+    local.serverConfig.settings.projectSettingsOverrides = {
+      [ProjectId.make("project")]: { standingInstructions: "Project rules." },
+    };
+    mocks.targets = [local];
+    // The compiled screen memoizes its page, so new targets need a fresh mount.
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => root.render(<SettingsThreadsRouteScreen />));
+    expect(mocks.standingInstructions.value).toBe("Project rules.");
+    const useDefaults = [...container.querySelectorAll("button")].find(
+      (button) => button.textContent === "Use defaults",
+    )!;
+    act(() => useDefaults.click());
+    expect(mocks.updateSettings).toHaveBeenLastCalledWith({
+      environmentId: "local",
+      input: { patch: { projectSettingsOverrides: { project: null } } },
+    });
+  });
+
+  it("keeps environment-wide agent settings read-only while a project is selected", () => {
+    mocks.projectSelected = true;
+    act(() => root.render(<SettingsThreadsRouteScreen />));
+    const resume = [...container.querySelectorAll<HTMLButtonElement>('[role="switch"]')].find(
+      (button) => button.textContent === "Resume after provider errors",
+    )!;
+    expect(resume.disabled).toBe(true);
+    expect(mocks.standingInstructions.disabled).toBe(false);
+
+    act(() => root.render(<SettingsEnvironmentMaintenanceRouteScreen />));
+    const ceilings = [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+    expect(ceilings.length).toBeGreaterThan(0);
+    expect(ceilings.every((button) => button.disabled)).toBe(true);
+    expect(container.textContent).toContain(
+      "Environment-wide setting. Select All projects to change it.",
+    );
   });
 
   it("keeps the agent settings read-only without settings access", () => {
