@@ -4020,8 +4020,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       activeProviderThreadId: null,
       pullRequests: [],
       ...(command.linkOrigin === undefined ? {} : { linkOrigin: command.linkOrigin }),
-      // Only stamped work names a remote parent, so a client cannot claim one.
-      ...(command.linkOrigin === undefined || command.delegatedFrom === undefined
+      // Only work the server stamps names a delegating parent, so a client or agent cannot claim one.
+      ...((command.linkOrigin === undefined && command.localDelegation !== true) ||
+      command.delegatedFrom === undefined
         ? {}
         : { delegatedFrom: command.delegatedFrom }),
       lineage: {

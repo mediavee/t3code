@@ -1,6 +1,7 @@
 import {
   CommandId,
   type EnvironmentId,
+  type ModelSelection,
   NodeId,
   OrchestratorMcpCapabilitiesInput,
   OrchestratorMcpCapabilitiesResult,
@@ -11,6 +12,7 @@ import {
   type OrchestratorMcpThreadSendInput,
   type OrchestratorMcpThreadSendResult,
   type OrchestratorMcpThreadTimelineItem,
+  type OrchestratorMcpThreadWaitResult,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadShell,
@@ -32,7 +34,10 @@ import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Tool from "effect/ai/Tool";
-import { withExecutedModelNote } from "@t3tools/provider-core/server/subagentProjection";
+import {
+  subagentResultForRun,
+  withExecutedModelNote,
+} from "@t3tools/provider-core/server/subagentProjection";
 
 import type * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { ProjectToolkit } from "../mcp/toolkits/project/tools.ts";
@@ -43,6 +48,7 @@ import {
 } from "../mcp/delegatedTaskModes.ts";
 import { followUpOwnerRun } from "../orchestration-v2/CommandPolicy.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -72,6 +78,9 @@ export const FollowRetrySchedule = Context.Reference<Schedule.Schedule<unknown>>
 
 type ThreadScope = McpInvocationContext.McpThreadInvocationScope;
 
+/** How a task whose thread runs in this environment names where it runs. */
+const LOCAL_LABEL = "this environment";
+
 /** `orchestrator_capabilities` there. Its toolkit imports this module, so it is described here. */
 const RemoteCapabilitiesTool = Tool.make("orchestrator_capabilities", {
   parameters: OrchestratorMcpCapabilitiesInput,
@@ -95,6 +104,29 @@ export class RemoteDelegation extends Context.Service<
         readonly target: NonNullable<OrchestratorMcpDelegateTaskInput["target"]> & {
           readonly environmentId: EnvironmentId;
         };
+      },
+    ) => Effect.Effect<{ readonly taskId: NodeId }, OrchestratorMcpFailure>;
+    /**
+     * Records a thread already launched here, in another project, as a task of the calling
+     * thread's active run, and follows it as a task there would be: its end wakes the parent,
+     * and the parent's stop, cancel and end reach it without a link.
+     */
+    readonly adoptLocal: (
+      scope: ThreadScope,
+      input: {
+        readonly parentRunId: RunId;
+        readonly parentNodeId: NodeId;
+        readonly key: string;
+        readonly task: string;
+        readonly title?: string | undefined;
+        readonly driver: ProviderDriverKind;
+        readonly modelSelection: ModelSelection;
+        readonly child: {
+          readonly threadId: ThreadId;
+          readonly title: string;
+          readonly runId: RunId | null;
+        };
+        readonly completionWake: "always" | "settled_only";
       },
     ) => Effect.Effect<{ readonly taskId: NodeId }, OrchestratorMcpFailure>;
     /**
@@ -178,6 +210,87 @@ const make = Effect.gen(function* () {
     threads
       .getThreadRecords(parentThreadId, ["subagents"], { subagentIds: [taskId] })
       .pipe(Effect.map(({ thread, subagents }) => ({ thread, task: subagents[0] })));
+
+  const isHere = (remote: Pick<OrchestrationV2RemoteTaskChild, "environmentId">) =>
+    remote.environmentId === hereId;
+
+  /** A thread gone here can never be followed again; anything else is worth retrying. */
+  const localFailure = (error: { readonly _tag: string; readonly message: string }) =>
+    new OrchestratorMcpFailure({
+      code:
+        error._tag === "ThreadManagementThreadNotFoundError"
+          ? "thread_not_found"
+          : error._tag === "ThreadManagementRunNotFoundError"
+            ? "run_not_found"
+            : "orchestration_error",
+      message: error.message,
+    });
+
+  /** `t3_thread_wait` on a task's thread here, in the shape a wait there returns. */
+  const waitHere = Effect.fn("RemoteDelegation.waitHere")(function* (
+    remote: OrchestrationV2RemoteTaskChild,
+  ) {
+    const shell = yield* threads
+      .getThreadShell(remote.threadId)
+      .pipe(Effect.mapError(localFailure));
+    if (shell === null || shell.deletedAt !== null) {
+      return yield* new OrchestratorMcpFailure({
+        code: "thread_not_found",
+        message: `The task's thread ${remote.threadId} was deleted.`,
+      });
+    }
+    const waited = yield* threads
+      .waitForThread({
+        projectId: shell.projectId,
+        threadId: remote.threadId,
+        ...(remote.runId === undefined ? {} : { runId: remote.runId }),
+        timeoutMs: FOLLOW_WAIT_MS,
+        untilDelegatedWorkSettled: true,
+      })
+      .pipe(Effect.mapError(localFailure));
+    const result: OrchestratorMcpThreadWaitResult = {
+      threadId: remote.threadId,
+      timedOut: waited.timedOut,
+      runId: waited.run?.id ?? null,
+      status: waited.run === null ? "idle" : runOutcome(waited.run),
+      ...(waited.resultRun === undefined
+        ? {}
+        : { resultRun: { runId: waited.resultRun.id, status: runOutcome(waited.resultRun) } }),
+    };
+    return result;
+  });
+
+  /** The result `runId` gave on a task's thread here, as a local task's result is read. */
+  const lastReplyHere = Effect.fn("RemoteDelegation.lastReplyHere")(function* (
+    remote: OrchestrationV2RemoteTaskChild,
+    runId: RunId | null,
+  ) {
+    const projection = yield* threads
+      .getThreadRecords(remote.threadId, ["messages", "turnItems", "providerTurns", "runs"])
+      .pipe(Effect.mapError(localFailure));
+    const run =
+      runId === null
+        ? projection.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0]
+        : projection.runs.find((candidate) => candidate.id === runId);
+    if (run === undefined) return { text: undefined, executedModel: undefined };
+    const { text } = subagentResultForRun(projection, run);
+    return { text: text.trim().length === 0 ? undefined : text, executedModel: undefined };
+  });
+
+  /** What the peer route does for a parent there, done here for a parent in this environment. */
+  const tellParentDoneHere = (threadId: ThreadId, parentThreadId: ThreadId) =>
+    threads
+      .dispatch({
+        type: "thread.delegated-from.parent-done",
+        commandId: CommandId.make(`command:local-parent-done:${parentThreadId}:${threadId}`),
+        threadId,
+        parent: { environmentId: hereId, threadId: parentThreadId },
+      })
+      .pipe(
+        Effect.as("told" as const),
+        // A thread deleted here, or no longer this parent's task, is owed nothing.
+        Effect.catchTags({ OrchestratorDispatchError: () => Effect.succeed("told" as const) }),
+      );
 
   /** The peer's project with this thread's repository, or the one the caller named. */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
@@ -371,9 +484,6 @@ const make = Effect.gen(function* () {
         Effect.map(Option.getOrUndefined),
         Effect.orElseSucceed(() => undefined),
       );
-      const commandId = CommandId.make(
-        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
-      );
       const remoteChild: OrchestrationV2RemoteTaskChild = {
         environmentId: target.environmentId,
         threadId: launched.threadId,
@@ -381,69 +491,121 @@ const make = Effect.gen(function* () {
         title,
         ...(launched.runId === null ? {} : { runId: launched.runId }),
       };
-      const recorded = yield* threads
-        .dispatch({
-          type: "delegated_task.remote.request",
-          commandId,
-          parentThreadId: scope.thread.threadId,
-          parentRunId: parentRun.id,
-          parentNodeId,
-          task,
-          ...(input.title === undefined ? {} : { title: input.title }),
-          // The driver runs there; this side only labels the task with it.
-          driver: ProviderDriverKind.make("remote"),
-          modelSelection: launched.modelSelection,
-          remoteChild,
-          completionWake: input.mode === "wait" ? "settled_only" : "always",
-        })
-        .pipe(
-          // The cause goes to the log; the caller learns only that recording failed.
-          Effect.tapError((cause) =>
-            Effect.logWarning("remote-delegation.record-failed", {
-              parentThreadId: scope.thread.threadId,
-              cause,
-            }),
-          ),
-          Effect.mapError(
-            () =>
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "Unable to record the delegated task.",
-              }),
-          ),
-          // Nothing here follows a thread the task was never recorded for, so stop it there.
-          // A crash between the launch and this record still leaves it running there
-          // until a retry with the same clientRequestId records it.
-          Effect.tapError(() =>
-            stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
-              Effect.ignoreCause({ log: true }),
-            ),
-          ),
-        );
-      const taskEvent = recorded.storedEvents.find(
-        (stored) => stored.event.type === "subagent.updated",
-      );
-      const taskId =
-        taskEvent?.event.type === "subagent.updated"
-          ? taskEvent.event.payload.id
-          : // A replayed request recorded the task the first time.
-            yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
-              Effect.map(
-                ({ subagents }) =>
-                  subagents.find((task) => task.remoteChild?.threadId === launched.threadId)?.id,
-              ),
-              Effect.orElseSucceed(() => undefined),
-            );
-      if (taskId === undefined) {
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: "The delegated task was not recorded.",
-        });
-      }
-      yield* followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers));
-      return { taskId };
+      return yield* record(scope, {
+        commandId: CommandId.make(
+          `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
+        ),
+        parentRunId: parentRun.id,
+        parentNodeId,
+        task,
+        ...(input.title === undefined ? {} : { title: input.title }),
+        // The driver runs there; this side only labels the task with it.
+        driver: ProviderDriverKind.make("remote"),
+        modelSelection: launched.modelSelection,
+        remoteChild,
+        completionWake: input.mode === "wait" ? "settled_only" : "always",
+      });
     },
   );
+
+  /** Records the launched thread as a task of the caller's run, then follows it. */
+  const record = Effect.fn("RemoteDelegation.record")(function* (
+    scope: ThreadScope,
+    input: {
+      readonly commandId: CommandId;
+      readonly parentRunId: RunId;
+      readonly parentNodeId: NodeId;
+      readonly task: string;
+      readonly title?: string;
+      readonly driver: ProviderDriverKind;
+      readonly modelSelection: ModelSelection;
+      readonly remoteChild: OrchestrationV2RemoteTaskChild;
+      readonly completionWake: "always" | "settled_only";
+    },
+  ) {
+    const { remoteChild } = input;
+    const recorded = yield* threads
+      .dispatch({
+        type: "delegated_task.remote.request",
+        commandId: input.commandId,
+        parentThreadId: scope.thread.threadId,
+        parentRunId: input.parentRunId,
+        parentNodeId: input.parentNodeId,
+        task: input.task,
+        ...(input.title === undefined ? {} : { title: input.title }),
+        driver: input.driver,
+        modelSelection: input.modelSelection,
+        remoteChild,
+        completionWake: input.completionWake,
+      })
+      .pipe(
+        // The cause goes to the log; the caller learns only that recording failed.
+        Effect.tapError((cause) =>
+          Effect.logWarning("remote-delegation.record-failed", {
+            parentThreadId: scope.thread.threadId,
+            cause,
+          }),
+        ),
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "orchestration_error",
+              message: "Unable to record the delegated task.",
+            }),
+        ),
+        // Nothing here follows a thread the task was never recorded for, so stop it there.
+        // A crash between the launch and this record still leaves it running there
+        // until a retry with the same clientRequestId records it.
+        Effect.tapError(() =>
+          stopThere(followScope(scope.thread, remoteChild), remoteChild, "stop").pipe(
+            Effect.ignoreCause({ log: true }),
+          ),
+        ),
+      );
+    const taskEvent = recorded.storedEvents.find(
+      (stored) => stored.event.type === "subagent.updated",
+    );
+    const taskId =
+      taskEvent?.event.type === "subagent.updated"
+        ? taskEvent.event.payload.id
+        : // A replayed request recorded the task the first time.
+          yield* threads.getThreadRecords(scope.thread.threadId, ["subagents"]).pipe(
+            Effect.map(
+              ({ subagents }) =>
+                subagents.find((task) => task.remoteChild?.threadId === remoteChild.threadId)?.id,
+            ),
+            Effect.orElseSucceed(() => undefined),
+          );
+    if (taskId === undefined) {
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: "The delegated task was not recorded.",
+      });
+    }
+    yield* followOne(scope.thread.threadId, taskId).pipe(Effect.forkIn(followers));
+    return { taskId };
+  });
+
+  const adoptLocal: RemoteDelegation["Service"]["adoptLocal"] = (scope, input) =>
+    record(scope, {
+      commandId: CommandId.make(
+        `command:mcp:${encodeURIComponent(scope.requestNamespace)}:local-delegate:${encodeURIComponent(input.key)}`,
+      ),
+      parentRunId: input.parentRunId,
+      parentNodeId: input.parentNodeId,
+      task: input.task,
+      ...(input.title === undefined ? {} : { title: input.title }),
+      driver: input.driver,
+      modelSelection: input.modelSelection,
+      remoteChild: {
+        environmentId: hereId,
+        threadId: input.child.threadId,
+        label: LOCAL_LABEL,
+        title: input.child.title,
+        ...(input.child.runId === null ? {} : { runId: input.child.runId }),
+      },
+      completionWake: input.completionWake,
+    });
 
   const followUp: RemoteDelegation["Service"]["followUp"] = Effect.fn("RemoteDelegation.followUp")(
     function* (scope, environmentId, request, sent) {
@@ -619,14 +781,26 @@ const make = Effect.gen(function* () {
     key: string,
     reason?: string,
   ) =>
-    forwarding
-      .interruptThread(scope, remote.environmentId, {
-        threadId: remote.threadId,
-        stop: true,
-        ...(reason === undefined ? {} : { reason }),
-        clientRequestId: `${key}:${remote.threadId}`,
-      })
-      .pipe(Effect.asVoid);
+    isHere(remote)
+      ? threads
+          .dispatch({
+            type: "thread.stop",
+            // One id per stop, so sending it again records it once.
+            commandId: CommandId.make(
+              `command:local-task-stop:${encodeURIComponent(`${key}:${remote.threadId}`)}`,
+            ),
+            threadId: remote.threadId,
+            ...(reason === undefined ? {} : { reason }),
+          })
+          .pipe(Effect.asVoid, Effect.mapError(localFailure))
+      : forwarding
+          .interruptThread(scope, remote.environmentId, {
+            threadId: remote.threadId,
+            stop: true,
+            ...(reason === undefined ? {} : { reason }),
+            clientRequestId: `${key}:${remote.threadId}`,
+          })
+          .pipe(Effect.asVoid);
 
   /**
    * The last reply `runId` gave on the task's thread there, which is its
@@ -641,6 +815,7 @@ const make = Effect.gen(function* () {
     failed = false,
     probeSuccess = true,
   ) {
+    if (isHere(remote)) return yield* lastReplyHere(remote, runId);
     let reply: OrchestratorMcpThreadTimelineItem | undefined;
     let error: OrchestratorMcpThreadTimelineItem | undefined;
     let afterPosition: number | undefined;
@@ -727,7 +902,7 @@ const make = Effect.gen(function* () {
       if (error.code !== "invalid_request") return undefined;
       const { task } = yield* readTask(parentThreadId, taskId);
       const environmentId = task?.remoteChild?.environmentId;
-      if (environmentId === undefined) return error.message;
+      if (environmentId === undefined || environmentId === hereId) return error.message;
       const link = yield* links.get(environmentId);
       return Option.isSome(link) ? undefined : error.message;
     },
@@ -736,6 +911,7 @@ const make = Effect.gen(function* () {
 
   /** A task's thread there that ended without a reply. */
   const noReply = "(The thread in the linked environment ended without a reply.)";
+  const noReplyHere = "(The task's thread ended without a reply.)";
 
   /**
    * Waits for the task's run there to end, completes the task here, and stops it there if it
@@ -861,17 +1037,19 @@ const make = Effect.gen(function* () {
           Option.isSome(ended) ? Effect.succeed({ endedHere: true } as const) : Effect.never,
         ),
       );
-    const waited = yield* forwarding
-      .waitForThread(scope, remote.environmentId, {
-        threadId: remote.threadId,
-        ...(remote.runId === undefined ? {} : { runId: remote.runId }),
-        timeoutMs: FOLLOW_WAIT_MS,
-        // A thread there whose run ended may still be waiting on its own
-        // tasks to wake it for the answer, which a task here waits for too.
-        // An older peer ignores this and reports the run alone.
-        untilDelegatedWorkSettled: true,
-      })
-      .pipe(Effect.raceFirst(endedHere));
+    const waited = yield* (
+      isHere(remote)
+        ? waitHere(remote)
+        : forwarding.waitForThread(scope, remote.environmentId, {
+            threadId: remote.threadId,
+            ...(remote.runId === undefined ? {} : { runId: remote.runId }),
+            timeoutMs: FOLLOW_WAIT_MS,
+            // A thread there whose run ended may still be waiting on its own
+            // tasks to wake it for the answer, which a task here waits for too.
+            // An older peer ignores this and reports the run alone.
+            untilDelegatedWorkSettled: true,
+          })
+    ).pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
     if (waited.timedOut) return false;
@@ -925,7 +1103,7 @@ const make = Effect.gen(function* () {
       parentThreadId,
       taskId,
       terminalStatus(resultRun.status),
-      result.text ?? noReply,
+      result.text ?? (isHere(remote) ? noReplyHere : noReply),
       "ran-out",
       undefined,
       result.executedModel,
@@ -1004,9 +1182,11 @@ const make = Effect.gen(function* () {
           });
           continue;
         }
-        if (
-          (yield* links.tellParentDone(environmentId, { threadId, parentThreadId })) === "refused"
-        ) {
+        const answer =
+          environmentId === hereId
+            ? yield* tellParentDoneHere(threadId, parentThreadId)
+            : yield* links.tellParentDone(environmentId, { threadId, parentThreadId });
+        if (answer === "refused") {
           yield* Effect.logWarning("remote-delegation.parent-done-refused", {
             parentThreadId,
             environmentId,
@@ -1171,6 +1351,11 @@ const make = Effect.gen(function* () {
     function* (scope: ThreadScope, task: OrchestrationV2Subagent) {
       const remote = task.remoteChild;
       if (remote?.runId === undefined) return null;
+      if (isHere(remote)) {
+        const { runs } = yield* threads.getThreadRecords(remote.threadId, ["runs"]);
+        const run = runs.find((candidate) => candidate.id === remote.runId);
+        return run === undefined ? null : runOutcome(run);
+      }
       const read = yield* forwarding.readThread(
         followScope(scope.thread, remote),
         remote.environmentId,
@@ -1212,7 +1397,7 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
-  return RemoteDelegation.of({ delegate, followUp, cancel, runStatus, start });
+  return RemoteDelegation.of({ delegate, adoptLocal, followUp, cancel, runStatus, start });
 });
 
 /** A defect, logged, as a failure, so a retry covers it. */
