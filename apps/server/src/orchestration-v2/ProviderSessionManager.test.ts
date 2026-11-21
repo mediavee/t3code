@@ -45,6 +45,12 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as AgentScopeLive from "../process/agentScope.ts";
+import * as ProviderProcesses from "../process/providerProcesses.ts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   CodexProviderCapabilitiesV2,
   normalizeCodexThreadLoadModelSelection,
@@ -1312,7 +1318,8 @@ it.effect(
       const oomKilledThreads = new Set<string>([owner, joiner]);
       const agentScope = {
         ...AgentScope.defaultValue(),
-        oomKilled: (id: string) => Effect.sync(() => oomKilledThreads.has(id)),
+        oomKilled: (id: string) =>
+          Effect.sync(() => (oomKilledThreads.has(id) ? { memoryMaxGiB: null } : false)),
         clear: (id: string) => Effect.sync(() => void oomKilledThreads.delete(id)),
       };
 
@@ -1339,7 +1346,7 @@ it.effect(
 
         oomKilledThreads.add(owner);
         yield* manager.open({ threadId: owner, providerSessionId, modelSelection, runtimePolicy });
-        assert.isTrue(yield* agentScope.oomKilled(owner));
+        assert.deepEqual(yield* agentScope.oomKilled(owner), { memoryMaxGiB: null });
         assert.equal((yield* Ref.get(state)).openCount, 1);
       });
 
@@ -1348,6 +1355,74 @@ it.effect(
         Effect.provideService(AgentScope, agentScope),
       );
     }),
+);
+
+// No XDG_RUNTIME_DIR: the real scope service without systemd, as in a container.
+const sharedTempHostEnvironment = { PATH: process.env.PATH, TMPDIR: "/tmp/shared-by-every-agent" };
+
+it.live("ProviderSessionManagerV2 starts a thread's provider in that thread's temp directory", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const threadId = ThreadId.make("thread-provider-session-manager-temp-dir");
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const agentScope = yield* AgentScopeLive.make.pipe(
+      Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provideService(HostProcess.Environment, sharedTempHostEnvironment),
+      Effect.provideService(ProviderProcesses.ProviderProcesses, { hasOtherLiveOwner: false }),
+      Effect.provide(ProcessRunner.layer),
+    );
+    const seen = yield* Deferred.make<string>();
+    const spawnProvider = Effect.gen(function* () {
+      const launch = yield* agentScope.wrap({
+        command: "sh",
+        args: ["-c", 'printf %s "$TMPDIR"'],
+        name: "claude",
+        threadId,
+        env: sharedTempHostEnvironment,
+      });
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const command = ChildProcess.make(launch.command, [...launch.args], {
+        env: sharedTempHostEnvironment,
+      });
+      yield* Deferred.succeed(seen, yield* spawner.string(command));
+    }).pipe(
+      Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(NodeServices.layer),
+      Effect.orDie,
+    );
+
+    yield* Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator, threadId, now: yield* DateTime.now }),
+        ],
+      });
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+    }).pipe(
+      Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, beforeOpen: () => spawnProvider })),
+      Effect.provideService(AgentScope, agentScope),
+    );
+
+    const directory = AgentScopeLive.threadTempDirectory(stateDir, threadId);
+    assert.equal(yield* Deferred.await(seen), directory);
+    assert.isTrue(yield* (yield* FileSystem.FileSystem).exists(directory));
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "t3-provider-session-temp-" }).pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(ServerSettings.ServerSettingsService.layerTest(), NodeServices.layer),
+        ),
+      ),
+    ),
+  ),
 );
 
 it.effect("ProviderSessionManagerV2 cleans up an open interrupted mid-handshake", () =>

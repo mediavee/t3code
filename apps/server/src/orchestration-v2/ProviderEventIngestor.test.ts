@@ -39,6 +39,7 @@ import * as SqlError from "effect/sql/SqlError";
 import * as Stream from "effect/Stream";
 import * as Tracer from "effect/Tracer";
 
+import { AgentScope } from "@t3tools/shared/AgentScope";
 import { toolOutputImages } from "@t3tools/shared/toolOutput";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerConfig from "../config.ts";
@@ -234,6 +235,58 @@ function threadCreatedEvent(
 }
 
 const layer = it.layer(layerTest);
+
+it.effect.each([
+  [null, "Killed: out of memory."],
+  [8, "Killed: out of memory under the 8 GiB per-agent memory ceiling."],
+] as const)("names the memory ceiling an OOM-killed run ran under (%s GiB)", ([ceiling, message]) =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
+    const threadEvent = yield* threadCreatedEvent(now);
+    yield* eventSink.write({ events: [threadEvent] });
+    const stored = yield* ingestor.ingestNormalized({
+      providerSessionId: yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: threadEvent.threadId,
+      }),
+      providerInstanceId: modelSelection.instanceId,
+      threadId: threadEvent.threadId,
+      event: {
+        type: "turn.terminal",
+        driver: CODEX_DRIVER,
+        providerThreadId: idAllocator.derive.providerThread({
+          driver: CODEX_DRIVER,
+          nativeThreadId: "oom",
+        }),
+        providerTurnId: idAllocator.derive.providerTurn({
+          driver: CODEX_DRIVER,
+          nativeTurnId: "oom",
+        }),
+        runOrdinal: 1,
+        failureItemOrdinal: 1,
+        status: "failed",
+        failure: makeProviderFailure({ message: "Process exited with signal SIGKILL." }),
+        threadDisposition: "reusable",
+      },
+    });
+    const event = stored[0]?.event;
+    assert.deepEqual(
+      event?.type === "turn-item.updated" && event.payload.type === "error"
+        ? [event.payload.failure.message, event.payload.failure.code]
+        : undefined,
+      [message, "oom_kill"],
+    );
+  }).pipe(
+    Effect.provide(layerTest),
+    Effect.provideService(AgentScope, {
+      ...AgentScope.defaultValue(),
+      oomKilled: () => Effect.succeed({ memoryMaxGiB: ceiling }),
+    }),
+  ),
+);
 
 it.effect("takes a hub's reset for an unreset usage_limit, then refreshes the snapshot", () =>
   Effect.gen(function* () {
