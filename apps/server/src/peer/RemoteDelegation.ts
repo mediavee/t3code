@@ -284,8 +284,12 @@ const make = Effect.gen(function* () {
   const lastReplyHere = Effect.fn("RemoteDelegation.lastReplyHere")(function* (
     remote: OrchestrationV2RemoteTaskChild,
     runId: RunId | null,
+    failed: boolean,
   ) {
-    const { runs } = yield* threads.getThreadRecords(remote.threadId, ["runs"]);
+    const { runs, providerThreads } = yield* threads.getThreadRecords(remote.threadId, [
+      "runs",
+      "providerThreads",
+    ]);
     const run =
       runId === null
         ? runs.toSorted((left, right) => right.ordinal - left.ordinal)[0]
@@ -306,8 +310,16 @@ const make = Effect.gen(function* () {
         ),
       },
     );
+    const text = subagentResultForRun({ ...records, runs: resultRuns }, run).text;
     return {
-      text: subagentResultForRun({ ...records, runs: resultRuns }, run).text,
+      // A hold that ran out leaves these running, as a result read there names them.
+      text:
+        failed || text === undefined
+          ? text
+          : withDelegatedChildCommandsLeftRunning(
+              text,
+              providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []),
+            ),
       executedModel: latestProviderTurnForAttempt(records.providerTurns, run.activeAttemptId)
         ?.model,
     };
@@ -863,7 +875,7 @@ const make = Effect.gen(function* () {
     failed = false,
     probeSuccess = true,
   ) {
-    if (isHere(remote)) return yield* lastReplyHere(remote, runId);
+    if (isHere(remote)) return yield* lastReplyHere(remote, runId, failed);
     let reply: OrchestratorMcpThreadTimelineItem | undefined;
     let error: OrchestratorMcpThreadTimelineItem | undefined;
     // Linked peers read newest first without a cursor; this scan runs forward.
