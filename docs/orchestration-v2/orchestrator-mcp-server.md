@@ -257,8 +257,15 @@ Set `target.options` using the options returned by `orchestrator_capabilities`, 
 For local delegation, use `isolation: "worktree"` for a separate prepared checkout from
 the parent's commit; the default `"shared"` uses the parent's checkout. Uncommitted parent
 edits are not copied. A linked-environment target (`target.environmentId`) runs in the remote
-project's checkout and rejects worktree isolation. To launch an isolated thread there, use
-`t3_thread_launch` with `environmentId` and a worktree `workspaceStrategy`.
+project's checkout, or with worktree isolation in a new checkout there. That checkout starts
+from the remote project's default branch, freshly fetched, or from a `baseRef` that exists
+there. The remote side resolves and checks the base through `/api/peer-link/worktree-base`
+before anything launches, so a commit that exists only in the caller's checkout fails with a
+message to push it. A peer without the `linkWorktreeBase` capability fails instead of sharing
+its checkout. Resolving a base fetches it there, so that route refuses a read-only link and any
+link while Linked environments is off there, and the caller sends it only through the same gates
+as a forwarded tool call. `task_status` reports the remote checkout as `worktree` once it is
+ready, and keeps it on the finished task.
 
 A provider runs a runtime mode it does not offer as `approval-required`, so a
 child would ask for approval on every command. `orchestrator_capabilities`

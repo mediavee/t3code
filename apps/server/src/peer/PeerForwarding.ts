@@ -9,6 +9,8 @@ import {
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
   type PeerLinkError,
+  type PeerLinkWorktreeBaseRequest,
+  type PeerLinkWorktreeBaseResult,
   RuntimeMode,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
@@ -72,6 +74,18 @@ export class PeerForwarding extends Context.Service<
       environmentId: EnvironmentId,
       input: OrchestratorMcpThreadWaitInput,
     ) => Effect.Effect<OrchestratorMcpThreadWaitResult, OrchestratorMcpFailure>;
+    /**
+     * The base a delegated task's new worktree in a project there starts from, resolved and
+     * checked there. Starts work, so it holds to the same gates as a launch there.
+     */
+    readonly worktreeBase: (
+      scope: Scope,
+      environmentId: EnvironmentId,
+      request: PeerLinkWorktreeBaseRequest,
+    ) => Effect.Effect<
+      PeerLinkWorktreeBaseResult | { readonly outcome: "refused"; readonly message: string },
+      OrchestratorMcpFailure
+    >;
     /** The environments this one links to, as an agent sees them. */
     readonly links: (
       scope: Scope,
@@ -303,8 +317,25 @@ const make = Effect.gen(function* () {
     },
   );
 
+  const worktreeBase: PeerForwarding["Service"]["worktreeBase"] = Effect.fn(
+    "PeerForwarding.worktreeBase",
+  )(function* (scope, environmentId, request) {
+    yield* requireEnabled;
+    yield* forwardingCaller(scope);
+    return yield* links.worktreeBase(environmentId, request).pipe(
+      Effect.mapError(
+        (error) =>
+          new OrchestratorMcpFailure({
+            code: error.reason === "incompatible" ? "invalid_request" : "orchestration_error",
+            message: error.message,
+          }),
+      ),
+    );
+  });
+
   return PeerForwarding.of({
     call,
+    worktreeBase,
     readThread,
     interruptThread,
     waitForThread,

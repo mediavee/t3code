@@ -12,6 +12,8 @@ import {
   type PeerLinkName,
   type PeerLinkParentDoneRequest,
   type PeerLinkParentDoneResult,
+  type PeerLinkWorktreeBaseRequest,
+  type PeerLinkWorktreeBaseResult,
   type PeerLinkSummary,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -59,6 +61,8 @@ export const probeTimeout = (origin: string) =>
   isLocalLoopbackHost(new URL(origin).hostname) ? Duration.seconds(3) : Duration.seconds(10);
 /** How long a listing waits on a link's addresses; a real call still gives a waking peer `probeTimeout`. */
 const LIST_PROBE_TIMEOUT = Duration.seconds(3);
+/** A worktree base there may be fetched from its remote first. */
+const WORKTREE_BASE_TIMEOUT = Duration.seconds(60);
 
 /** Node's TLS verification code in a failed request's cause chain, if any. */
 export const certificateErrorCode = (error: unknown) => {
@@ -144,6 +148,17 @@ export class PeerLinks extends Context.Service<
       environmentId: EnvironmentId,
       request: PeerLinkParentDoneRequest,
     ) => Effect.Effect<PeerLinkParentDoneResult["outcome"] | "refused", PeerLinkError>;
+    /**
+     * The base a delegated task's worktree in a project there starts from, checked there.
+     * `refused`: that environment does not let this link start work in a new checkout there.
+     */
+    readonly worktreeBase: (
+      environmentId: EnvironmentId,
+      request: PeerLinkWorktreeBaseRequest,
+    ) => Effect.Effect<
+      PeerLinkWorktreeBaseResult | { readonly outcome: "refused"; readonly message: string },
+      PeerLinkError
+    >;
   }
 >()("t3/peer/PeerLinks") {}
 
@@ -825,6 +840,46 @@ const make = Effect.gen(function* () {
       );
   });
 
+  const worktreeBase: PeerLinks["Service"]["worktreeBase"] = Effect.fn("PeerLinks.worktreeBase")(
+    function* (environmentId, request) {
+      const peer = yield* resolve(environmentId);
+      const { label } = peer.link;
+      if (peer.capabilities.linkWorktreeBase !== true) {
+        return yield* new PeerLinkError({
+          reason: "incompatible",
+          message: `${label} runs a T3 Code version that does not support worktree isolation for a delegated task. Update it, or omit isolation to run in that project's checkout.`,
+        });
+      }
+      const client = yield* clientFor(peer.url);
+      return yield* client.peerLink
+        .worktreeBase({ headers: { authorization: `Bearer ${peer.token}` }, payload: request })
+        .pipe(
+          Effect.timeout(WORKTREE_BASE_TIMEOUT),
+          Effect.catchTags({
+            EnvironmentHttpForbiddenError: (error) =>
+              Effect.succeed({
+                outcome: "refused" as const,
+                message: `${label}: ${error.message}`,
+              }),
+            EnvironmentHttpUnauthorizedError: () =>
+              Effect.fail(
+                new PeerLinkError({
+                  reason: "expired",
+                  message: `${label} no longer accepts this link's session for this. Link it again with a new pairing code from ${label}.`,
+                }),
+              ),
+          }),
+          Effect.catchIf(
+            (error) => !isPeerLinkError(error),
+            () =>
+              Effect.fail(
+                new PeerLinkError({ reason: "unreachable", message: `${label} did not answer.` }),
+              ),
+          ),
+        );
+    },
+  );
+
   return PeerLinks.of({
     enabled,
     link,
@@ -837,6 +892,7 @@ const make = Effect.gen(function* () {
     recordOutcome,
     recordExpiry,
     tellParentDone,
+    worktreeBase,
   });
 });
 

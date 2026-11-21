@@ -75,6 +75,8 @@ import {
   PeerLinkClientPairingRequest,
   PeerLinkParentDoneRequest,
   PeerLinkParentDoneResult,
+  PeerLinkWorktreeBaseRequest,
+  PeerLinkWorktreeBaseResult,
 } from "./peerLink.ts";
 import { SecretReference } from "./secretReference.ts";
 import {
@@ -1080,6 +1082,18 @@ class EnvironmentPeerLinkHttpApi extends HttpApiGroup.make("peerLink")
       headers: OptionalBearerHeaders,
       payload: PeerLinkParentDoneRequest,
       success: PeerLinkParentDoneResult,
+      error: [
+        EnvironmentHttpUnauthorizedError,
+        EnvironmentHttpForbiddenError,
+        EnvironmentHttpInternalServerError,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("worktreeBase", "/api/peer-link/worktree-base", {
+      headers: OptionalBearerHeaders,
+      payload: PeerLinkWorktreeBaseRequest,
+      success: PeerLinkWorktreeBaseResult,
       error: [
         EnvironmentHttpUnauthorizedError,
         EnvironmentHttpForbiddenError,
