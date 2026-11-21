@@ -1458,6 +1458,14 @@ export const OrchestrationV2RuntimeRequest = Schema.Struct({
 });
 export type OrchestrationV2RuntimeRequest = typeof OrchestrationV2RuntimeRequest.Type;
 
+const isProviderRequestKind = Schema.is(ProviderRequestKind);
+
+/** A question or an approval, which a delegated task's parent hears of and may answer. */
+export const isParentWakeRequestKind = (
+  kind: OrchestrationV2RuntimeRequest["kind"],
+): kind is ProviderRequestKind | "user_input" =>
+  kind === "user_input" || isProviderRequestKind(kind);
+
 const SubagentNotificationSource = Schema.Struct({
   kind: Schema.Literal("subagent"),
   childThreadId: Schema.optional(ThreadId),

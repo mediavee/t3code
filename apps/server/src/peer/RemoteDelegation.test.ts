@@ -15,6 +15,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderSessionId,
   ProviderThreadId,
   type Project,
   type RepositoryIdentity,
@@ -54,6 +55,7 @@ import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as DelegatedTaskQuestionReactor from "../orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -177,6 +179,11 @@ interface BoxThread {
   readonly parentDoneOnce: Deferred.Deferred<void>;
   /** Runs as each parent-done request reaches it, before it reads the thread. */
   readonly onParentDone: Ref.Ref<Effect.Effect<void>>;
+  /** Its pending questions and approvals; completing `requestsChanged` ends a wait for them. */
+  readonly requests: Ref.Ref<ReadonlyArray<ThreadManagement.ThreadManagementPendingRequest>>;
+  readonly requestsChanged: Ref.Ref<Deferred.Deferred<void>>;
+  /** The providers there, beside its Claude. */
+  readonly providers: Ref.Ref<ReadonlyArray<ServerProvider>>;
 }
 
 const makeBoxThread = Effect.gen(function* () {
@@ -226,6 +233,9 @@ const makeBoxThread = Effect.gen(function* () {
     >([]),
     parentDoneOnce: yield* Deferred.make<void>(),
     onParentDone: yield* Ref.make<Effect.Effect<void>>(Effect.void),
+    requests: yield* Ref.make<ReadonlyArray<ThreadManagement.ThreadManagementPendingRequest>>([]),
+    requestsChanged: yield* Ref.make(yield* Deferred.make<void>()),
+    providers: yield* Ref.make<ReadonlyArray<ServerProvider>>([]),
   } satisfies BoxThread;
 });
 
@@ -374,6 +384,29 @@ const boxToolkitLayer = (thread: BoxThread) => {
                 }
               : {}),
           };
+        }
+        // A waiter that asks hears when the requests there are no longer those it knows.
+        const known = input.untilPendingRequestsChangeFrom;
+        if (known !== undefined) {
+          const changed = yield* Ref.get(thread.requestsChanged);
+          const requests = yield* Ref.get(thread.requests);
+          const fresh =
+            requests.length !== known.length ||
+            requests.some(({ request }) => !known.includes(request.id));
+          const asked =
+            fresh ||
+            (yield* Deferred.await(thread.finished).pipe(
+              Effect.as(false),
+              Effect.raceFirst(Deferred.await(changed).pipe(Effect.as(true))),
+            ));
+          if (asked) {
+            return {
+              threadId: input.threadId,
+              run: { id: runId, status: yield* Ref.get(thread.status) } as OrchestrationV2Run,
+              timedOut: true,
+              pendingRequests: yield* Ref.get(thread.requests),
+            };
+          }
         }
         const done = yield* Deferred.await(thread.finished).pipe(
           Effect.timeoutOption(input.timeoutMs),
@@ -652,7 +685,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
     ),
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({
-        getProviders: Effect.succeed([boxClaude]),
+        getProviders: Ref.get(thread.providers).pipe(Effect.map((more) => [boxClaude, ...more])),
       }),
     ),
     Layer.provide(
@@ -1287,6 +1320,165 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
         state: "acknowledged",
         observedByRunId: parentRunId,
       });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+/** A command approval the box's thread waits on. */
+const boxApproval = (name: string) => ({
+  request: {
+    id: RuntimeRequestId.make(`request:${name}`),
+    nodeId: NodeId.make("node:box"),
+    providerTurnId: null,
+    nativeRequestRef: null,
+    kind: "command" as const,
+    status: "pending" as const,
+    responseCapability: {
+      type: "live" as const,
+      providerSessionId: ProviderSessionId.make("session:box"),
+    },
+    createdAt: DateTime.makeUnsafe(0),
+    resolvedAt: null,
+  },
+  prompt: "pnpm test --run",
+  reason: "Runs the suite outside the sandbox.",
+});
+
+/** Sets what the box's thread waits on, ending a wait for its requests. */
+const askOnBox = (thread: BoxThread, requests: ReadonlyArray<ReturnType<typeof boxApproval>>) =>
+  Effect.gen(function* () {
+    yield* Ref.set(thread.requests, requests);
+    const changed = yield* Ref.getAndSet(thread.requestsChanged, yield* Deferred.make<void>());
+    yield* Deferred.succeed(changed, undefined);
+  });
+
+/** Waits until the parent here has a wake run for the request in this state. */
+const wakeRunIs = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  requestId: RuntimeRequestId,
+  eventType: "run.created" | "run.updated",
+  status: OrchestrationV2Run["status"],
+) => {
+  const messageId = DelegatedTaskQuestionReactor.parentWakeMessageId(parentThreadId, requestId);
+  return laptopEnv.orchestrator
+    .streamStoredEventsFrom({ threadId: parentThreadId, afterSequence: 0, eventType })
+    .pipe(
+      Stream.filter(
+        (stored) =>
+          (stored.event.type === "run.created" || stored.event.type === "run.updated") &&
+          stored.event.payload.userMessageId === messageId &&
+          stored.event.payload.status === status,
+      ),
+      Stream.runHead,
+    );
+};
+
+it.effect("a task's approval on the box wakes the laptop's parent until it is answered there", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+
+      const approval = boxApproval("box-approval");
+      const requestId = approval.request.id;
+      const messageId = DelegatedTaskQuestionReactor.parentWakeMessageId(parentThreadId, requestId);
+      yield* askOnBox(thread, [approval]);
+      yield* wakeRunIs(a, requestId, "run.created", "queued");
+      const wake = (yield* a.projections.getMessagesById(parentThreadId, [messageId])).get(
+        messageId,
+      );
+      // It names the machine the thread runs on, which answering it there needs.
+      expect(wake?.text).toContain(
+        "blocked on a command approval: pnpm test --run. Reason: Runs the suite outside the sandbox.",
+      );
+      expect(wake?.text).toContain(
+        `environmentId ${box.environmentId}, threadId ${delegated.remoteChild.threadId}, and requestId ${requestId}`,
+      );
+      expect(wake?.notification?.source).toEqual({
+        kind: "delegated_task",
+        taskIds: [delegated.taskId],
+      });
+
+      // Answered there before the parent got to it: its queued wake is dropped here.
+      yield* askOnBox(thread, []);
+      yield* wakeRunIs(a, requestId, "run.updated", "cancelled");
+
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* taskResult(a, delegated.taskId);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a box approval's queued wake is dropped after a restart, and when its run ends", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+      const beforeRestart = boxApproval("before-restart");
+      // The laptop is woken, then goes away; the approval is answered there meanwhile.
+      const delegated = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const before = yield* makeLaptop(database, offers, linking);
+          yield* linkTo(before.links, b, "full-access");
+          yield* seedParent(before);
+          const task = yield* delegateToBox(before);
+          yield* askOnBox(thread, [beforeRestart]);
+          yield* wakeRunIs(before, beforeRestart.request.id, "run.created", "queued");
+          return task;
+        }),
+      );
+      yield* askOnBox(thread, []);
+
+      const after = yield* makeLaptop(database, offers, linking);
+      yield* after.remote.start();
+      yield* wakeRunIs(after, beforeRestart.request.id, "run.updated", "cancelled");
+
+      // Still pending when its run there ends, no answer can reach it.
+      const atEnd = boxApproval("at-end");
+      yield* askOnBox(thread, [atEnd]);
+      yield* wakeRunIs(after, atEnd.request.id, "run.created", "queued");
+      yield* Ref.set(thread.status, "failed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      yield* wakeRunIs(after, atEnd.request.id, "run.updated", "cancelled");
+      yield* taskResult(after, delegated.taskId);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task on the box reports the mode its provider there stepped down to", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      yield* Ref.set(thread.providers, [
+        { ...codexProvider, supportedRuntimeModes: ["approval-required", "auto-accept-edits"] },
+      ]);
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
+      expect(delegated).toMatchObject({
+        runtimeModeSteppedDown: { asked: "full-access", applied: "auto-accept-edits" },
+      });
+      expect((yield* Ref.get(thread.launchedWith))?.runtimeMode).toBe("auto-accept-edits");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

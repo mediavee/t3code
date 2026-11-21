@@ -1351,11 +1351,9 @@ describe("ClaudeAdapterV2 Auto-accept edits", () => {
       const canUseTool = openedOptions?.canUseTool;
       assert.isFunction(canUseTool);
 
+      // Up to the request: its card, which a woken parent reads, must already be out.
       const requestEvent = yield* runtime.events.pipe(
-        Stream.takeUntil(
-          (event) =>
-            event.type === "turn_item.updated" && event.turnItem.type === "approval_request",
-        ),
+        Stream.takeUntil((event) => event.type === "runtime_request.updated"),
         Stream.runCollect,
         Effect.forkScoped,
       );

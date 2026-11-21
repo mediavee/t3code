@@ -43,6 +43,7 @@ import {
   providerOptionDescriptors,
   refuseAgentModePick,
   resolveRuntimeMode,
+  runtimeModeSteppedDown,
 } from "../../delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
@@ -473,6 +474,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
                 Effect.orElseSucceed(() => runtimeMode),
               )
             : runtimeMode;
+        const askedRuntimeMode = startedRuntimeMode;
         if (!replaying) {
           const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
           startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
@@ -546,6 +548,7 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
           modelSelection: thread.modelSelection,
           runId: run?.id ?? null,
           status: run?.status ?? null,
+          ...runtimeModeSteppedDown(askedRuntimeMode, input.runtimeMode, startedRuntimeMode),
         };
       }),
     // The launched thread carries the caller's link, if it has one.
