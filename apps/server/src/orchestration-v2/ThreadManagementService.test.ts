@@ -24,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -573,6 +574,7 @@ it.effect("waitForThread returns the cut run once its continuation is declined",
 
 it.effect.each([
   "live",
+  "all-running",
   "no-match",
   "no-match-clear",
   "no-session",
@@ -600,13 +602,20 @@ it.effect.each([
         lastRunOrdinal: 1,
         handoffIds: [],
         forkedFrom: null,
-        pendingBackgroundTasks: [{ taskId: "tests", kind: "command" }],
+        pendingBackgroundTasks: [
+          { taskId: "tests", kind: "command" },
+          { taskId: "review", kind: "subagent" },
+        ],
         contextUsage: null,
         nativeMetadata: null,
         createdAt: now,
         updatedAt: now,
       };
-      const calls: Array<{ providerThreadId: ProviderThreadId; awaited: boolean }> = [];
+      const calls: Array<{
+        providerThreadId: ProviderThreadId;
+        taskIds: ReadonlyArray<string>;
+        awaited: boolean;
+      }> = [];
       const runtime = {
         driver,
         providerSessionId,
@@ -621,6 +630,7 @@ it.effect.each([
                 Effect.sync(() => {
                   calls.push({
                     providerThreadId: input.providerThread.id,
+                    taskIds: input.taskIds,
                     awaited: input.awaited,
                   });
                   return { matched: input.taskIds.filter((taskId) => taskId === "tests") };
@@ -655,7 +665,9 @@ it.effect.each([
         return yield* service
           .awaitBackgroundTasks({
             threadId,
-            taskIds: state.startsWith("no-match") ? ["finished"] : ["tests", "finished"],
+            ...(state === "all-running"
+              ? {}
+              : { taskIds: state.startsWith("no-match") ? ["finished"] : ["tests", "finished"] }),
             awaited: state !== "no-match-clear",
           })
           .pipe(Effect.result);
@@ -665,15 +677,28 @@ it.effect.each([
         expect(result).toMatchObject({
           success: { matched: ["tests"], unmatched: ["finished"] },
         });
-        expect(calls).toEqual([{ providerThreadId, awaited: true }]);
+        expect(calls).toEqual([
+          { providerThreadId, taskIds: ["tests", "finished"], awaited: true },
+        ]);
+      } else if (state === "all-running") {
+        // Without ids, every running command and Monitor, but no subagent.
+        expect(result).toMatchObject({ success: { matched: ["tests"], unmatched: [] } });
+        expect(calls).toEqual([{ providerThreadId, taskIds: ["tests"], awaited: true }]);
       } else if (state === "no-match") {
         expect(result).toMatchObject({
-          failure: { _tag: "ThreadManagementBackgroundWaitError", reason: "unmatched" },
+          failure: {
+            _tag: "ThreadManagementBackgroundWaitError",
+            reason: "unmatched",
+            runningTaskIds: ["tests"],
+          },
         });
-        expect(calls).toEqual([{ providerThreadId, awaited: true }]);
+        expect(Result.isFailure(result) ? result.failure.message : "").toContain(
+          "Running here: tests.",
+        );
+        expect(calls).toEqual([{ providerThreadId, taskIds: ["finished"], awaited: true }]);
       } else if (state === "no-match-clear") {
         expect(result).toMatchObject({ success: { matched: [], unmatched: ["finished"] } });
-        expect(calls).toEqual([{ providerThreadId, awaited: false }]);
+        expect(calls).toEqual([{ providerThreadId, taskIds: ["finished"], awaited: false }]);
       } else {
         expect(result).toMatchObject({
           failure: {

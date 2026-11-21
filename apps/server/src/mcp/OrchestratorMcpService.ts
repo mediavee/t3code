@@ -1883,7 +1883,8 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(threadManagementFailure));
     const childRun = delegatedTaskRun(childControls, task);
-    const progress = delegatedTaskProgress(childControls);
+    const readAt = yield* DateTime.now;
+    const progress = delegatedTaskProgress(childControls, readAt);
     const followupRuns =
       childRun?.delegatedTaskId === task.id ? delegatedTaskRuns(childControls, task.id) : undefined;
     const taskResultRun =
@@ -1893,7 +1894,7 @@ const make = Effect.gen(function* () {
         ? progress.state
         : !isTerminalTaskStatus(taskStatusForRun(taskResultRun))
           ? "working"
-          : delegatedTaskAwaitsWork(followupRuns, childControls)
+          : delegatedTaskAwaitsWork(followupRuns, childControls, readAt)
             ? "waiting_for_children"
             : "result_available";
     const heldForRestart =

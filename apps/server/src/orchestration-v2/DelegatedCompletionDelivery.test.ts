@@ -58,6 +58,7 @@ import * as ProviderTurnStartServiceTestkit from "./ProviderTurnStartService.tes
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
+import { DELEGATED_CHILD_COMMAND_HOLD_MS } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { PROVIDER_STOP_REASON_SIGNAL } from "@t3tools/provider-core/server/subagentProjection";
 import * as ProviderContinuationService from "./ProviderContinuationService.ts";
 
@@ -4616,16 +4617,22 @@ it.layer(Layer.merge(layerTest, ProviderContinuationRequests.layer))(
 
 it.layer(layerTest)("delegated tasks across a server restart", (it) => {
   it.effect.each([
-    { name: "releases", key: "", pendingBackgroundTasks: [], released: true },
+    { name: "releases", key: "", held: undefined, released: true },
     {
-      name: "keeps while an unawaited background command runs",
+      name: "past the hold on an unawaited background command, keeps",
       key: "-background",
-      pendingBackgroundTasks: [{ taskId: "dev-server", kind: "command" as const }],
+      held: "until-bound",
       released: false,
     },
-  ])(
+    {
+      name: "once its unawaited background command ends, releases",
+      key: "-command-ends",
+      held: "until-command-ends",
+      released: true,
+    },
+  ] as const)(
     "queues a child result without creating a provider history handoff and $name its process",
-    ({ key, pendingBackgroundTasks, released }) =>
+    ({ key, held, released }) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const eventSink = yield* EventSink.EventSinkV2;
@@ -4659,6 +4666,11 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         const providerThreadId = ProviderThreadId.make(
           `provider-thread:result-message${key}-child`,
         );
+        const childProviderThread = {
+          ...parent.providerThreads[0]!,
+          id: providerThreadId,
+          appThreadId: child.childThreadId,
+        };
         yield* eventSink.write({
           commandId: CommandId.make(`command:result-message${key}-child-provider`),
           events: [
@@ -4692,10 +4704,9 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
               threadId: child.childThreadId,
               occurredAt: now,
               payload: {
-                ...parent.providerThreads[0]!,
-                id: providerThreadId,
-                appThreadId: child.childThreadId,
-                pendingBackgroundTasks,
+                ...childProviderThread,
+                pendingBackgroundTasks:
+                  held === undefined ? [] : [{ taskId: "dev-server", kind: "command" }],
               },
             },
             {
@@ -4710,10 +4721,47 @@ it.layer(layerTest)("delegated tasks across a server restart", (it) => {
         });
 
         yield* orchestrator.recoverDelegatedTasks;
+        if (held !== undefined) {
+          // A delegated child's lead reads its result as final, so a command it left running
+          // holds it until the command ends or the bound passes; past the bound it is named.
+          const heldTask = (yield* orchestrator.getThreadProjection(threadId)).subagents.find(
+            (candidate) => candidate.id === child.taskId,
+          );
+          assert.isNull(heldTask?.result);
+          // A released child's process detaches after its result is recorded.
+          const ended = yield* orchestrator.streamDomainEvents.pipe(
+            Stream.filter((event) =>
+              released
+                ? event.type === "provider-session.detached" &&
+                  event.threadId === child.childThreadId
+                : event.type === "subagent.updated" &&
+                  event.payload.id === child.taskId &&
+                  event.payload.result !== null,
+            ),
+            Stream.runHead,
+            Effect.forkChild({ startImmediately: true }),
+          );
+          if (held === "until-bound") yield* TestClock.adjust(DELEGATED_CHILD_COMMAND_HOLD_MS);
+          else
+            yield* eventSink.write({
+              commandId: CommandId.make(`command:result-message${key}-command-ended`),
+              events: [
+                {
+                  id: EventId.make(`event:result-message${key}-command-ended`),
+                  type: "provider-thread.updated",
+                  threadId: child.childThreadId,
+                  occurredAt: now,
+                  payload: { ...childProviderThread, pendingBackgroundTasks: [] },
+                },
+              ],
+            });
+          yield* Fiber.join(ended);
+        }
         const recovered = yield* orchestrator.getThreadProjection(threadId);
         const task = recovered.subagents.find((candidate) => candidate.id === child.taskId)!;
         assert.equal(task.status, "completed");
         assert.isNotNull(task.result);
+        assert.equal(task.result?.includes("- dev-server"), held === "until-bound");
         assert.isEmpty(recovered.contextHandoffs);
         assert.equal(recovered.contextTransfers.length, 1);
         // A one-process-per-thread child releases its process once its result is recorded,

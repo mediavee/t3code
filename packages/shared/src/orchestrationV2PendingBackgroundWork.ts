@@ -8,6 +8,7 @@ import type {
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Predicate from "effect/Predicate";
 
 import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";
@@ -118,6 +119,38 @@ function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind
     case "background_task":
       return true;
   }
+}
+
+/** How long after a delegated child's turn ends the commands it did not await hold its completion. */
+export const DELEGATED_CHILD_COMMAND_HOLD_MS = 15 * 60_000;
+
+export function delegatedChildCommandsLeftRunning<
+  Task extends Pick<PendingBackgroundWorkTask, "kind" | "awaited">,
+>(tasks: ReadonlyArray<Task>): ReadonlyArray<Task> {
+  return tasks.filter((task) => task.kind === "command" && task.awaited !== true);
+}
+
+/**
+ * A lead reads a delegated child's completion as its final answer, so a command the child left
+ * running holds it too, until the bound after its turn ended. A top-level thread's command is as
+ * often a dev server, so it holds only when awaited. `commandHoldEndsAt` is set while that bound
+ * still runs, so a caller can look again when it passes.
+ */
+export function delegatedChildBackgroundWorkHold(input: {
+  readonly tasks: ReadonlyArray<Pick<PendingBackgroundWorkTask, "kind" | "awaited">>;
+  /** Null while the turn has not ended yet, which holds without a bound. */
+  readonly turnEndedAt: DateTime.Utc | null | undefined;
+  readonly now: DateTime.Utc;
+}): { readonly holds: boolean; readonly commandHoldEndsAt?: DateTime.Utc } {
+  const held = backgroundWorkHoldsCompletion(input.tasks);
+  if (delegatedChildCommandsLeftRunning(input.tasks).length === 0) return { holds: held };
+  if (input.turnEndedAt == null) return { holds: true };
+  const commandHoldEndsAt = DateTime.add(input.turnEndedAt, {
+    milliseconds: DELEGATED_CHILD_COMMAND_HOLD_MS,
+  });
+  return DateTime.isLessThan(input.now, commandHoldEndsAt)
+    ? { holds: true, commandHoldEndsAt }
+    : { holds: held };
 }
 
 const PULL_REQUEST_WATCH_TASK_ID = "pull-request-watch:";

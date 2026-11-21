@@ -302,7 +302,10 @@ run. `status: "starting"` means the child's provider has not started its turn
 yet, so a task that stays there has not begun work. A task in a linked
 environment reads its run's status there for this. `workState` distinguishes
 active work, a finished turn waiting for children, and an available result. The
-task remains nonterminal until its known work finishes. Its published `summary`
+task remains nonterminal until its known work finishes. That work includes
+background commands the child did not mark awaited, unlike on a top-level
+thread, but only for 15 minutes after its turn ended; a result sent past that
+lists the commands still running. Its published `summary`
 and result transfer then remain stable across later follow-ups.
 `hasPendingChildRuns` reports later queued or executing turns; `latestTerminal*`
 exposes later executed, non-monitor results without replacing the published task

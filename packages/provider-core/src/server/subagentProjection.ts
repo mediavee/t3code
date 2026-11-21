@@ -18,7 +18,7 @@ import type {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import { delegatedChildBackgroundWorkHold } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -360,18 +360,21 @@ export function subagentHoldsCompletion(
   );
 }
 
-export function delegatedTaskProgress(projection: {
-  readonly runs: OrchestrationV2ThreadProjection["runs"];
-  readonly messages: ReadonlyArray<
-    Pick<OrchestrationV2ConversationMessage, "runId" | "notification">
-  >;
-  readonly subagents: ReadonlyArray<
-    Pick<OrchestrationV2ThreadProjection["subagents"][number], "status" | "completionDelivery">
-  >;
-  readonly providerThreads: ReadonlyArray<
-    Pick<OrchestrationV2ThreadProjection["providerThreads"][number], "pendingBackgroundTasks">
-  >;
-}) {
+export function delegatedTaskProgress(
+  projection: {
+    readonly runs: OrchestrationV2ThreadProjection["runs"];
+    readonly messages: ReadonlyArray<
+      Pick<OrchestrationV2ConversationMessage, "runId" | "notification">
+    >;
+    readonly subagents: ReadonlyArray<
+      Pick<OrchestrationV2ThreadProjection["subagents"][number], "status" | "completionDelivery">
+    >;
+    readonly providerThreads: ReadonlyArray<
+      Pick<OrchestrationV2ThreadProjection["providerThreads"][number], "pendingBackgroundTasks">
+    >;
+  },
+  now: DateTime.Utc,
+) {
   const terminal = (status: string) =>
     ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(status);
   const monitorRuns = monitorUpdateRunIds(projection.messages);
@@ -381,14 +384,15 @@ export function delegatedTaskProgress(projection: {
   const active = workRuns.some(
     (run) => !terminal(run.status) && !(run.status === "queued" && run.queueHeld === true),
   );
-  const children =
-    projection.subagents.some(subagentHoldsCompletion) ||
-    projection.providerThreads.some((thread) =>
-      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []),
-    );
   const resultRun = workRuns
     .filter((run) => terminal(run.status) && (run.startedAt !== null || run.ordinal === 1))
     .toSorted((a, b) => (runRanAfter(a, b) ? -1 : runRanAfter(b, a) ? 1 : 0))[0];
+  const backgroundHold = delegatedChildBackgroundWorkHold({
+    tasks: projection.providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []),
+    turnEndedAt: resultRun?.completedAt,
+    now,
+  });
+  const children = projection.subagents.some(subagentHoldsCompletion) || backgroundHold.holds;
   return {
     state:
       active || resultRun === undefined
@@ -397,6 +401,9 @@ export function delegatedTaskProgress(projection: {
           ? ("waiting_for_children" as const)
           : ("result_available" as const),
     resultRun,
+    ...(active || backgroundHold.commandHoldEndsAt === undefined
+      ? {}
+      : { commandHoldEndsAt: backgroundHold.commandHoldEndsAt }),
   };
 }
 
