@@ -19,7 +19,7 @@ describe("buildRuntimeInstructions", () => {
 
     assert.include(instructions, "Link each other PR you create, take over, or push to");
     // The server links PRs a shell's create command opened.
-    assert.include(instructions, "such as gh pr create, links itself.");
+    assert.include(instructions, "gh pr create or glab mr create in a shell links itself.");
     assert.notInclude(instructions, "Host tools don't link for you.");
     assert.include(instructions, "every stack layer");
     assert.include(instructions, "link_issue");

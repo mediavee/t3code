@@ -120,6 +120,7 @@ describe("orchestrator MCP contracts", () => {
       'git worktree add "$(mktemp -d)/wt"',
       '{{ secrets["NAME"].KEY }}',
       "a << b >> c",
+      "run: echo ${{ github.sha }}",
       "Read it with `cat brief.md`.",
     ]) {
       expect(literalTemplateRefusal("task", text)).toBeUndefined();

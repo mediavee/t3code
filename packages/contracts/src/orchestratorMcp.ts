@@ -59,7 +59,8 @@ export const OrchestratorMcpClientRequestId = TrimmedNonEmptyString.check(Schema
   .annotate({ description: "Reuse it to retry the same call. A new call gets a new key." });
 
 // No spaces inside `<<NAME>>`, so shift operators such as `a << b >> c` pass.
-const TEMPLATE_MARKER = /<<[A-Za-z_][\w.-]*>>|\{\{\s*[A-Za-z_][\w.-]*\s*\}\}/;
+// `${{ x }}` is a CI expression, not a placeholder.
+const TEMPLATE_MARKER = /<<[A-Za-z_][\w.-]*>>|(?<!\$)\{\{\s*[A-Za-z_][\w.-]*\s*\}\}/;
 // Only substitutions that read a file: briefs legitimately carry commands such as `$(mktemp -d)`.
 // Backticks count only as the whole text, since Markdown inline code reads the same.
 const FILE_SUBSTITUTION = /\$\(\s*(?:<|cat\s)[^)]*\)|^\s*`\s*cat\s[^`]*`\s*$/;
