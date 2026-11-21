@@ -54,6 +54,7 @@ Create and manage scheduled tasks in **Settings → Scheduled tasks** (web, desk
 
 - **Schedules**: Recurring fixed-time schedules use the target environment's time zone. **Once** uses your local time zone (runs on reconnect if offline).
 - **Destination**: Choose **New thread each run**, **One thread (continue conversation)**, or **One thread (fresh session each run)**. Deleting a target thread deletes tasks bound to it; archiving a target thread causes runs to fail (settle it instead).
+- **No overlap**: A run never starts while the task's previous run is still working, queued, or waiting for you: that occurrence is skipped, the task shows why, and it runs again at its next time. A task that continues one conversation queues the run in its thread instead.
 - **Controls**: Edit, pause, resume, run now (except webhook tasks), or delete from the list.
 
 ### Webhook automations

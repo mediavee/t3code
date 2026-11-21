@@ -250,6 +250,7 @@ describe("runMigrations", () => {
           yield* runMigrations({ toMigrationInclusive: 102 });
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_subagents_remote_parent_done_idx`;
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_turn_items_transient_failure_idx`;
+          yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN last_run_thread_id`;
         }
         // An earlier fork build stopped at upstream 102, created its indexes and numbered them.
         if (state === "fork-recorded") {
@@ -281,6 +282,10 @@ describe("runMigrations", () => {
             "orchestration_v2_projection_turn_items_transient_failure_idx",
           ],
         );
+        const columns = yield* sql<{ readonly name: string }>`
+          SELECT name FROM pragma_table_info('scheduled_tasks') WHERE name = 'last_run_thread_id'
+        `;
+        assert.lengthOf(columns, 1);
         const recorded = yield* history;
         assert.deepStrictEqual(recorded, migrationManifest);
         assert.isFalse(yield* hasPendingMigrations());

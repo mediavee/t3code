@@ -327,6 +327,8 @@ function iso(value: DateTime.DateTime): string {
 const RUN_OUTCOME_WAIT_MS = 24 * 60 * 60 * 1_000;
 const HELD_OCCURRENCE_ERROR =
   "A previous occurrence is held in the thread queue. Resume or remove it to run this task again.";
+const ACTIVE_RUN_SKIP_ERROR =
+  "Skipped: the previous run is still active. The task runs again once it ends.";
 const UNSUCCESSFUL_RUN_ERRORS = {
   failed: "The run failed.",
   interrupted: "The run was stopped.",
@@ -806,6 +808,7 @@ export const layer = Layer.effect(
       readonly status: "succeeded" | "failed";
       readonly error: string | null;
       readonly startedAtIso: string;
+      readonly threadId: ThreadId | null;
     }) =>
       sql`
         UPDATE scheduled_tasks
@@ -813,6 +816,7 @@ export const layer = Layer.effect(
             next_run_at = ${input.nextRunAtIso},
             last_run_status = ${input.status},
             last_run_error = ${input.error},
+            last_run_thread_id = COALESCE(${input.threadId}, last_run_thread_id),
             run_count = run_count + 1
         WHERE task_id = ${input.id}
           AND last_run_status = 'running'
@@ -888,6 +892,22 @@ export const layer = Layer.effect(
         : occurrences.length > 0
           ? "queued"
           : null;
+    });
+
+    // The thread of the last dispatch still holds work, including a queued or waiting run.
+    // A bound thread stands in for tasks whose last dispatch predates the column.
+    const lastRunStillActive = Effect.fn("ScheduledTaskService.lastRunStillActive")(function* (
+      task: ScheduledTask,
+    ) {
+      const [row] = yield* sql<{ readonly last_run_thread_id: string | null }>`
+        SELECT last_run_thread_id FROM scheduled_tasks WHERE task_id = ${task.id}
+      `.pipe(NodeSqliteClient.readOnly);
+      const threadId = row?.last_run_thread_id ?? task.threadId;
+      if (threadId == null) return false;
+      const { runs } = yield* threadManagement.getThreadRecords(ThreadId.make(threadId), ["runs"], {
+        runStatuses: ["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES],
+      });
+      return runs.length > 0;
     });
 
     // The run already started the thread, so a failed write only costs the binding.
@@ -968,7 +988,8 @@ export const layer = Layer.effect(
         SET last_run_status = 'failed', last_run_error = ${error}
         WHERE task_id = ${taskId} AND last_run_at = ${startedAtIso}
           AND (last_run_status = 'succeeded'
-            OR (last_run_status = 'failed' AND last_run_error = ${HELD_OCCURRENCE_ERROR}))
+            OR (last_run_status = 'failed'
+              AND last_run_error IN (${HELD_OCCURRENCE_ERROR}, ${ACTIVE_RUN_SKIP_ERROR})))
         RETURNING task_id
       `;
       if (updated.length > 0) yield* notifyChanged;
@@ -1037,10 +1058,30 @@ export const layer = Layer.effect(
               active,
               startedAt,
               "previous occurrence still queued",
-              occurrence === "held" ? HELD_OCCURRENCE_ERROR : undefined,
+              occurrence === "held"
+                ? HELD_OCCURRENCE_ERROR
+                : scheduledTaskThreadMode(active) === "continue"
+                  ? undefined
+                  : ACTIVE_RUN_SKIP_ERROR,
             );
             return { task: active, threadId: null, dispatchFailed: false };
           }
+        }
+        // `continue` queues behind a busy thread under the rule above; other modes never overlap.
+        // A failed read falls through to the normal send.
+        if (
+          trigger === "scheduled" &&
+          active.schedule.type !== "once" &&
+          scheduledTaskThreadMode(active) !== "continue" &&
+          (yield* lastRunStillActive(active).pipe(Effect.orElseSucceed(() => false)))
+        ) {
+          yield* rescheduleMissedRun(
+            active,
+            startedAt,
+            "previous run still active",
+            ACTIVE_RUN_SKIP_ERROR,
+          );
+          return { task: active, threadId: null, dispatchFailed: false };
         }
         // Reject queued deliveries after pause, same-id recreation or trigger changes.
         if (webhook !== undefined) {
@@ -1197,6 +1238,7 @@ export const layer = Layer.effect(
             status: lastRunStatus,
             error: lastRunError,
             startedAtIso,
+            threadId,
           });
           let written = false;
           if (webhook === undefined) written = yield* completion;

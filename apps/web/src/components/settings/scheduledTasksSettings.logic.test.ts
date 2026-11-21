@@ -23,6 +23,7 @@ import {
   scheduledTaskDefaultModel,
   defaultScheduledTaskProjectId,
   matchesScheduledTaskScope,
+  pickScheduledTaskModel,
   scheduleFromDraft,
   scheduleLabel,
   scheduledTaskDestinationThreads,
@@ -460,6 +461,40 @@ describe("scheduled task model defaults", () => {
         },
       }),
     ).toEqual(environmentSelection);
+  });
+  it("keeps on a model change only the options the new model accepts", () => {
+    const current = {
+      instanceId,
+      model: "first-model",
+      options: [
+        { id: "reasoning", value: "high" },
+        { id: "fastMode", value: true },
+        { id: "contextWindow", value: "1m" },
+      ],
+    };
+    const descriptors = [
+      {
+        id: "reasoning",
+        label: "Reasoning",
+        type: "select",
+        options: [
+          { id: "low", label: "Low" },
+          { id: "high", label: "High" },
+        ],
+      },
+      {
+        id: "contextWindow",
+        label: "Context",
+        type: "select",
+        options: [{ id: "200k", label: "200k" }],
+      },
+    ] as const;
+    expect(pickScheduledTaskModel(current, instanceId, "project-model", descriptors)).toEqual({
+      instanceId,
+      model: "project-model",
+      options: [{ id: "reasoning", value: "high" }],
+    });
+    expect(pickScheduledTaskModel(current, instanceId, "first-model", [])).toBe(current);
   });
 });
 

@@ -1,9 +1,13 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { expect, it } from "@effect/vitest";
-import { ScheduledTaskUpsertInput } from "@t3tools/contracts";
+import { type ScheduledTask, ScheduledTaskUpsertInput, ThreadId } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { afterEach, vi } from "vite-plus/test";
@@ -314,4 +318,103 @@ it.effect("reports the stored task when the row was replaced during the run", ()
     Effect.provideService(ServerActivation, Effect.never),
     Effect.provide(SqlitePersistence.layerMemory),
   ),
+);
+
+it.effect("an interval run waits while its last new-thread run is active, across a restart", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-01T07:00:00.000Z"));
+    const launched = yield* Queue.unbounded<ThreadId>();
+    const launches = yield* Ref.make(0);
+    const busyThreads = yield* Ref.make<ReadonlySet<string>>(new Set());
+    const runningLayer = ScheduledTaskService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          dependencies,
+          Layer.mock(ThreadLaunchService.ThreadLaunchService)({
+            launch: () =>
+              Ref.updateAndGet(launches, (n) => n + 1).pipe(
+                Effect.map((n) => ThreadId.make(`thread:run-${n}`)),
+                Effect.tap((threadId) =>
+                  Ref.update(busyThreads, (all) => new Set(all).add(threadId)),
+                ),
+                Effect.tap((threadId) => Queue.offer(launched, threadId)),
+                Effect.map((threadId) => ({ threadId, resumed: false }) as never),
+              ),
+          }),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            // The run outcome follower stops at an unknown thread.
+            getThreadShell: () => Effect.succeed(null),
+            getThreadRecords: (threadId, _fields, options) =>
+              Ref.get(busyThreads).pipe(
+                Effect.map(
+                  (busy) =>
+                    ({
+                      runs:
+                        busy.has(threadId) && options?.runStatuses?.includes("running")
+                          ? [{ id: "run:active", status: "running" }]
+                          : [],
+                    }) as never,
+                ),
+              ),
+          }),
+        ),
+      ),
+    );
+    const withService = <A, E>(
+      program: (
+        service: ScheduledTaskService.ScheduledTaskService["Service"],
+      ) => Effect.Effect<A, E>,
+    ) =>
+      Effect.scoped(
+        Layer.build(runningLayer).pipe(
+          Effect.flatMap((context) =>
+            program(Context.get(context, ScheduledTaskService.ScheduledTaskService)),
+          ),
+        ),
+      );
+    const until = (
+      service: ScheduledTaskService.ScheduledTaskService["Service"],
+      predicate: (task: ScheduledTask | undefined) => boolean,
+    ) =>
+      service.subscribeList().pipe(
+        Stream.filter(({ tasks }) => predicate(tasks[0])),
+        Stream.runHead,
+      );
+
+    const firstNextRunAt = yield* withService((service) =>
+      Effect.gen(function* () {
+        const decoded = yield* decodeInput({
+          ...input,
+          commandId: "no-overlap",
+          schedule: { type: "interval", everyMs: 60_000 },
+        });
+        yield* service.upsert(decoded);
+        yield* TestClock.adjust("65 seconds");
+        expect(yield* Queue.take(launched)).toBe("thread:run-1");
+        yield* until(service, (task) => task?.runCount === 1);
+        return (yield* service.list()).tasks[0]?.nextRunAt;
+      }),
+    );
+
+    // A restart forgets in-memory state; the stored thread still holds the next tick.
+    yield* withService((service) =>
+      Effect.gen(function* () {
+        yield* TestClock.adjust("65 seconds");
+        // Settled either way: skipped, or dispatched and recorded.
+        yield* until(
+          service,
+          (task) => task?.nextRunAt !== firstNextRunAt && task?.lastRunStatus !== "running",
+        );
+        const [skipped] = (yield* service.list()).tasks;
+        expect(skipped?.lastRunError).toMatch(/^Skipped: the previous run is still active/);
+        expect(skipped?.lastRunStatus).toBe("failed");
+        expect(skipped?.runCount).toBe(1);
+        expect(yield* Ref.get(launches)).toBe(1);
+
+        yield* Ref.set(busyThreads, new Set());
+        yield* TestClock.adjust("65 seconds");
+        expect(yield* Queue.take(launched)).toBe("thread:run-2");
+      }),
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
