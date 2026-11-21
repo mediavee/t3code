@@ -1060,6 +1060,14 @@ it.effect("a caller cannot rewrite a scheduled task that runs above its own mode
     expect(fresh.structuredContent).toMatchObject({ freshSession: true });
     const incomplete = yield* call("schedule_task", { prompt: "Run nightly" });
     expect(declaredFailure(incomplete)).toMatchObject({ code: "invalid_request" });
+    const gated = yield* call("schedule_task", {
+      scheduledTaskId: "task-auto",
+      gate: { command: "true" },
+    });
+    expect(declaredFailure(gated)).toMatchObject({
+      code: "invalid_request",
+      message: expect.stringMatching(/^Agents cannot set or change a scheduled task's gate/),
+    });
   }).pipe(
     Effect.provide(
       layerOrchestratorToolkit.pipe(

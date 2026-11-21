@@ -25,6 +25,7 @@ import {
   RunId,
   WS_METHODS,
   WsRpcGroup,
+  clientRpcRequiredScopes,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -52,6 +53,26 @@ describe("RPC authorization scopes", () => {
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
     }
+  });
+
+  it("requires terminal operate to set a scheduled task gate, which runs a shell command", () => {
+    const task = {
+      projectId: "p",
+      name: "Nightly",
+      prompt: "Check",
+      schedule: { kind: "interval" },
+    };
+    for (const withoutGate of [task, { ...task, gate: null }]) {
+      expect(clientRpcRequiredScopes(WS_METHODS.scheduledTasksUpsert, withoutGate)).toEqual([
+        AuthOrchestrationOperateScope,
+      ]);
+    }
+    expect(
+      clientRpcRequiredScopes(WS_METHODS.scheduledTasksUpsert, {
+        ...task,
+        gate: { command: "true" },
+      }),
+    ).toEqual([AuthOrchestrationOperateScope, AuthTerminalOperateScope]);
   });
 
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {

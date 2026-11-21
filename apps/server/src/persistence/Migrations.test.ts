@@ -197,6 +197,7 @@ describe("runMigrations", () => {
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_subagents_remote_parent_done_idx`;
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_turn_items_transient_failure_idx`;
           yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN last_run_thread_id`;
+          yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN gate_json`;
         }
         // With the indexes present, only the ledger rows make the database pending.
         if (state === "fork-recorded") yield* runMigrations();
@@ -226,9 +227,11 @@ describe("runMigrations", () => {
           ],
         );
         const columns = yield* sql<{ readonly name: string }>`
-          SELECT name FROM pragma_table_info('scheduled_tasks') WHERE name = 'last_run_thread_id'
+          SELECT name FROM pragma_table_info('scheduled_tasks') WHERE name IN (
+            'last_run_thread_id', 'gate_json', 'gate_last_hash', 'gate_result_json'
+          )
         `;
-        assert.lengthOf(columns, 1);
+        assert.lengthOf(columns, 4);
         const recorded = yield* history;
         assert.strictEqual(Math.max(...recorded.map(([id]) => id)), 102);
         assert.deepStrictEqual(recorded, migrationManifest);

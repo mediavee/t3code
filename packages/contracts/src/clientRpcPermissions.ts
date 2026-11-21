@@ -104,6 +104,15 @@ export function clientRpcRequiredScopes(
     if (payload.mode === "worktree" && payload.threadId !== undefined)
       return [AuthSourceControlWriteScope, AuthOrchestrationOperateScope];
   }
+  // A gate runs its command as the server user, so it needs what a terminal does.
+  if (
+    method === WS_METHODS.scheduledTasksUpsert &&
+    typeof input === "object" &&
+    input !== null &&
+    "gate" in input &&
+    input.gate != null
+  )
+    return [AuthOrchestrationOperateScope, AuthTerminalOperateScope];
   if (method === WS_METHODS.gitRunStackedAction && input !== undefined) {
     const payload = decodeStackedAction(input);
     if (
