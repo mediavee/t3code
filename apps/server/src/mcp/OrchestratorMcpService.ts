@@ -3107,15 +3107,16 @@ const make = Effect.gen(function* () {
         operation: targetProject === undefined ? "delegate-task" : "delegate-project-task",
       });
       const isRetryOfAcceptedDelegation = yield* threadManagement.hasReceipt(commandId);
+      // The child runs in the target project, so that project's table routes its role.
       const roleModel = targetNamesNoModel(input.target)
-        ? yield* projectRoleModel(parent.thread.projectId, input.role)
+        ? yield* projectRoleModel(targetProject?.id ?? parent.thread.projectId, input.role)
         : undefined;
       const roleRoutingFailure = (error: OrchestratorMcpFailure) =>
         roleModel === undefined || error.code === "orchestration_error"
           ? error
           : failure(
               error.code,
-              `Project settings route role "${input.role}" to ${roleModel.instanceId} model ${roleModel.model}, which cannot run: ${error.message} Fix that row in the project's settings, or pass target.model.`,
+              `${targetProject === undefined ? "Project" : `Project "${targetProject.title}"`} settings route role "${input.role}" to ${roleModel.instanceId} model ${roleModel.model}, which cannot run: ${error.message} Fix that row in the project's settings, or pass target.model.`,
             );
       const target = yield* resolveTargetRechecking({
         parent,
@@ -3191,7 +3192,7 @@ const make = Effect.gen(function* () {
             .pipe(
               Effect.mapError((error) =>
                 error._tag === "ThreadManagementProviderInstanceDisabledError"
-                  ? threadManagementFailure(error)
+                  ? roleRoutingFailure(threadManagementFailure(error))
                   : failure(
                       "orchestration_error",
                       `Unable to start the task in project "${targetProject.title}": ${error.message}`,
