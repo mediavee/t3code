@@ -1,5 +1,6 @@
 import {
   CommandId,
+  isDelegatedAppThread,
   NonNegativeInt,
   type ProviderApprovalPushHooks,
   type PullRequestActivity,
@@ -807,10 +808,7 @@ const make = Effect.gen(function* () {
     link_pull_request: writesThread((input) =>
       Effect.gen(function* () {
         const thread = yield* requireThread(PullRequestLinkFailedError, input.threadId);
-        const next =
-          thread.lineage.relationshipToParent === "subagent"
-            ? { next: CHILD_PULL_REQUEST_REPORT_NEXT }
-            : {};
+        const next = isDelegatedAppThread(thread) ? { next: CHILD_PULL_REQUEST_REPORT_NEXT } : {};
         const project = yield* projectOf(thread, PullRequestLinkFailedError);
         const target = yield* resolveTarget(input, project);
         const existing = threadPullRequestsOf(thread).find((link) =>
@@ -880,9 +878,7 @@ const make = Effect.gen(function* () {
           alreadyLinked: byRepository(alreadyLinked),
           linkedCount: targets.length,
           ...(invalidUrls.length > 0 ? { invalidUrls } : {}),
-          ...(thread.lineage.relationshipToParent === "subagent"
-            ? { next: CHILD_PULL_REQUEST_REPORT_NEXT }
-            : {}),
+          ...(isDelegatedAppThread(thread) ? { next: CHILD_PULL_REQUEST_REPORT_NEXT } : {}),
         };
       }),
     ),
@@ -1231,9 +1227,7 @@ const make = Effect.gen(function* () {
           ...identityOf(target),
           created: created.status === "created",
           ...(hooksSkipped ? { note: PUSH_HOOKS_SKIPPED } : {}),
-          ...(thread.lineage.relationshipToParent === "subagent"
-            ? { next: CHILD_PULL_REQUEST_REPORT_NEXT }
-            : {}),
+          ...(isDelegatedAppThread(thread) ? { next: CHILD_PULL_REQUEST_REPORT_NEXT } : {}),
         };
       }),
     ),
