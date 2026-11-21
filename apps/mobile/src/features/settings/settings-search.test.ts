@@ -70,6 +70,9 @@ describe("filterSettingsSections", () => {
     { query: "retry", expected: [["Environment", ["Threads"]]] },
     { query: "memory ceiling", expected: [["Environment", ["Maintenance"]]] },
     { query: "memory", expected: [["Environment", ["Maintenance"]]] },
+    { query: "secrets", expected: [["Environment", ["Maintenance"]]] },
+    { query: "mask", expected: [["Environment", ["Maintenance"]]] },
+    { query: "redact", expected: [["Environment", ["Maintenance"]]] },
     // Threads holds the usage limits setting.
     {
       query: "usage",

@@ -170,6 +170,9 @@ const SETTINGS_SEARCH_TERMS = {
     msg("manage environments", { $context: "settings search keyword" }),
     msg("memory ceiling", { $context: "settings search keyword" }),
     msg("memory", { $context: "settings search keyword" }),
+    msg("secrets", { $context: "settings search keyword" }),
+    msg("mask", { $context: "settings search keyword" }),
+    msg("redact", { $context: "settings search keyword" }),
   ],
   SettingsAbout: [
     msg("version", { $context: "settings search keyword" }),
