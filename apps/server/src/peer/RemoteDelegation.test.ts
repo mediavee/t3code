@@ -9,6 +9,7 @@ import {
   MessageId,
   type ModelSelection,
   NodeId,
+  type OrchestrationV2LinkOrigin,
   type OrchestrationV2Run,
   type OrchestratorMcpThreadReadInput,
   ProjectId,
@@ -708,6 +709,71 @@ const boxClaude: ServerProvider = {
   skills: [],
 };
 
+const otherProject = ProjectId.make("project:other");
+
+const codexProvider = {
+  instanceId,
+  driver,
+  enabled: true,
+  installed: true,
+  version: "test",
+  status: "ready",
+  auth: { status: "authenticated" },
+  checkedAt: "2026-01-01T00:00:00.000Z",
+  models: [{ slug: "gpt-5.4", name: "gpt-5.4", isCustom: false, capabilities: null }],
+  slashCommands: [],
+  skills: [],
+} as ServerProvider;
+
+/**
+ * A launch here as ThreadLaunchService does it with a shared checkout: the real `thread.create`
+ * with its first message, so the orchestrator decides what the new thread keeps.
+ */
+const layerLaunchHere = Layer.effect(
+  ThreadLaunch.ThreadLaunchService,
+  Effect.gen(function* () {
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    return ThreadLaunch.ThreadLaunchService.of({
+      launch: (input: ThreadLaunch.ThreadLaunchInput) =>
+        Effect.gen(function* () {
+          const threadId = input.threadId!;
+          yield* threads.dispatch({
+            type: "thread.create",
+            commandId: input.commandId,
+            threadId,
+            projectId: input.projectId,
+            title: input.title,
+            modelSelection: input.modelSelection,
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+            branch: null,
+            worktreePath: null,
+            ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
+            ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
+            ...(input.localDelegation === undefined
+              ? {}
+              : { localDelegation: input.localDelegation }),
+            createdBy: input.createdBy,
+            creationSource: input.creationSource,
+            ...(input.initialMessage === undefined
+              ? {}
+              : {
+                  initialMessage: {
+                    ...input.initialMessage,
+                    messageId:
+                      input.initialMessage.messageId ??
+                      MessageId.make(`${input.commandId}:message`),
+                    workspaceStrategy: input.workspaceStrategy,
+                  },
+                }),
+          });
+          const projection = yield* threads.getThreadRecords(threadId, ["runs"]);
+          return { threadId, projection, resumed: false } as never;
+        }).pipe(Effect.orDie),
+    } as never);
+  }),
+);
+
 const adapter = {
   instanceId,
   driver,
@@ -798,14 +864,36 @@ const makeLaptop = (
       Layer.provide(Layer.succeedContext(linking)),
       Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
       Layer.provide(NodeCrypto.layer),
+      Layer.provide(layerLaunchHere.pipe(Layer.provide(layerThreads))),
       Layer.provideMerge(layerThreads),
-      Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
-      Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
+      Layer.provide(
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([codexProvider]),
+          refreshInstance: () => Effect.succeed([codexProvider]),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
+          list: () => Effect.succeed([instanceId]),
+        }),
+      ),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
-      Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+      Layer.provide(
+        Layer.mock(ProjectService.ProjectService)({
+          getById: (id) =>
+            Effect.succeed(
+              id === otherProject
+                ? Option.some({
+                    id: otherProject,
+                    title: "Other",
+                    workspaceRoot: "/home/me/other",
+                  } as never)
+                : Option.none(),
+            ),
+        }),
+      ),
       Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
-      Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
       Layer.fresh,
     );
@@ -849,6 +937,7 @@ const parentScope: McpInvocationContext.McpInvocationScope = {
 const seedParent = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   parentModelSelection: ModelSelection = modelSelection,
+  linkOrigin?: OrchestrationV2LinkOrigin,
 ) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
@@ -866,6 +955,7 @@ const seedParent = (
       interactionMode: "default",
       branch: null,
       worktreePath: null,
+      ...(linkOrigin === undefined ? {} : { linkOrigin }),
     });
     yield* laptopEnv.sink.write({
       commandId: CommandId.make("command:seed:laptop-parent"),
@@ -2908,17 +2998,17 @@ const parentDoneThere = (
     );
 
 /** Ends the laptop parent's own run, which settling it waits for. */
-const endParentRun = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+const endParentRun = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, round = "") =>
   Effect.gen(function* () {
     const run = (yield* laptopEnv.orchestrator.getThreadProjection(parentThreadId)).runs.find(
       (candidate) => candidate.id === parentRunId,
     )!;
     const now = yield* DateTime.now;
     yield* laptopEnv.sink.write({
-      commandId: CommandId.make("command:end:laptop-parent-run"),
+      commandId: CommandId.make(`command:end:laptop-parent-run${round}`),
       events: [
         {
-          id: EventId.make("event:end:laptop-parent-run"),
+          id: EventId.make(`event:end:laptop-parent-run${round}`),
           type: "run.updated",
           threadId: parentThreadId,
           runId: parentRunId,
@@ -2932,10 +3022,11 @@ const endParentRun = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) 
 const doneParent = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   change: "settle" | "archive" | "delete",
+  round = "",
 ) =>
   laptopEnv.orchestrator.dispatch({
     type: `thread.${change}`,
-    commandId: CommandId.make(`command:${change}:laptop-parent`),
+    commandId: CommandId.make(`command:${change}:laptop-parent${round}`),
     threadId: parentThreadId,
   });
 
@@ -3370,7 +3461,357 @@ it.effect("a task whose thread there has no run ends with its last reply", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect("a local task runs in this thread's project", () =>
+/** `delegate_task` to another project here, as a task that reports back. */
+const delegateHere = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  projectId: string = otherProject,
+) =>
+  laptopEnv
+    .call("delegate_task", {
+      task: "Fix the other project's build.",
+      target: { projectId },
+      mode: "async",
+      clientRequestId: "build-here",
+    })
+    .pipe(
+      Effect.map((result) => {
+        expect(result.isError, JSON.stringify(result.content)).toBe(false);
+        return result.structuredContent as {
+          taskId: NodeId;
+          status: string;
+          childThreadId: ThreadId | null;
+          remoteChild: { environmentId: string; threadId: ThreadId; label: string };
+        };
+      }),
+    );
+
+/** Ends the task's own run here as its provider would, with `reply` as its last answer. */
+const endChildRun = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  threadId: ThreadId,
+  status: "completed" | "failed" | "cancelled",
+  reply?: string,
+) =>
+  Effect.gen(function* () {
+    const run = (yield* laptopEnv.orchestrator.getThreadProjection(threadId)).runs.toSorted(
+      (left, right) => right.ordinal - left.ordinal,
+    )[0]!;
+    const now = yield* DateTime.now;
+    yield* laptopEnv.sink.write({
+      commandId: CommandId.make(`command:end:${run.id}`),
+      events: [
+        ...(reply === undefined
+          ? []
+          : [
+              {
+                id: EventId.make(`event:reply:${run.id}`),
+                type: "message.updated" as const,
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: {
+                  id: MessageId.make(`message:reply:${run.id}`),
+                  threadId,
+                  runId: run.id,
+                  nodeId: null,
+                  role: "assistant" as const,
+                  text: reply,
+                  attachments: [],
+                  streaming: false,
+                  createdBy: "agent" as const,
+                  creationSource: "mcp" as const,
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              },
+            ]),
+        {
+          id: EventId.make(`event:end:${run.id}`),
+          type: "run.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: { ...run, status, startedAt: run.startedAt ?? now, completedAt: now },
+        },
+      ],
+    });
+  });
+
+const wakes = (
+  offers: SubscriptionRef.SubscriptionRef<
+    ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+  >,
+) =>
+  SubscriptionRef.changes(offers).pipe(
+    Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
+    Stream.runHead,
+    Effect.andThen(SubscriptionRef.get(offers)),
+    Effect.map((seen) => seen.filter((offer) => offer.threadId === parentThreadId)),
+  );
+
+it.effect("a task in another project here runs as its own thread that names its parent", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+
+      const delegated = yield* delegateHere(a);
+      expect(delegated).toMatchObject({
+        status: "running",
+        childThreadId: null,
+        remoteChild: { environmentId: laptop.environmentId, label: "this environment" },
+      });
+      const child = yield* a.orchestrator.getThreadProjection(delegated.remoteChild.threadId);
+      expect(child.thread).toMatchObject({
+        projectId: otherProject,
+        delegatedFrom: {
+          environmentId: laptop.environmentId,
+          threadId: parentThreadId,
+          title: "Laptop parent",
+        },
+      });
+      // A retry with the same key launches nothing new and records nothing new.
+      const retried = yield* delegateHere(a);
+      expect(retried.taskId).toBe(delegated.taskId);
+      const parent = yield* a.orchestrator.getThreadProjection(parentThreadId);
+      expect(parent.subagents).toHaveLength(1);
+      expect(parent.subagents[0]?.remoteChild).toMatchObject({
+        environmentId: laptop.environmentId,
+        threadId: delegated.remoteChild.threadId,
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each([
+  ["completed", "The build is green.", "completed", "The build is green."],
+  ["failed", undefined, "failed", undefined],
+  ["cancelled", undefined, "cancelled", undefined],
+] as const)(
+  "a task in another project here that ends %s wakes its parent once",
+  ([ended, reply, status, result]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* seedParent(a);
+
+        const delegated = yield* delegateHere(a);
+        yield* endChildRun(a, delegated.remoteChild.threadId, ended, reply);
+        const task = yield* taskResult(a, delegated.taskId);
+        expect(task?.status).toBe(status);
+        if (result !== undefined) expect(task?.result).toBe(result);
+        const parentRun = (yield* a.orchestrator.getThreadProjection(parentThreadId)).runs.find(
+          (run) => run.id === parentRunId,
+        );
+        expect(parentRun?.delegatedCompletion?.delivery?.taskIds).toEqual([delegated.taskId]);
+        expect(yield* wakes(offers)).toHaveLength(1);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("stopping the parent stops its task in another project here", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+
+      const delegated = yield* delegateHere(a);
+      yield* a.threads.stopDelegatedTasks({
+        threadId: parentThreadId,
+        commandId: CommandId.make("command:stop:laptop-parent"),
+        reason: "User stopped",
+      });
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+        status: "interrupted",
+        result: "Stopped with its parent: User stopped",
+      });
+      yield* stoppedThere(a, delegated.taskId, null);
+      const child = yield* a.orchestrator.getThreadProjection(delegated.remoteChild.threadId);
+      expect(child.runs[0]?.status).toMatch(/^(stopping|cancelled|interrupted)$/);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a settled parent settles its task in another project here", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+      yield* a.remote.start();
+
+      const delegated = yield* delegateHere(a);
+      yield* endParentRun(a);
+      yield* doneParent(a, "settle");
+      yield* parentDoneThere(a, delegated.taskId);
+      const child = yield* a.orchestrator.getThreadProjection(delegated.remoteChild.threadId);
+      expect(child.thread.delegatedFrom?.parentDoneAt).not.toBeNull();
+      expect(yield* a.projections.getRemoteTasksOwedParentDone()).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a task in another project here keeps its parent's link fence, and the parent reaches it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        const linkOrigin = { sessionId: "session:fenced-link", label: "Fenced link" };
+        yield* seedParent(a, modelSelection, linkOrigin);
+
+        const delegated = yield* delegateHere(a);
+        const child = yield* a.orchestrator.getThreadProjection(delegated.remoteChild.threadId);
+        expect(child.thread.linkOrigin).toEqual(linkOrigin);
+        yield* endChildRun(a, delegated.remoteChild.threadId, "completed", "Done.");
+        yield* taskResult(a, delegated.taskId);
+        const sent = yield* a.call("t3_thread_send", {
+          threadId: delegated.remoteChild.threadId,
+          message: "One more thing.",
+        });
+        expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+/** The parent here wakes for a new turn after it was done, as a user's message would wake it. */
+const wakeParent = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+  Effect.gen(function* () {
+    yield* laptopEnv.orchestrator.dispatch({
+      type: "thread.unsettle",
+      commandId: CommandId.make("command:unsettle:laptop-parent"),
+      threadId: parentThreadId,
+      reason: "user",
+    });
+    const run = (yield* laptopEnv.orchestrator.getThreadProjection(parentThreadId)).runs.find(
+      (candidate) => candidate.id === parentRunId,
+    )!;
+    const now = yield* DateTime.now;
+    yield* laptopEnv.sink.write({
+      commandId: CommandId.make("command:wake:laptop-parent-run"),
+      events: [
+        {
+          id: EventId.make("event:wake:laptop-parent-run"),
+          type: "run.updated",
+          threadId: parentThreadId,
+          runId: parentRunId,
+          occurredAt: now,
+          payload: { ...run, status: "running", completedAt: null },
+        },
+      ],
+    });
+  });
+
+const parentDoneAt = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  threadId: ThreadId,
+) =>
+  laptopEnv.orchestrator
+    .getThreadProjection(threadId)
+    .pipe(Effect.map((projection) => projection.thread.delegatedFrom?.parentDoneAt));
+
+it.effect("a parent here that works with its done task again settles it again when done", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+      yield* a.remote.start();
+
+      const delegated = yield* delegateHere(a);
+      const childId = delegated.remoteChild.threadId;
+      yield* endChildRun(a, childId, "completed", "First pass done.");
+      yield* taskResult(a, delegated.taskId);
+      yield* endParentRun(a);
+      yield* doneParent(a, "settle");
+      yield* parentDoneThere(a, delegated.taskId);
+      expect(yield* parentDoneAt(a, childId)).toBeDefined();
+
+      // The parent works with its task again: the task is no longer one its parent is done with.
+      yield* wakeParent(a);
+      const sent = yield* a.call("t3_thread_send", {
+        threadId: childId,
+        message: "Now the second pass.",
+      });
+      expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
+      const followUp = (sent.structuredContent as { taskId?: NodeId }).taskId;
+      expect(followUp).toBeDefined();
+      expect(yield* parentDoneAt(a, childId)).toBeUndefined();
+
+      // Done again, the parent tells it again.
+      yield* endChildRun(a, childId, "completed", "Second pass done.");
+      yield* taskResult(a, followUp!);
+      yield* endParentRun(a, ":again");
+      yield* doneParent(a, "settle", ":again");
+      yield* parentDoneThere(a, followUp!);
+      expect(yield* parentDoneAt(a, childId)).toBeDefined();
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each([
+  ["no flag", {}, false],
+  ["the server's flag", { localDelegation: true as const }, true],
+] as const)(
+  "a thread created here with a delegating parent and %s keeps it: %s",
+  ([, flag, kept]) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        const threadId = ThreadId.make("thread:claims-parent");
+        yield* a.orchestrator.dispatch({
+          type: "thread.create",
+          createdBy: "agent",
+          creationSource: "mcp",
+          commandId: CommandId.make("command:create:claims-parent"),
+          threadId,
+          projectId: otherProject,
+          title: "Claims a parent",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          delegatedFrom: {
+            environmentId: laptop.environmentId,
+            threadId: parentThreadId,
+            title: "Laptop parent",
+          },
+          ...flag,
+        });
+        const created = yield* a.orchestrator.getThreadProjection(threadId);
+        expect(created.thread.delegatedFrom != null).toBe(kept);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task in this thread's project is still a subagent of it", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const offers = yield* SubscriptionRef.make<
@@ -3382,10 +3823,13 @@ it.effect("a local task runs in this thread's project", () =>
 
       const result = yield* a.call("delegate_task", {
         task: "Run it here.",
-        target: { projectId: "project:elsewhere" },
+        target: { projectId: "project:laptop" },
+        mode: "async",
       });
-      expect(result.isError).toBe(true);
-      expect(JSON.stringify(result.content)).toContain("invalid_request");
+      // The subagent path asks the parent's provider session, which this harness has none of.
+      expect(JSON.stringify(result.content)).not.toContain("this environment");
+      const parent = yield* a.orchestrator.getThreadProjection(parentThreadId);
+      expect(parent.subagents.every((task) => task.remoteChild == null)).toBe(true);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
