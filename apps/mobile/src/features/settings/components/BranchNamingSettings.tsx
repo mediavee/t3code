@@ -1,11 +1,12 @@
 import { msg, T, useGT, useMessages } from "gt-react-native";
 import { BranchNamingMode, type ServerSettingsPatch } from "@t3tools/contracts";
-import { useEffect, useEffectEvent, useRef } from "react";
+import { useEffect, useEffectEvent } from "react";
 import { View } from "react-native";
 
 import { AppText as Text, AppTextInput } from "../../../components/ui/AppText";
 import { ListChoiceRow as SettingsChoiceRow } from "../../../components/ui/ListChoiceRow";
 import { SettingsSection } from "./SettingsSection";
+import { useSettingsTextDrafts } from "./useSettingsTextDrafts";
 
 const MODES = {
   static: {
@@ -34,27 +35,19 @@ export function BranchNamingSettings(props: {
 }) {
   const gt = useGT();
   const m = useMessages();
-  // Save on exit too: Android Back hides the keyboard without ending editing.
-  type Field = "branchNamePrefix" | "branchNameInstructions";
-  const drafts = useRef<Partial<Record<Field, { text: string; over: string | null }>>>({});
-  const savedValue = (field: Field) =>
-    field === "branchNamePrefix" ? props.prefix : props.instructions;
-  const edit = (field: Field, text: string) => {
-    drafts.current[field] = { text, over: savedValue(field) };
-  };
-  // Drop a draft typed over an older saved value: the updated value has already remounted its input.
-  const take = (field: Field): ServerSettingsPatch => {
-    const draft = drafts.current[field];
-    delete drafts.current[field];
-    const saved = savedValue(field);
-    // Save even while disabled; the route queues behind pending writes and checks access.
-    if (draft === undefined || draft.over !== saved) return {};
-    const value = draft.text.trim();
-    return saved === null || value !== saved ? { [field]: value } : {};
+  const drafts = useSettingsTextDrafts({
+    branchNamePrefix: props.prefix,
+    branchNameInstructions: props.instructions,
+  });
+  const take = (field: "branchNamePrefix" | "branchNameInstructions"): ServerSettingsPatch => {
+    const value = drafts.unsaved(field);
+    return value === undefined ? {} : { [field]: value };
   };
   const send = (patch: ServerSettingsPatch) => {
+    // Save even while disabled; the route queues behind pending writes and checks access.
     if (Object.keys(patch).length > 0) props.onChange(patch);
   };
+  // Save on exit too: Android Back hides the keyboard without ending editing.
   // One patch, because the screen drops writes while another is in flight.
   const saveDrafts = useEffectEvent(() =>
     send({ ...take("branchNamePrefix"), ...take("branchNameInstructions") }),
@@ -95,7 +88,7 @@ export function BranchNamingSettings(props: {
           <AppTextInput
             key={props.prefix}
             accessibilityLabel={gt("Branch prefix")}
-            onChangeText={(text) => edit("branchNamePrefix", text)}
+            onChangeText={(text) => drafts.edit("branchNamePrefix", text)}
             defaultValue={props.prefix ?? ""}
             placeholder={props.prefix === null ? gt("Mixed") : gt("No prefix")}
             editable={!props.disabled.prefix}
@@ -114,7 +107,7 @@ export function BranchNamingSettings(props: {
           <AppTextInput
             key={props.instructions}
             accessibilityLabel={gt("Branch naming instructions")}
-            onChangeText={(text) => edit("branchNameInstructions", text)}
+            onChangeText={(text) => drafts.edit("branchNameInstructions", text)}
             defaultValue={props.instructions ?? ""}
             placeholder={
               props.instructions === null

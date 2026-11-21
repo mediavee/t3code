@@ -119,4 +119,33 @@ describe("BranchNamingSettings", () => {
 
     expect(onChange).not.toHaveBeenCalled();
   });
+
+  it("drops a draft when the saved value changes and changes back", () => {
+    render("custom");
+    act(() => input(INSTRUCTIONS).onChangeText("Old draft."));
+    render("custom", { instructions: "Saved elsewhere." });
+    render("custom");
+    leaveScreen();
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("retries a save that did not land and writes a saved one once", () => {
+    render("static");
+    act(() => input(PREFIX).onChangeText("feat/"));
+    act(() => input(PREFIX).onEndEditing({ nativeEvent: { text: "feat/" } }));
+    // The write failed, so the saved prefix is still t3.
+    act(() => input(PREFIX).onEndEditing({ nativeEvent: { text: "feat/" } }));
+    leaveScreen();
+    expect(onChange).toHaveBeenCalledTimes(3);
+    expect(onChange).toHaveBeenLastCalledWith({ branchNamePrefix: "feat/" });
+
+    onChange.mockClear();
+    render("static");
+    act(() => input(PREFIX).onChangeText("fix/"));
+    act(() => input(PREFIX).onEndEditing({ nativeEvent: { text: "fix/" } }));
+    render("static", { prefix: "fix/" });
+    leaveScreen();
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ branchNamePrefix: "fix/" });
+  });
 });

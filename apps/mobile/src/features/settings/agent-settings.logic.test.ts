@@ -1,42 +1,6 @@
-import { STANDING_INSTRUCTIONS_MAX_LENGTH } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import {
-  agentMemoryCeilingChoices,
-  agentMemoryCeilingSupported,
-  standingInstructionsPatch,
-} from "./agent-settings.logic";
-
-describe("standingInstructionsPatch", () => {
-  it.each([
-    ["no draft", undefined, "Ask first.", {}],
-    ["an unchanged draft", { text: " Ask first. ", over: "Ask first." }, "Ask first.", {}],
-    [
-      "an edited draft, trimmed",
-      { text: " Merge when green.\n", over: "Ask first." },
-      "Ask first.",
-      { standingInstructions: "Merge when green." },
-    ],
-    [
-      "a cleared draft",
-      { text: "  ", over: "Ask first." },
-      "Ask first.",
-      { standingInstructions: "" },
-    ],
-    // A newer saved value has remounted the field, so the old draft must not overwrite it.
-    ["a draft typed over an older value", { text: "Old.", over: "Older." }, "Newer.", {}],
-    ["any draft over mixed values", { text: "", over: null }, null, { standingInstructions: "" }],
-  ] as const)("%s", (_name, draft, saved, patch) => {
-    expect(standingInstructionsPatch(draft, saved)).toEqual(patch);
-  });
-
-  it("keeps the saved text within the server's bound", () => {
-    const text = "a".repeat(STANDING_INSTRUCTIONS_MAX_LENGTH + 10);
-    expect(standingInstructionsPatch({ text, over: "" }, "").standingInstructions).toHaveLength(
-      STANDING_INSTRUCTIONS_MAX_LENGTH,
-    );
-  });
-});
+import { agentMemoryCeilingChoices, agentMemoryCeilingSupported } from "./agent-settings.logic";
 
 describe("agent memory ceiling", () => {
   it("lists no ceiling first and keeps a value set elsewhere", () => {
