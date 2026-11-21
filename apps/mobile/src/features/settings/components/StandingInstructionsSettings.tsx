@@ -1,11 +1,11 @@
 import { STANDING_INSTRUCTIONS_MAX_LENGTH, type ServerSettingsPatch } from "@t3tools/contracts";
 import { useGT } from "gt-react-native";
-import { useEffect, useEffectEvent, useRef } from "react";
+import { useEffect, useEffectEvent } from "react";
 import { View } from "react-native";
 
 import { AppText as Text, AppTextInput } from "../../../components/ui/AppText";
-import { type StandingInstructionsDraft, standingInstructionsPatch } from "../agent-settings.logic";
 import { SettingsSection } from "./SettingsSection";
+import { useSettingsTextDrafts } from "./useSettingsTextDrafts";
 
 export function StandingInstructionsSettings(props: {
   /** Null when the selected targets differ. */
@@ -15,12 +15,12 @@ export function StandingInstructionsSettings(props: {
   readonly onChange: (patch: ServerSettingsPatch) => void;
 }) {
   const gt = useGT();
-  const draft = useRef<StandingInstructionsDraft | undefined>(undefined);
+  const drafts = useSettingsTextDrafts({ standingInstructions: props.value });
   const save = () => {
-    const patch = standingInstructionsPatch(draft.current, props.value);
-    draft.current = undefined;
+    const value = drafts.unsaved("standingInstructions");
     // Save even while disabled; the route queues behind pending writes and checks access.
-    if (Object.keys(patch).length > 0) props.onChange(patch);
+    if (value !== undefined)
+      props.onChange({ standingInstructions: value.slice(0, STANDING_INSTRUCTIONS_MAX_LENGTH) });
   };
   // Save on exit too: Android Back hides the keyboard without ending editing.
   const saveOnExit = useEffectEvent(save);
@@ -37,9 +37,7 @@ export function StandingInstructionsSettings(props: {
         <AppTextInput
           key={props.value}
           accessibilityLabel={gt("Standing instructions")}
-          onChangeText={(text) => {
-            draft.current = { text, over: props.value };
-          }}
+          onChangeText={(text) => drafts.edit("standingInstructions", text)}
           defaultValue={props.value ?? ""}
           placeholder={
             props.value === null
