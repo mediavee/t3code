@@ -12803,5 +12803,21 @@
   "ae62ee82e0c146bb": "försök igen misslyckades fel 502 503 gateway anslutning återställ fortsätt",
   "0d1c02eb9bb693c4": "Det gick inte att återuppta de misslyckade sessionerna",
   "72516ad01a8e3386": "{count, plural, one {{count} session misslyckades den senaste timmen} other {{count} sessioner misslyckades den senaste timmen}}",
-  "253a12fc99873da8": "Återuppta alla"
+  "253a12fc99873da8": "Återuppta alla",
+  "8da6072f5854cc90": "Implementering",
+  "4cd3a0ae6907eec5": "Granskning",
+  "1738f499d0c9cf60": "Research",
+  "7810d54298dc35ed": "Design",
+  "186b1da30c46df95": "Rollmodellen sparades inte",
+  "9b956a2e78983634": "Ges till varje agent i det här omfånget, hos varje leverantör, även till agenterna den startar.",
+  "2ad0fcb6553dd859": "Återställ stående instruktioner",
+  "9c66fa8659d60792": "Stående instruktioner",
+  "9227dca0f915c2c8": "Merga och driftsätt när kontrollerna går igenom. Fråga innan delade tjänster startas om.",
+  "731c9be7011a1a27": "{role}-modell",
+  "f0cbaf4d64034115": "Delegerade uppgifter med den här rollen körs här om inte agenten anger en leverantör eller modell. Av ärver förälderns modell.",
+  "053cd07366c3b6d3": "De valda målen använder olika rollmodeller. Välj ett för att redigera.",
+  "185aca00f0cc4446": "Använd en modell för rollen {role}",
+  "afefb672d4c5c274": "agent policy regler behörigheter autonomi prompt varje tråd subagenter",
+  "8a3aabfbbfb30487": "Modeller per roll",
+  "69bad5ed2f17955e": "delegera uppgift routning granskning research design test implementering modell"
 }

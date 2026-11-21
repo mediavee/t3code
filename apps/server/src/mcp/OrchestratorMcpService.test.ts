@@ -2619,6 +2619,147 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
   );
 
+  it.effect.each([
+    "role row",
+    "explicit target",
+    "unavailable row model",
+    "project-disabled row",
+    "no row",
+  ] as const)("routes a delegated role by the project's role models: %s", (routing) =>
+    Effect.gen(function* () {
+      const museInstanceId = ProviderInstanceId.make("muse");
+      const muse: ServerProvider = {
+        ...providerSnapshot({
+          instanceId: museInstanceId,
+          driver: ProviderDriverKind.make("muse"),
+        }),
+        models: ["muse-wonder-1.0", "muse-spark-1.3"].map((slug) => ({
+          slug,
+          name: slug,
+          isCustom: false,
+          capabilities: null,
+        })),
+      };
+      const codex = providerSnapshot({
+        instanceId: codexInstanceId,
+        driver: ProviderDriverKind.make("codex"),
+        model: "gpt-5.4",
+      });
+      const commands: Array<{ readonly modelSelection: unknown }> = [];
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        origin: "app_owned",
+        childThreadId,
+        providerInstanceId: museInstanceId,
+        model: "muse-wonder-1.0",
+        status: "running",
+        result: null,
+      };
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          hasReceipt: () => Effect.succeed(false),
+          getThreadRecords: (threadId) =>
+            Effect.succeed(
+              threadId === parentThreadId
+                ? parentProjection(commands.length > 0 ? [task] : [])
+                : childProjection,
+            ),
+          dispatch: (command) =>
+            routing === "project-disabled row"
+              ? Effect.fail(
+                  new ThreadManagementService.ThreadManagementProviderInstanceDisabledError({
+                    projectId,
+                    instanceId: museInstanceId,
+                  }),
+                )
+              : Effect.sync(() => {
+                  commands.push(command as never);
+                  return {
+                    sequence: 1,
+                    storedEvents: [{ event: { type: "subagent.updated", payload: task } }],
+                  } as never;
+                }),
+        }),
+        ServerSettings.layerTest({
+          projectSettingsOverrides: {
+            [projectId]: {
+              agentRoleModels:
+                routing === "no row"
+                  ? { implementation: { instanceId: museInstanceId, model: "muse-wonder-1.0" } }
+                  : {
+                      review: {
+                        instanceId: museInstanceId,
+                        model:
+                          routing === "unavailable row model" ? "muse-gone" : "muse-wonder-1.0",
+                        options: [{ id: "effort", value: "high" }],
+                      },
+                    },
+            },
+          },
+        }),
+        providerRegistryLayer([codex, muse]),
+        adapterRegistryLayer([codexInstanceId, museInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const delegation = service.delegateTask(scope, {
+          task: "Review the change.",
+          role: "review",
+          ...(routing === "explicit target"
+            ? { target: { providerInstanceId: museInstanceId, model: "muse-spark-1.3" } }
+            : {}),
+          mode: "async",
+          clientRequestId: routing,
+        });
+        if (routing === "unavailable row model") {
+          const error = yield* delegation.pipe(Effect.flip);
+          assert.equal(error.code, "model_unavailable");
+          assert.include(error.message, 'route role "review" to muse model muse-gone');
+          assert.deepEqual(commands, []);
+          return;
+        }
+        if (routing === "project-disabled row") {
+          const error = yield* delegation.pipe(Effect.flip);
+          assert.equal(error.code, "invalid_request");
+          assert.include(error.message, 'route role "review" to muse model muse-wonder-1.0');
+          assert.include(error.message, "is disabled for project");
+          return;
+        }
+        yield* delegation;
+        assert.deepEqual(
+          commands[0]?.modelSelection,
+          routing === "role row"
+            ? {
+                instanceId: museInstanceId,
+                model: "muse-wonder-1.0",
+                options: [{ id: "effort", value: "high" }],
+              }
+            : routing === "explicit target"
+              ? { instanceId: museInstanceId, model: "muse-spark-1.3" }
+              : { instanceId: codexInstanceId, model: "gpt-5.4" },
+        );
+        if (routing === "role row") {
+          const capabilities = yield* service.capabilities(scope);
+          assert.deepEqual(capabilities.roleModels, [
+            {
+              role: "review",
+              providerInstanceId: museInstanceId,
+              model: "muse-wonder-1.0",
+              options: [{ id: "effort", value: "high" }],
+            },
+          ]);
+        }
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+    }),
+  );
+
   it.effect("delegates to a model only the parent project's folder config advertises", () =>
     Effect.gen(function* () {
       const opencodeInstanceId = ProviderInstanceId.make("opencode");

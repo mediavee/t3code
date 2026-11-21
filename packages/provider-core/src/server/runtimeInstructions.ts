@@ -24,6 +24,7 @@ export function buildRuntimeInstructions(runtime: {
   readonly reasoningEffort?: string | undefined;
   /** False when the session's system prompt already carries the linking instructions. */
   readonly pullRequestLinking?: boolean;
+  readonly standingInstructions?: string | undefined;
   /** Adds the folder list of a multi-folder thread. */
   readonly runtimePolicy?: Pick<ProviderAdapterV2RuntimePolicy, "cwd" | "workspace"> | undefined;
 }): string {
@@ -44,7 +45,21 @@ export function buildRuntimeInstructions(runtime: {
     runtime.pullRequestLinking === false
       ? runtimeInfo
       : `${runtimeInfo}\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`;
-  return [linked + feedback, ...(workspace === "" ? [] : [workspace])].join("\n\n");
+  return [
+    linked + feedback,
+    workspace === "" ? undefined : workspace,
+    standingInstructionsBlock(runtime.standingInstructions),
+  ]
+    .filter((part) => part !== undefined)
+    .join("\n\n");
+}
+
+/** The project's standing instructions as a prompt block, or undefined when none are set. */
+export function standingInstructionsBlock(text: string | undefined): string | undefined {
+  const instructions = text?.trim();
+  return instructions
+    ? `<project_standing_instructions>\nThe user set these standing instructions for this project. Follow them in every turn and pass them on to the agents you start.\n\n${instructions}\n</project_standing_instructions>`
+    : undefined;
 }
 
 function toSingleLine(value: string): string {
