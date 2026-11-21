@@ -1,4 +1,5 @@
 import {
+  ProviderApprovalFullAccessOverride,
   OrchestratorMcpEnvironmentTarget,
   ScheduledTaskId,
   ScheduledTask,
@@ -12,6 +13,7 @@ import {
   ProviderInteractionMode,
   RuntimeRequestId,
   ProviderUserInputAnswers,
+  ProviderRequestKind,
   IsoDateTime,
   OrchestratorMcpFailure,
   OrchestrationV2DispatchCommandResult,
@@ -126,20 +128,35 @@ const question = Schema.Struct({
   initialAnswer: Schema.optional(Schema.String),
   required: Schema.optional(Schema.Boolean),
 });
+export const PENDING_APPROVAL_DECISIONS = ["accept", "acceptForSession", "decline"] as const;
 const PendingRequestTool = Tool.make("t3_pending_request", {
   ...commandTool,
   description:
-    "Pending user questions in a thread. Omit `threadId` for this thread. list: their ids; approvals are not listed. read: one by `requestId`. respond: answer one with `answers`; this cannot approve a permission request.",
+    "Pending questions in a thread, and approvals in a task you delegated. Omit `threadId` for this thread. list: ids. read: one by `requestId`; an approval lists your allowed `decisions`, which your own modes bound. respond: `answers` for a question, `decision` for an approval.",
   parameters: Schema.Struct({
     action: Schema.Literals(["list", "read", "respond"]),
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
     requestId: Schema.optional(RuntimeRequestId),
     answers: Schema.optional(ProviderUserInputAnswers),
+    decision: Schema.optional(Schema.Literals(PENDING_APPROVAL_DECISIONS)),
   }),
   success: Schema.Union([
     Schema.Struct({ requestIds: Schema.Array(RuntimeRequestId) }),
     Schema.Struct({ requestId: RuntimeRequestId, questions: Schema.Array(question) }),
+    Schema.Struct({
+      requestId: RuntimeRequestId,
+      approval: Schema.Struct({
+        kind: ProviderRequestKind,
+        prompt: Schema.optional(Schema.String),
+        reason: Schema.optional(Schema.String),
+        appName: Schema.optional(Schema.String),
+        fullAccessOverride: Schema.optional(ProviderApprovalFullAccessOverride).annotate({
+          description: "Set: only the user can accept it; decline or tell them.",
+        }),
+        decisions: Schema.Array(Schema.Literals(PENDING_APPROVAL_DECISIONS)),
+      }),
+    }),
     OrchestrationV2DispatchCommandResult,
   ]),
 })

@@ -76,7 +76,7 @@ import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 import type { McpInvocationScope } from "./McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "./McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
-import { resolveRuntimeMode } from "./delegatedTaskModes.ts";
+import { resolveRuntimeMode, runtimeModeSteppedDown } from "./delegatedTaskModes.ts";
 import type { ProjectionRecordFilter } from "../orchestration-v2/ProjectionStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -5289,6 +5289,10 @@ describe("OrchestratorMcpService provider resolution", () => {
       Effect.gen(function* () {
         assert.equal(yield* resolveRuntimeMode("full-access", "inherit", muse), "full-access");
         assert.equal(yield* resolveRuntimeMode("auto", undefined, muse), "approval-required");
+        assert.deepEqual(runtimeModeSteppedDown("auto", undefined, "approval-required"), {
+          runtimeModeSteppedDown: { asked: "auto", applied: "approval-required" },
+        });
+        assert.deepEqual(runtimeModeSteppedDown("auto", "inherit", "auto"), {});
       }),
     );
   });
