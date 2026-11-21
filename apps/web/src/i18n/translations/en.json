@@ -12414,5 +12414,9 @@
   "f77cd905c392b357": "Available on Linux servers, where agents run in systemd scopes.",
   "633d27014d678cbf": "Reset agent memory ceiling to default",
   "70957383caba7e76": "Agent memory ceiling",
-  "b3be8f59fe52c268": "memory limit ram oom out of memory cgroup systemd memorymax tmpdir temp"
+  "b3be8f59fe52c268": "memory limit ram oom out of memory cgroup systemd memorymax tmpdir temp",
+  "67d4a779cd49a863": "{count, plural, one {{count} done} other {{count} done}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} open PR} other {{count} open PRs}}",
+  "5c73b69a42cb7616": "Child threads",
+  "fa97f7ae0f746034": "{count, plural, one {{count} waiting for an answer} other {{count} waiting for an answer}}"
 }
