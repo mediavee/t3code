@@ -19,6 +19,9 @@ import {
   makeProviderFailure,
   makeProviderFailureTurnItem,
   MAX_PROVIDER_FAILURE_MESSAGE_LENGTH,
+  PROVIDER_REQUEST_UNANSWERED_CODE,
+  PROVIDER_RETRY_BUDGET_MS,
+  spentProviderRetryBudget,
   ContextHandoffBudgetError,
   ContextHandoffBackgroundWorkError,
 } from "./failure.ts";
@@ -378,3 +381,37 @@ it.effect("keys terminal failure items by provider turn across retries and fallb
     assert.equal(firstAttempt.ordinal, 101);
   }).pipe(Effect.provide(IdAllocator.layer)),
 );
+
+it("counts a failure as a spent retry budget only after a whole retried window or silence", () => {
+  const end = DateTime.makeUnsafe("2026-11-21T12:00:00.000Z");
+  const before = (ms: number) => DateTime.subtract(end, { milliseconds: ms });
+  const cases = [
+    {
+      code: "api_error_502",
+      retried: true,
+      startedAt: before(PROVIDER_RETRY_BUDGET_MS),
+      spent: true,
+    },
+    {
+      code: "api_error_502",
+      retried: true,
+      startedAt: before(PROVIDER_RETRY_BUDGET_MS - 1),
+      spent: false,
+    },
+    {
+      code: "api_error_502",
+      retried: false,
+      startedAt: before(PROVIDER_RETRY_BUDGET_MS),
+      spent: false,
+    },
+    { code: "api_error_502", retried: true, startedAt: null, spent: false },
+    { code: PROVIDER_REQUEST_UNANSWERED_CODE, retried: false, startedAt: end, spent: true },
+  ];
+  for (const { spent, ...item } of cases) {
+    assert.equal(
+      spentProviderRetryBudget({ ...item, completedAt: end }),
+      spent,
+      JSON.stringify(item),
+    );
+  }
+});
