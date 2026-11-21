@@ -1586,6 +1586,12 @@ function ScheduledTaskEditorForm({
   const shownSelection = draft.threadId
     ? (boundThread?.modelSelection ?? null)
     : { instanceId: activeInstanceId, model: activeModel };
+  const shownRuntimeMode = draft.threadId
+    ? (boundThread?.runtimeMode ?? draft.runtimeMode)
+    : draft.runtimeMode;
+  const shownInteractionMode = draft.threadId
+    ? (boundThread?.interactionMode ?? draft.interactionMode)
+    : draft.interactionMode;
   const shownInstanceId = shownSelection?.instanceId ?? activeInstanceId;
   const shownModel = shownSelection?.model ?? "";
   const modelOptionsByInstance = getCustomModelOptionsByInstance(
@@ -1986,6 +1992,7 @@ function ScheduledTaskEditorForm({
               />
               {draft.threadId === "" && pickedSelection !== null && activeEntry ? (
                 <TraitsPicker
+                  disabled={saving || !connected}
                   provider={activeEntry.driverKind}
                   instanceId={pickedSelection.instanceId}
                   models={activeEntry.models}
@@ -2011,14 +2018,14 @@ function ScheduledTaskEditorForm({
           {/* Bound runs keep their thread's modes, like its model. */}
           <Field label={gt("Permissions")}>
             <Select
-              value={draft.runtimeMode}
+              value={shownRuntimeMode}
               disabled={saving || !connected || draft.threadId !== ""}
               onValueChange={(value) => {
                 if (value) setDraft((current) => ({ ...current, runtimeMode: value }));
               }}
             >
               <SelectTrigger size="sm" aria-label={gt("Permissions")}>
-                <SelectValue>{messages(runtimeModeConfig[draft.runtimeMode].label)}</SelectValue>
+                <SelectValue>{messages(runtimeModeConfig[shownRuntimeMode].label)}</SelectValue>
               </SelectTrigger>
               <SelectPopup>
                 {runtimeModeOptions.map((mode) => {
@@ -2050,7 +2057,7 @@ function ScheduledTaskEditorForm({
             </Label>
             <Switch
               id="scheduled-task-plan-mode"
-              checked={draft.interactionMode === "plan"}
+              checked={shownInteractionMode === "plan"}
               disabled={saving || !connected || draft.threadId !== ""}
               onCheckedChange={(checked) =>
                 setDraft((current) => ({

@@ -4411,7 +4411,10 @@ describe("OrchestratorMcpService provider resolution", () => {
         const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
           Effect.provide(
             service(
-              masterRepository,
+              {
+                ...masterRepository,
+                listWorktreePaths: () => Effect.succeed([workspaceRoot, "/repo/scheduled-base-wt"]),
+              },
               yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
               existing,
               inputs,
@@ -4456,6 +4459,29 @@ describe("OrchestratorMcpService provider resolution", () => {
           })
           .pipe(Effect.flip);
         assert.equal(unknown.code, "invalid_request");
+        const outside = { type: "existing_worktree", worktreePath: "/home/someone" } as const;
+        const outsideCreate = yield* mcp
+          .scheduleTask(client, {
+            projectId,
+            prompt: "Check the build",
+            schedule,
+            workspaceStrategy: outside,
+          })
+          .pipe(Effect.flip);
+        assert.equal(outsideCreate.code, "invalid_request");
+        const outsideUpdate = yield* mcp
+          .updateScheduledTask(client, {
+            scheduledTaskId: existing.id,
+            workspaceStrategy: outside,
+          })
+          .pipe(Effect.flip);
+        assert.equal(outsideUpdate.code, "invalid_request");
+        yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo/scheduled-base-wt" },
+        });
         yield* mcp.updateScheduledTask(client, {
           scheduledTaskId: existing.id,
           modelSelection,
@@ -4473,6 +4499,11 @@ describe("OrchestratorMcpService provider resolution", () => {
           ]),
           [
             [modelSelection, workspaceStrategy, "approval-required"],
+            [
+              existing.modelSelection,
+              { type: "existing_worktree", worktreePath: "/repo/scheduled-base-wt" },
+              "approval-required",
+            ],
             [modelSelection, workspaceStrategy, "approval-required"],
           ],
         );

@@ -125,6 +125,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import { placeholderThreadTitle } from "../orchestration-v2/placeholderThreadTitle.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { assertProjectWorktree } from "./projectWorktree.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -2404,6 +2405,17 @@ const make = Effect.gen(function* () {
     },
   );
 
+  // Runs launch in this checkout with no further check, so it must be one of the project's own.
+  const requireScheduledWorkspace = (
+    strategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined,
+    workspaceRoot: string,
+  ) =>
+    strategy?.type === "existing_worktree"
+      ? assertProjectWorktree(workspaceRoot, strategy.worktreePath).pipe(
+          Effect.provideService(GitVcsDriver.GitVcsDriver, gitDriver),
+        )
+      : Effect.void;
+
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
       const modes = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
@@ -2502,6 +2514,7 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
+      yield* requireScheduledWorkspace(input.workspaceStrategy, project.workspaceRoot);
       if (input.modelSelection !== undefined)
         yield* requireScheduledModel(input.modelSelection, project.workspaceRoot);
       const modelSelection =
@@ -2617,11 +2630,12 @@ const make = Effect.gen(function* () {
           ((threadId === null) === (existing.threadId === null)
             ? existing.workspaceStrategy
             : yield* scheduledTaskWorkspaceStrategy(threadId !== null, existing.projectId));
-        if (input.modelSelection !== undefined)
-          yield* requireScheduledModel(
-            input.modelSelection,
-            (yield* requireProject(existing.projectId)).workspaceRoot,
-          );
+        if (input.modelSelection !== undefined || input.workspaceStrategy !== undefined) {
+          const { workspaceRoot } = yield* requireProject(existing.projectId);
+          yield* requireScheduledWorkspace(input.workspaceStrategy, workspaceRoot);
+          if (input.modelSelection !== undefined)
+            yield* requireScheduledModel(input.modelSelection, workspaceRoot);
+        }
         const runtimeMode =
           input.runtimeMode === undefined
             ? existing.runtimeMode

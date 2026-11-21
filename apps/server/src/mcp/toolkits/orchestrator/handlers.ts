@@ -96,7 +96,7 @@ const handlers = {
   schedule_task: McpToolAccess.either(
     (input) => input.scheduledTaskId === undefined,
     McpToolAccess.startsThreads(
-      () => ({}),
+      ({ runtimeMode }) => ({ runtimeMode }),
       ({ prompt, schedule, ...input }) =>
         Effect.gen(function* () {
           if (prompt === undefined || schedule === undefined) {

@@ -126,9 +126,16 @@ export const applyForkIndexes = Effect.fn("applyForkIndexes")(function* () {
     yield* sql.unsafe(statement);
     created.push(name);
   }
-  for (const { table, column, statement } of yield* missingForkColumns()) {
-    yield* sql.unsafe(statement);
-    created.push(`${table}.${column}`);
-  }
-  return created;
+  // The client begins IMMEDIATE, so a second process starting at once waits instead of adding the column twice.
+  const addedColumns = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const added: Array<string> = [];
+      for (const { table, column, statement } of yield* missingForkColumns()) {
+        yield* sql.unsafe(statement);
+        added.push(`${table}.${column}`);
+      }
+      return added;
+    }),
+  );
+  return [...created, ...addedColumns];
 });

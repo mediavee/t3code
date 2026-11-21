@@ -1044,7 +1044,11 @@ export const layer = Layer.effect(
               active,
               startedAt,
               "previous occurrence still queued",
-              occurrence === "held" ? HELD_OCCURRENCE_ERROR : undefined,
+              occurrence === "held"
+                ? HELD_OCCURRENCE_ERROR
+                : scheduledTaskThreadMode(active) === "continue"
+                  ? undefined
+                  : ACTIVE_RUN_SKIP_ERROR,
             );
             return { task: active, threadId: null, dispatchFailed: false };
           }

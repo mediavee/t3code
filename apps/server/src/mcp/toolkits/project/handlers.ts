@@ -27,6 +27,7 @@ import { mutateProjectWithClone } from "../../../project/ProjectMutation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
+import { assertProjectWorktree } from "../../projectWorktree.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import * as DateTime from "effect/DateTime";
@@ -85,25 +86,6 @@ function worktreeCheckHint(
 }
 
 /** Require project worktrees so launches cannot target arbitrary host directories. */
-const assertProjectWorktree = Effect.fn("mcp.assertProjectWorktree")(function* (
-  workspaceRoot: string,
-  worktreePath: string,
-) {
-  const git = yield* GitVcsDriver.GitVcsDriver;
-  const fileSystem = yield* FileSystem.FileSystem;
-  const real = (path: string) => fileSystem.realPath(path).pipe(Effect.orElseSucceed(() => path));
-  const worktrees = yield* git.listWorktreePaths(workspaceRoot).pipe(
-    Effect.flatMap((paths) => Effect.forEach(paths, real)),
-    Effect.orElseSucceed((): ReadonlyArray<string> => []),
-  );
-  if (!worktrees.includes(yield* real(worktreePath)))
-    return yield* new OrchestratorMcpFailure({
-      code: "invalid_request",
-      message:
-        "worktreePath must be one of the project's git worktrees. t3_worktree_list shows them.",
-    });
-});
-
 /** The composer falls back to the project's t3.json when no setting picks the mode. */
 const projectFileThreadEnvMode = Effect.fn("mcp.projectFileThreadEnvMode")(function* (
   workspaceRoot: string,

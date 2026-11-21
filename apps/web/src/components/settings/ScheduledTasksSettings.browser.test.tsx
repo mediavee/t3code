@@ -53,6 +53,8 @@ const threadFamilyRead = {
       id: task.threadId,
       title: "Fix login bug",
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" },
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
     },
   ],
 };
@@ -324,6 +326,13 @@ describe("ScheduledTasksSettings", () => {
     await expect
       .element(page.getByRole("dialog").getByRole("button", { name: "gpt-5.5", exact: true }))
       .toBeDisabled();
+    // Its modes are the thread's too.
+    await expect
+      .element(page.getByRole("dialog").getByLabelText("Permissions"))
+      .toHaveTextContent("Supervised");
+    await expect
+      .element(page.getByRole("dialog").getByRole("switch", { name: "Plan mode" }))
+      .toBeChecked();
   });
 
   it("edits a new-thread task's options and modes, and keeps supported options on a model change", async () => {
