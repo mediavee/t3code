@@ -606,6 +606,8 @@ export function applyServerSettingsPatch(
     ...(patch.fallbackModelSelection !== undefined
       ? { fallbackModelSelection: patch.fallbackModelSelection }
       : {}),
+    // A role left out of the table is turned off, so the whole table replaces the saved one.
+    ...(patch.agentRoleModels !== undefined ? { agentRoleModels: patch.agentRoleModels } : {}),
     ...(patch.speechPostProcessingModelSelection !== undefined
       ? { speechPostProcessingModelSelection: patch.speechPostProcessingModelSelection }
       : {}),

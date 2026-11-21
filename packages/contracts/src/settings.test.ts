@@ -22,6 +22,7 @@ import {
   resolveProviderInstanceEnabled,
   ServerSettings,
   ServerSettingsPatch,
+  STANDING_INSTRUCTIONS_MAX_LENGTH,
   withIdleCompaction,
 } from "./settings.ts";
 
@@ -132,6 +133,23 @@ describe("storage cleanup settings", () => {
 describe("ClientSettings terminal close confirmation", () => {
   it("keeps confirmation enabled for settings without a saved preference", () => {
     expect(decodeClientSettings({}).confirmTerminalClose).toBe(true);
+  });
+});
+
+describe("ServerSettings standing instructions", () => {
+  it("bounds their length for every scope", () => {
+    const atLimit = "a".repeat(STANDING_INSTRUCTIONS_MAX_LENGTH);
+    expect(decodeServerSettingsPatch({ standingInstructions: atLimit }).standingInstructions).toBe(
+      atLimit,
+    );
+    expect(() => decodeServerSettingsPatch({ standingInstructions: `${atLimit}a` })).toThrow();
+    expect(() =>
+      decodeServerSettingsPatch({
+        projectSettingsOverrides: {
+          [ProjectId.make("project-1")]: { standingInstructions: `${atLimit}a` },
+        },
+      }),
+    ).toThrow();
   });
 });
 

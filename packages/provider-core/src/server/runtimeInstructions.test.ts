@@ -4,6 +4,7 @@ import {
   AGENT_FEEDBACK_INSTRUCTIONS,
   buildRuntimeInstructions,
   PULL_REQUEST_LINKING_INSTRUCTIONS,
+  standingInstructionsBlock,
 } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
@@ -16,6 +17,23 @@ describe("buildRuntimeInstructions", () => {
 
     assert.include(instructions, "through the Antigravity harness, as gemini-3.8-flash.");
     assert.notInclude(instructions, "<pull_request_linking>");
+  });
+
+  it("ends with the project's standing instructions only when the project sets them", () => {
+    const withInstructions = buildRuntimeInstructions({
+      harness: "Cursor",
+      standingInstructions: "  Merge when checks pass.\n",
+    });
+    assert.isTrue(
+      withInstructions.endsWith(
+        "\n\n<project_standing_instructions>\nThe user set these standing instructions for this project. Follow them in every turn and pass them on to the agents you start.\n\nMerge when checks pass.\n</project_standing_instructions>",
+      ),
+    );
+    assert.equal(
+      buildRuntimeInstructions({ harness: "Cursor", standingInstructions: " " }),
+      buildRuntimeInstructions({ harness: "Cursor" }),
+    );
+    assert.isUndefined(standingInstructionsBlock(undefined));
   });
 
   it("links PRs the agent creates, takes over, or pushes to, and no others", () => {

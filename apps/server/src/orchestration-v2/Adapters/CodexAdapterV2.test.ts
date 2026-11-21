@@ -10,6 +10,7 @@ import {
   CommandId,
   CheckpointId,
   CodexSettings,
+  STANDING_INSTRUCTIONS_MAX_LENGTH,
   EnvironmentId,
   MessageId,
   type ModelSelection,
@@ -79,6 +80,8 @@ import type * as ProviderContinuationRequests from "@t3tools/provider-core/serve
 import * as ModelManifest from "../../provider/ModelManifest.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import { resolveProviderCompatibility } from "../../provider/providerCompatibility.ts";
+import { standingInstructionsBlock } from "@t3tools/provider-core/server/runtimeInstructions";
+import { CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES } from "../../provider/CodexDeveloperInstructions.ts";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
 import { withCodexReplayChildMetadata } from "./CodexAdapterV2.testkit.ts";
 import * as CodexAdapterV2Testkit from "./CodexAdapterV2.testkit.ts";
@@ -396,6 +399,48 @@ describe("CodexAdapterV2 runtime policy", () => {
         value: "Filtered to overdue",
       });
       assert.isDefined(withT3.additionalContext?.["t3_code_runtime"]);
+    }),
+  );
+
+  it.effect("sends the project's standing instructions as application context", () =>
+    Effect.gen(function* () {
+      const modelSelection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" };
+      const build = (standingInstructions?: string) =>
+        CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId: "native-standing",
+          codexInput: [{ type: "text", text: "test" }],
+          runtimePolicy: {
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            cwd: null,
+            ...(standingInstructions === undefined ? {} : { standingInstructions }),
+          },
+          modelSelection,
+        });
+      assert.isUndefined((yield* build()).additionalContext);
+      assert.deepEqual((yield* build("Merge when checks pass.")).additionalContext, {
+        t3_project_instructions_01: {
+          kind: "application",
+          value: standingInstructionsBlock("Merge when checks pass.") ?? "",
+        },
+      });
+      // Two-byte characters overflow one entry; the entries stay under Codex's cap, in order.
+      const long = "é".repeat(STANDING_INSTRUCTIONS_MAX_LENGTH);
+      const entries = Object.entries((yield* build(long)).additionalContext ?? {});
+      assert.deepEqual(
+        entries.map(([key]) => key),
+        ["t3_project_instructions_01", "t3_project_instructions_02", "t3_project_instructions_03"],
+      );
+      for (const [, entry] of entries) {
+        assert.isAtMost(
+          new TextEncoder().encode(entry.value).length,
+          CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES,
+        );
+      }
+      assert.equal(
+        entries.map(([, entry]) => entry.value).join(""),
+        standingInstructionsBlock(long),
+      );
     }),
   );
 });
