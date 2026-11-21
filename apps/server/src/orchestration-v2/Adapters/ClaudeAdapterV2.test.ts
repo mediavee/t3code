@@ -9268,6 +9268,20 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       expected: "Claude API rate limit reached. Try again later.",
     },
     {
+      name: "an HTTP 502 from a gateway",
+      isError: true,
+      result: "API Error: 502 status code (no body). This is a server-side issue.",
+      apiErrorStatus: 502,
+      expected: "API Error: 502 status code (no body). This is a server-side issue.",
+    },
+    {
+      name: "an HTTP 500 server error",
+      isError: true,
+      result: "API Error: 500 Internal server error.",
+      apiErrorStatus: 500,
+      expected: "API Error: 500 Internal server error.",
+    },
+    {
       name: "a different terminal reason",
       isError: true,
       result: "API Error: 400 Request rejected.",
@@ -9354,6 +9368,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.equal(
         terminal.failure.class,
         apiErrorStatus === 429 ? "usage_limit" : "provider_error",
+      );
+      assert.equal(
+        terminal.failure.retryable,
+        apiErrorStatus === 429 || apiErrorStatus >= 500 ? true : null,
       );
     }).pipe(
       Effect.provide(
@@ -13205,6 +13223,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(terminal.status, "failed");
         if (terminal.status !== "failed") return;
         assert.equal(terminal.failure.code, "api_error_503");
+        assert.isTrue(terminal.failure.retryable);
         assert.equal(terminal.retry?.attempt, 1);
         assert.lengthOf(harness.terminalEvents(), 1);
         assert.isTrue(yield* Deferred.isDone(closeRequested), "the query must be closed");
@@ -14572,7 +14591,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       yield* harness.offerAndWait(wakeTaskStarted);
       assert.isTrue(yield* harness.hasPendingBackgroundWork);
       yield* Queue.shutdown(harness.sdkMessages);
-      assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "failed");
+      const exited = yield* Queue.take(harness.terminalReceipts);
+      assert.equal(exited.status, "failed");
+      // A process lost mid-turn is a transport failure the turn can be resumed from.
+      if (exited.status === "failed") assert.isTrue(exited.failure.retryable);
       assert.deepStrictEqual(
         providerThreadRosterEvents(harness.events)
           .at(-1)

@@ -3263,6 +3263,7 @@ it.effect("refreshes pull requests after a provider stream exits with an error",
     );
     const error = written.find((item) => item.type === "error");
     assert.include(error?.failure.message ?? "", "provider event stream closed unexpectedly");
+    assert.isTrue(error?.failure.retryable);
   }),
 );
 

@@ -12784,5 +12784,12 @@
   "99963c0142e17f00": "Para la nueva cuenta de {tracker}.",
   "6d8e4ebc889bace9": "Añadir cuenta",
   "3d4448e3c061f894": "Otra máquina",
-  "349587beaf00ce5e": "{title}, delegado desde {machine}, {count, plural, one {{count} tarea} other {{count} tareas}}"
+  "349587beaf00ce5e": "{title}, delegado desde {machine}, {count, plural, one {{count} tarea} other {{count} tareas}}",
+  "bc34446a962cdcfe": "Reanudar tras errores del proveedor",
+  "079d0bd4815b5348": "Errores del proveedor",
+  "bb9d9afd0523940a": "Reanuda un turno que falló por un error de servidor o de conexión del proveedor, hasta tres veces, tras 15 segundos, 1 minuto y 3 minutos.",
+  "ae62ee82e0c146bb": "reintentar fallo error 502 503 pasarela conexión recuperar continuar",
+  "0d1c02eb9bb693c4": "No se pudieron reanudar las sesiones fallidas",
+  "72516ad01a8e3386": "{count, plural, one {{count} sesión falló en la última hora} other {{count} sesiones fallaron en la última hora}}",
+  "253a12fc99873da8": "Reanudar todo"
 }

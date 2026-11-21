@@ -22,7 +22,9 @@ import {
   RuntimeRequestId,
   TurnItemId,
   type ModelSelection,
+  type OrchestrationV2DelegatedFrom,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderFailure,
   type OrchestrationV2Run,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2RuntimeRequest,
@@ -14412,3 +14414,196 @@ it.layer(layerQueueResumeDisabledInstanceTest)(
     );
   },
 );
+
+it.layer(layerTest)("transient-failure continuation", (it) => {
+  const gateway502 = {
+    class: "provider_error" as const,
+    message: "API Error: 502 Bad Gateway",
+    code: "api_error_502",
+    retryable: true,
+  };
+
+  /** A thread whose first run failed with `failure`, as a provider adapter would report it. */
+  const seedFailedRun = Effect.fnUntraced(function* (
+    key: string,
+    failure: OrchestrationV2ProviderFailure,
+    delegatedFrom?: OrchestrationV2DelegatedFrom,
+  ) {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const eventSink = yield* EventSink.EventSinkV2;
+    const threadId = ThreadId.make(`transient-continuation-${key}`);
+    yield* orchestrator.dispatch({
+      type: "thread.create",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: CommandId.make(`${threadId}:create`),
+      threadId,
+      projectId: ProjectId.make(`${threadId}:project`),
+      title: "Transient failure",
+      modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: process.cwd(),
+      ...(delegatedFrom === undefined
+        ? {}
+        : { delegatedFrom, linkOrigin: { sessionId: "link:transient-parent", label: "Parent" } }),
+    });
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: "web",
+      commandId: CommandId.make(`${threadId}:message`),
+      threadId,
+      messageId: MessageId.make(`${threadId}:message`),
+      text: "Build it",
+      attachments: [],
+      modelSelection,
+      dispatchMode: { type: "start_immediately" },
+    });
+    const run = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!;
+    const now = yield* DateTime.now;
+    const item = (id: string, payload: Record<string, unknown>) => ({
+      id: EventId.make(`${threadId}:${id}`),
+      type: "turn-item.updated" as const,
+      threadId,
+      runId: run.id,
+      nodeId: run.rootNodeId,
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make(`${threadId}:${id}`),
+        threadId,
+        runId: run.id,
+        nodeId: run.rootNodeId,
+        providerThreadId: run.providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        ...payload,
+      },
+    });
+    const writeStop = eventSink.write({
+      events: [
+        item("stop", {
+          type: "run_interrupt_request",
+          ordinal: 3,
+          status: "completed",
+          title: "Stop",
+          message: "Stop requested",
+        }),
+      ] as never,
+    });
+    yield* eventSink.write({
+      events: [
+        item("error", {
+          type: "error",
+          ordinal: 2,
+          status: "failed",
+          title: "Provider failure",
+          failure,
+        }),
+        {
+          id: EventId.make(`${threadId}:failed`),
+          type: "run.updated",
+          threadId,
+          runId: run.id,
+          nodeId: run.rootNodeId,
+          providerInstanceId: run.providerInstanceId,
+          occurredAt: now,
+          payload: { ...run, status: "failed", completedAt: now },
+        },
+      ] as never,
+    });
+    const resume = orchestrator
+      .dispatch({
+        type: "message.dispatch",
+        createdBy: "agent",
+        creationSource: "server",
+        commandId: CommandId.make(`command:transient-retry:${run.id}:1`),
+        threadId,
+        messageId: MessageId.make(`message:transient-retry:${run.id}:1`),
+        text: "Continue where you left off.",
+        notification: { source: { kind: "system" }, outcome: "updated", summary: "Resumed" },
+        attachments: [],
+        transientFailureContinuationOfRunId: run.id,
+        dispatchMode: { type: "start_immediately" },
+      })
+      .pipe(
+        Effect.map((result) =>
+          result.storedEvents.some((stored) => stored.event.type === "run.created"),
+        ),
+      );
+    const runCount = orchestrator
+      .getThreadProjection(threadId)
+      .pipe(Effect.map((projection) => projection.runs.length));
+    return { orchestrator, threadId, run, resume, runCount, writeStop };
+  });
+
+  it.effect("starts the continuation of a run that failed on a 502", () =>
+    Effect.gen(function* () {
+      const seeded = yield* seedFailedRun("gateway", gateway502);
+      assert.isTrue(yield* seeded.resume);
+      const projection = yield* seeded.orchestrator.getThreadProjection(seeded.threadId);
+      assert.lengthOf(projection.runs, 2);
+      assert.equal(
+        projection.runs[1]?.userMessageId,
+        MessageId.make(`message:transient-retry:${seeded.run.id}:1`),
+      );
+      // A replayed try is the same accepted command, not a second run.
+      yield* seeded.resume;
+      assert.equal(yield* seeded.runCount, 2);
+    }),
+  );
+
+  it.effect("accepts a stale continuation without starting work", () =>
+    Effect.gen(function* () {
+      const cyber = yield* seedFailedRun("cyber", {
+        class: "provider_error",
+        message: "This content was flagged for possible cybersecurity risk.",
+        code: "cyberPolicy",
+        retryable: false,
+      });
+      assert.isFalse(yield* cyber.resume);
+      assert.equal(yield* cyber.runCount, 1);
+
+      const stopped = yield* seedFailedRun("stopped", gateway502);
+      yield* stopped.writeStop;
+      assert.isFalse(yield* stopped.resume);
+      assert.equal(yield* stopped.runCount, 1);
+
+      // The user's follow-up won the race; the continuation must not queue behind it.
+      const followed = yield* seedFailedRun("followed", gateway502);
+      yield* followed.orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${followed.threadId}:follow-up`),
+        threadId: followed.threadId,
+        messageId: MessageId.make(`${followed.threadId}:follow-up`),
+        text: "Try another way",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      assert.isFalse(yield* followed.resume);
+      assert.equal(yield* followed.runCount, 2);
+
+      // A delegated task's failure already woke its parent, which owns the retry.
+      const delegated = yield* seedFailedRun("delegated", gateway502, {
+        environmentId: EnvironmentId.make("environment:transient-parent"),
+        threadId: ThreadId.make("thread:transient-parent"),
+        title: "Parent there",
+      });
+      assert.isDefined(
+        (yield* delegated.orchestrator.getThreadProjection(delegated.threadId)).thread
+          .delegatedFrom,
+      );
+      assert.isFalse(yield* delegated.resume);
+      assert.equal(yield* delegated.runCount, 1);
+    }),
+  );
+});
