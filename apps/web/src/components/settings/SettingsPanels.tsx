@@ -625,6 +625,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.agentMemoryMaxGiB !== DEFAULT_UNIFIED_SETTINGS.agentMemoryMaxGiB
       ? [gt("Agent memory ceiling")]
       : []),
+    ...(settings.maskSecretsInToolOutput !== DEFAULT_UNIFIED_SETTINGS.maskSecretsInToolOutput
+      ? [gt("Mask secrets in tool output")]
+      : []),
     ...(settings.defaultThreadEnvMode !== DEFAULT_UNIFIED_SETTINGS.defaultThreadEnvMode
       ? [gt("New thread mode")]
       : []),
@@ -760,6 +763,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       backgroundActivity: DEFAULT_UNIFIED_SETTINGS.backgroundActivity,
       keepAwakeWhileAgentsWork: DEFAULT_UNIFIED_SETTINGS.keepAwakeWhileAgentsWork,
       agentMemoryMaxGiB: DEFAULT_UNIFIED_SETTINGS.agentMemoryMaxGiB,
+      maskSecretsInToolOutput: DEFAULT_UNIFIED_SETTINGS.maskSecretsInToolOutput,
       backgroundActivityProfile: DEFAULT_UNIFIED_SETTINGS.backgroundActivityProfile,
       automaticGitFetchInterval: DEFAULT_UNIFIED_SETTINGS.automaticGitFetchInterval,
       providerHealthRefreshInterval: DEFAULT_UNIFIED_SETTINGS.providerHealthRefreshInterval,
@@ -2531,6 +2535,40 @@ export function MaintenanceSettingsPanel() {
       </SettingsSection>
 
       <AgentMemorySection />
+
+      <SettingsSection id="tool-output-secrets" title={gt("Secrets in tool output")}>
+        <SettingsRow
+          serverScoped
+          {...setting("mask-secrets-in-tool-output")}
+          description={gt(
+            "Replace secrets T3 knows, private keys and passwords in URLs with [redacted] in the command and tool output it stores and shows.",
+          )}
+          settingKeys={["maskSecretsInToolOutput"]}
+          resetAction={
+            settings.maskSecretsInToolOutput !==
+            DEFAULT_UNIFIED_SETTINGS.maskSecretsInToolOutput ? (
+              <SettingResetButton
+                ariaLabel={gt("Reset secret masking in tool output to default")}
+                onClick={() =>
+                  updateSettings({
+                    maskSecretsInToolOutput: DEFAULT_UNIFIED_SETTINGS.maskSecretsInToolOutput,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <ScopedSwitch
+              settingKeys={["maskSecretsInToolOutput"]}
+              checked={settings.maskSecretsInToolOutput}
+              onCheckedChange={(checked) =>
+                updateSettings({ maskSecretsInToolOutput: Boolean(checked) })
+              }
+              aria-label={gt("Mask secrets in tool output")}
+            />
+          }
+        />
+      </SettingsSection>
 
       <StorageCleanupSections />
 

@@ -15,6 +15,7 @@ import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
 import {
   makeEventNdjsonLogStore,
   type PendingRecord,
@@ -118,6 +119,32 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
           NodeFS.rmSync(tempDir, { recursive: true, force: true });
         }
       }),
+  );
+
+  it.effect("masks known secrets before writing an event", () =>
+    Effect.gen(function* () {
+      const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-"));
+      const basePath = NodePath.join(tempDir, "events.log");
+      try {
+        const knownSecrets = yield* KnownSecrets.KnownSecrets.pipe(
+          Effect.provide(KnownSecrets.layerTest(["fake-secret-0000"])),
+        );
+        const store = yield* makeEventNdjsonLogStore(basePath, { batchWindowMs: 0, knownSecrets });
+        yield* store
+          .logger("native")
+          .write({ output: "TOKEN=fake-secret-0000\nDB=redis://:fake-pass@cache\n" }, null);
+        yield* store.close();
+
+        const [file] = NodeFS.readdirSync(tempDir);
+        assert.isDefined(file);
+        const contents = NodeFS.readFileSync(NodePath.join(tempDir, file), "utf8").trim();
+        assert.deepEqual(decodeUnknownJson(parseLogLine(contents).payload), {
+          output: "TOKEN=[redacted]\nDB=redis://:[redacted]@cache\n",
+        });
+      } finally {
+        NodeFS.rmSync(tempDir, { recursive: true, force: true });
+      }
+    }),
   );
 
   it.effect("keeps long thread ids that share a prefix in separate files", () =>
