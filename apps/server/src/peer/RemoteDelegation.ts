@@ -58,6 +58,8 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
+import { redactSecrets } from "../secrets/secretRedaction.ts";
 import { forkParked } from "../serverActivation.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
@@ -201,6 +203,7 @@ const make = Effect.gen(function* () {
   const projects = yield* ProjectService.ProjectService;
   const repositoryIdentities = yield* RepositoryIdentityResolver.RepositoryIdentityResolver;
   const random = yield* SecureRandom.SecureRandom;
+  const knownSecrets = yield* KnownSecrets.KnownSecrets;
   const hereId = yield* ServerEnvironment.ServerEnvironment.pipe(
     Effect.flatMap((environment) => environment.getEnvironmentId),
   );
@@ -730,6 +733,7 @@ const make = Effect.gen(function* () {
     executedModel?: string,
   ) {
     const attempt = yield* random.uuidV4();
+    const known = yield* knownSecrets.current;
     yield* threads
       .dispatch({
         type: "delegated_task.remote.complete",
@@ -737,7 +741,8 @@ const make = Effect.gen(function* () {
         parentThreadId,
         taskId,
         status,
-        result,
+        // A report from another environment can quote a secret this one handed out.
+        result: known === null ? result : redactSecrets(result, known),
         ...(stoppedThere === undefined ? {} : { stoppedThere }),
         ...(stopCount === undefined ? {} : { stopCount }),
         ...(executedModel === undefined ? {} : { executedModel }),
