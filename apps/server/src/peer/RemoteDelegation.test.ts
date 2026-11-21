@@ -79,6 +79,9 @@ import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
+
+const FAKE_SECRET = "fake-secret-0000";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 
 // The laptop's agent delegates a task to the box through a link. The box is
@@ -922,6 +925,7 @@ const makeLaptop = (
       Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
+      Layer.provideMerge(KnownSecrets.layerTest([FAKE_SECRET])),
       Layer.fresh,
     );
     const here = yield* Layer.build(layerHere);
@@ -1705,6 +1709,34 @@ it.effect("a task's result is its own run's whole last reply, not a later run's"
       const waits = yield* Ref.get(thread.waitedFor);
       expect(waits.length).toBeGreaterThan(0);
       expect(waits.every((runId) => runId === boxRunId)).toBe(true);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task's result from there masks a secret this environment knows", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+
+      const result = yield* a.call("delegate_task", {
+        task: "Check the deploy token.",
+        target: { environmentId: box.environmentId },
+        clientRequestId: "token-on-box",
+      });
+      const { taskId } = result.structuredContent as { taskId: NodeId };
+      yield* Ref.set(thread.reply, `The token ${FAKE_SECRET} works.`);
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+      const task = yield* taskResult(a, taskId);
+      expect(task?.result).toBe("The token [redacted] works.");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

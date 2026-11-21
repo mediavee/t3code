@@ -895,6 +895,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("memory limit ram oom out of memory cgroup systemd memorymax tmpdir temp")],
   },
   {
+    id: "mask-secrets-in-tool-output",
+    title: msg("Mask secrets in tool output"),
+    to: "/settings/maintenance",
+    scope: "environment-defaults",
+    searchTerms: [msg("redact hide secrets passwords tokens keys command output leak")],
+  },
+  {
     id: "background-activity",
     title: msg("Background activity"),
     to: "/settings/maintenance",

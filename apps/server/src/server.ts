@@ -90,6 +90,7 @@ import * as SourceControlBuiltInDrivers from "./sourceControl/builtInDrivers.ts"
 import * as SourceControlSignIn from "./sourceControl/SourceControlSignIn.ts";
 import { BUILT_IN_SOURCE_CONTROL_DRIVER_LIST } from "./sourceControl/sourceControlDefinitions.ts";
 import * as TextGeneration from "./textGeneration/TextGeneration.ts";
+import * as KnownSecrets from "./secrets/KnownSecrets.ts";
 import * as SecretCheck from "./secrets/SecretCheck.ts";
 import * as SecretResolver from "./secrets/SecretResolver.ts";
 import * as ProviderInstanceRegistryHydration from "./provider/ProviderInstanceRegistryHydration.ts";
@@ -277,8 +278,10 @@ const layerProviderEventLoggers = Layer.effect(
   Effect.gen(function* () {
     const { providerEventLogPath } = yield* ServerConfig.ServerConfig;
     const attribution = yield* ResourceAttribution.ResourceAttribution;
+    const knownSecrets = yield* KnownSecrets.KnownSecrets;
     const store = yield* EventNdjsonLogger.makeEventNdjsonLogStore(providerEventLogPath, {
       attribution,
+      knownSecrets,
     }).pipe(
       Effect.catch((error) =>
         Effect.logWarning(error.message, { error }).pipe(
@@ -291,7 +294,7 @@ const layerProviderEventLoggers = Layer.effect(
     yield* Effect.addFinalizer(() => store.close());
     return { native: store.logger("native"), canonical: store.logger("canonical") };
   }),
-);
+).pipe(Layer.provide(KnownSecrets.layer));
 
 const layerPtyAdapter = NodePtyAdapter.layer;
 

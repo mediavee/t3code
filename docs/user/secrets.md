@@ -25,3 +25,14 @@ When an agent calls `request_secret`, T3 Code displays a private card in the thr
 
 - Enter a value (or pick a 1Password reference if configured and permitted) and click **Save securely**, or **Decline**.
 - Values never appear in conversation history. For T3 tools, the secret is passed directly without exposing it to the agent; for shell commands, the card tells you that the value is written to a private temporary file readable by the agent's commands for ~24 hours.
+
+## Secrets in tool output
+
+A command an agent runs can still print a secret, for example `cat .env`. T3 Code replaces these with `[redacted]` in the command and tool output it saves and shows (file and web search results and file edits included), on every device, in the provider event logs, and in the result a task delegated to another environment sends back:
+
+- values you gave through a secret request card, from when you answer until the server restarts (a card field shown in clear, such as an email, is not masked)
+- values read from a secret reference, and provider environment variables marked sensitive
+- private key blocks (`-----BEGIN … PRIVATE KEY-----`)
+- the password in a URL, such as `mysql://user:password@host`
+
+Anything else is not masked: a `password=` line in a config file, a token T3 Code was never given, the agent's own messages, and output saved before the secret was known or while the setting was off. The agent itself still sees the command's real output. Turn masking off in **Settings → Maintenance → Secrets in tool output**.
