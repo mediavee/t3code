@@ -309,6 +309,15 @@ export class InvalidMockUpdateServerPortError extends Schema.TaggedError<Invalid
   }
 }
 
+export class ForkUpstreamUpdateFeedError extends Schema.TaggedError<ForkUpstreamUpdateFeedError>()(
+  "ForkUpstreamUpdateFeedError",
+  { version: Schema.String, repository: Schema.String },
+) {
+  override get message(): string {
+    return `Fork build ${this.version} would update itself from ${this.repository}, replacing the fork. Point T3CODE_DESKTOP_UPDATE_REPOSITORY at the fork, or build without an update feed.`;
+  }
+}
+
 export class DesktopBuildManifestRestoreError extends Schema.TaggedError<DesktopBuildManifestRestoreError>()(
   "DesktopBuildManifestRestoreError",
   { failures: Schema.Array(ReleasePackageManifestError) },
@@ -2861,6 +2870,17 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   buildConfig.publish = null;
   if (!isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
+    // An upstream feed in a fork build would let the updater swap the fork for an upstream release.
+    if (
+      publishConfig &&
+      version.includes("-mediavee.") &&
+      publishConfig.owner.toLowerCase() === "pingdotgg"
+    ) {
+      return yield* new ForkUpstreamUpdateFeedError({
+        version,
+        repository: `${publishConfig.owner}/${publishConfig.repo}`,
+      });
+    }
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
     } else if (mockUpdates) {
