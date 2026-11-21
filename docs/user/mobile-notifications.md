@@ -16,5 +16,6 @@ Get push alerts, Live Activities, and home-screen widgets on iOS and Android whe
 
 ## Notes
 
+- A task another machine delegated with `delegate_task` alerts only when it needs your approval or an answer only you can give, titled `<delegating thread> › <task>`. The delegating thread reports its result.
 - Ordinary alerts are muted while the mobile app is in the foreground, though viewing a thread on another device does not silence your phone.
 - Force-stopping T3 Code in Android system Settings pauses push delivery until you reopen the app.
