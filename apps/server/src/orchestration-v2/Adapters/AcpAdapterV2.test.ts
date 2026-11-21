@@ -31,6 +31,7 @@ import {
   ProviderSessionId,
   ThreadId,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   type OrchestrationV2UserInputQuestion,
   type ProviderOptionDescriptor,
@@ -82,6 +83,13 @@ import {
 } from "@t3tools/provider-grok/testing";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as CommandReceiptStore from "../CommandReceiptStore.ts";
+import * as Orchestrator from "../Orchestrator.ts";
+import * as ProviderSessionManager from "../ProviderSessionManager.ts";
+import * as ThreadCommandExecutor from "../ThreadCommandExecutor.ts";
+import * as ThreadManagementService from "../ThreadManagementService.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { standingInstructionsBlock } from "@t3tools/provider-core/server/runtimeInstructions";
 import { makeTurnInput } from "./AcpAdapterV2.testkit.ts";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -1128,6 +1136,143 @@ const runFormElicitation = (input: {
     assert.lengthOf(responses, 1);
     return { questions, response: responses[0] };
   });
+
+/** An ACP session with client terminals whose prompt starts a long-running one. */
+const makeTerminalRosterHarness = (name: string) =>
+  Effect.gen(function* () {
+    type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+    let createTerminal: Parameters<RuntimeService["handleCreateTerminal"]>[0] | undefined;
+    let killTerminal: Parameters<RuntimeService["handleTerminalKill"]>[0] | undefined;
+    const runtimeInputs: Array<AcpAdapterV2RuntimeInput> = [];
+    let sessionId = "";
+    const serverArgs = ["-e", "setInterval(() => {}, 1000)"];
+    const startServer = (requestId: string) =>
+      Effect.suspend(() =>
+        createTerminal!(
+          { sessionId, command: process.execPath, args: serverArgs },
+          { requestId, method: "terminal/create" },
+        ),
+      );
+    const instanceId = ProviderInstanceId.make(`acp-test-terminal-${name}`);
+    const baseMakeRuntime = makeMockRuntime({
+      childProcessSpawner: yield* ChildProcessSpawner.ChildProcessSpawner,
+      mockAgentPath: yield* bundledMockAgentPath,
+      wrapRuntime: (runtime, ordinal) => ({
+        ...runtime,
+        start: () =>
+          runtime.start().pipe(
+            Effect.map((started) => ({
+              ...started,
+              sessionId: `mock-${name}-session-${ordinal}`,
+            })),
+          ),
+        handleCreateTerminal: (handler) =>
+          Effect.sync(() => {
+            createTerminal = handler;
+          }).pipe(Effect.andThen(runtime.handleCreateTerminal(handler))),
+        handleTerminalKill: (handler) =>
+          Effect.sync(() => {
+            killTerminal = handler;
+          }).pipe(Effect.andThen(runtime.handleTerminalKill(handler))),
+        prompt: () =>
+          startServer(`${name}-prompt`).pipe(Effect.as({ stopReason: "end_turn" as const })),
+      }),
+    });
+    const adapter = yield* makeAcpAdapterV2({
+      instanceId,
+      flavor: {
+        driver: ACP_TEST_DRIVER,
+        capabilities: AcpProviderCapabilitiesV2,
+        makeRuntime: (runtimeInput) =>
+          Effect.sync(() => {
+            runtimeInputs.push(runtimeInput);
+          }).pipe(Effect.andThen(baseMakeRuntime(runtimeInput))),
+      },
+      selfInvocation: yield* resolveSelfInvocation(),
+      clientTerminals: {},
+    });
+    const threadId = ThreadId.make(`thread-acp-terminal-${name}`);
+    const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      cwd: process.cwd(),
+    });
+    const modelSelection = { instanceId, model: "default" } as const;
+    const runtime = yield* adapter.openSession({
+      threadId,
+      providerSessionId: ProviderSessionId.make(`provider-session-acp-terminal-${name}`),
+      modelSelection,
+      runtimePolicy,
+    });
+    const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+    sessionId = providerThread.nativeThreadRef!.nativeId!;
+    return {
+      instanceId,
+      threadId,
+      runtimePolicy,
+      modelSelection,
+      runtime,
+      providerThread,
+      commandLine: [process.execPath, ...serverArgs].join(" "),
+      startServer,
+      kill: (terminalId: string) =>
+        Effect.suspend(() =>
+          killTerminal!(
+            { sessionId, terminalId },
+            { requestId: `${name}-kill-${terminalId}`, method: "terminal/kill" },
+          ),
+        ),
+      terminateRuntime: Effect.suspend(() =>
+        runtimeInputs.at(-1)!.onTermination!(
+          new EffectAcpErrors.AcpTransportError({ detail: "Injected agent exit", cause: "test" }),
+        ),
+      ),
+      /** The next roster for the thread `matches` accepts, skipping every other event. */
+      nextRoster: (matches: (tasks: ReadonlyArray<unknown>) => boolean) =>
+        runtime.events.pipe(
+          Stream.filter(
+            (event): event is Extract<typeof event, { readonly type: "provider_thread.updated" }> =>
+              event.type === "provider_thread.updated" &&
+              event.providerThread.id === providerThread.id &&
+              event.providerThread.pendingBackgroundTasks !== undefined &&
+              matches(event.providerThread.pendingBackgroundTasks),
+          ),
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        ),
+    };
+  });
+
+/** ThreadManagementService over one live session runtime and its thread's provider thread. */
+const threadManagementOver = (
+  runtime: ProviderAdapter.ProviderAdapterV2SessionRuntime,
+  providerThread: OrchestrationV2ProviderThread,
+) =>
+  Layer.merge(
+    ThreadManagementService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadRecords: () =>
+              Effect.succeed({
+                thread: {
+                  id: providerThread.appThreadId,
+                  deletedAt: null,
+                  activeProviderThreadId: providerThread.id,
+                },
+                providerThreads: [providerThread],
+              } as unknown as OrchestrationV2ThreadProjection),
+          }),
+          Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+            get: () => Effect.succeedSome(runtime),
+          }),
+        ),
+      ),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+    ),
+    ThreadCommandExecutor.layer,
+  );
 
 /** Submits like the web and mobile clients: an option's `value`, else its label. */
 const optionValues = (question: OrchestrationV2UserInputQuestion | undefined) =>
@@ -6502,6 +6647,146 @@ describe("AcpAdapterV2", () => {
         terminalOutput.output,
         "thread-acp-native-fork-target\nBearer target-thread-token",
       );
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live("lists the client terminals T3 runs as the thread's background commands", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeTerminalRosterHarness("roster");
+      const { runtime, providerThread, startServer, kill, nextRoster } = harness;
+
+      // Between turns no run reads the stream, so the session stores the roster itself.
+      const first = yield* startServer("first");
+      const listed = yield* nextRoster((tasks) => tasks.length === 1);
+      assert.deepEqual(listed.providerThread.pendingBackgroundTasks, [
+        { taskId: first.terminalId, kind: "command", description: harness.commandLine },
+      ]);
+      assert.isTrue(listed.sessionScoped);
+      // Releasing or replacing the session would kill it.
+      assert.isTrue(yield* runtime.hasPendingBackgroundWork!);
+      const replaced = yield* runtime
+        .ensureThread({
+          threadId: harness.threadId,
+          modelSelection: harness.modelSelection,
+          runtimePolicy: harness.runtimePolicy,
+          existingProviderThread: providerThread,
+          forceNewNativeThread: true,
+        })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(replaced));
+
+      // `t3_background_wait` without ids, through the service that serves it.
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(
+          threadManagementOver(runtime, { ...providerThread, ...listed.providerThread }),
+        ),
+      );
+      const waited = yield* service.awaitBackgroundTasks({
+        threadId: harness.threadId,
+        awaited: true,
+      });
+      assert.deepEqual(waited, { matched: [first.terminalId], unmatched: [] });
+      const awaited = yield* nextRoster((tasks) => tasks.length === 1);
+      assert.deepEqual(awaited.providerThread.pendingBackgroundTasks, [
+        {
+          taskId: first.terminalId,
+          kind: "command",
+          description: harness.commandLine,
+          awaited: true,
+        },
+      ]);
+
+      yield* kill(first.terminalId);
+      const exited = yield* nextRoster((tasks) => tasks.length === 0);
+      assert.isTrue(exited.sessionScoped);
+      assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
+
+      // A completed turn that leaves one running keeps its run reading, so its exit goes there.
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId: harness.threadId,
+          providerThread,
+          instanceId: harness.instanceId,
+          runtimePolicy: harness.runtimePolicy,
+          now: yield* DateTime.now,
+        }),
+      );
+      const ended = Array.from(
+        yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        ),
+      ).findLast(
+        (event) =>
+          event.type === "provider_thread.updated" && event.providerThread.id === providerThread.id,
+      );
+      const leftRunning =
+        ended?.type === "provider_thread.updated"
+          ? (ended.providerThread.pendingBackgroundTasks ?? [])
+          : [];
+      assert.lengthOf(leftRunning, 1);
+      yield* kill(leftRunning[0]!.taskId);
+      const afterTurn = yield* nextRoster((tasks) => tasks.length === 0);
+      assert.isUndefined(afterTurn.sessionScoped);
+
+      // A dead agent's terminals end with it.
+      const orphan = yield* startServer("orphan");
+      yield* nextRoster((tasks) => tasks.length === 1);
+      yield* harness.terminateRuntime;
+      yield* nextRoster((tasks) => tasks.length === 0);
+      assert.notEqual(orphan.terminalId, first.terminalId);
+      assert.isFalse(yield* runtime.hasPendingBackgroundWork!);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live("a replacement session clears the commands its provider thread listed", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeTerminalRosterHarness("replacement");
+      const { runtime, providerThread } = harness;
+      // The store still lists a command the last session ran, as when its clear never landed.
+      const stale = {
+        ...providerThread,
+        pendingBackgroundTasks: [{ taskId: "t3-term-99", kind: "command" as const }],
+      };
+      const replace = (existing: typeof providerThread) =>
+        runtime.ensureThread({
+          threadId: harness.threadId,
+          modelSelection: harness.modelSelection,
+          runtimePolicy: harness.runtimePolicy,
+          existingProviderThread: existing,
+          forceNewNativeThread: true,
+        });
+      const replacement = yield* replace(stale);
+      assert.equal(replacement.id, providerThread.id);
+      yield* runtime.startTurn(
+        makeTurnInput({
+          threadId: harness.threadId,
+          providerThread: { ...replacement, pendingBackgroundTasks: stale.pendingBackgroundTasks },
+          instanceId: harness.instanceId,
+          runtimePolicy: harness.runtimePolicy,
+          now: yield* DateTime.now,
+          ordinal: 2,
+        }),
+      );
+      const rosters = Array.from(
+        yield* runtime.events.pipe(
+          Stream.takeUntil((event) => event.type === "turn.terminal"),
+          Stream.runCollect,
+        ),
+      ).flatMap((event) =>
+        event.type === "provider_thread.updated" && event.providerThread.id === providerThread.id
+          ? [event.providerThread.pendingBackgroundTasks]
+          : [],
+      );
+      // No snapshot the turn sends carries the stored command back.
+      assert.isNotEmpty(rosters);
+      for (const roster of rosters) {
+        assert.isDefined(roster);
+        assert.notInclude(
+          roster!.map((task) => task.taskId),
+          "t3-term-99",
+        );
+      }
     }).pipe(Effect.provide(layerTest)),
   );
 
