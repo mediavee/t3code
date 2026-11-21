@@ -1411,6 +1411,31 @@ function codexTerminalFailureClass(
   return "provider_error";
 }
 
+// Codex's names for upstream failures that a later try can get past.
+const CODEX_TRANSIENT_ERROR_CODES = new Set([
+  "serverOverloaded",
+  "internalServerError",
+  "responseStreamDisconnected",
+  "responseStreamConnectionFailed",
+  "httpConnectionFailed",
+  "responseTooManyFailedAttempts",
+]);
+
+/** A 4xx, a policy refusal or a limit fails the same way again; a 5xx or a dropped stream may not. */
+function codexFailureRetryable(
+  failure: OrchestrationV2ProviderFailure,
+  errorInfos: ReadonlyArray<CodexErrorInfo | null | undefined>,
+): boolean | null {
+  if (failure.class === "usage_limit") return failure.retryable;
+  if (failure.code === "cyberPolicy") return false;
+  // The turn, its error notification and the retry notice each may or may not carry the status.
+  const status = errorInfos.map(codexErrorHttpStatus).find((value) => value !== null);
+  if (status !== undefined) return status >= 500;
+  return failure.class === "transport_error" || CODEX_TRANSIENT_ERROR_CODES.has(failure.code ?? "")
+    ? true
+    : failure.retryable;
+}
+
 function codexTerminalErrorNeedsEvidence(
   errorInfo: CodexErrorInfo | null | undefined,
   code: string | null,
@@ -6945,6 +6970,14 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ) {
                 failure = { ...failure, class: "transport_error" };
               }
+              failure = {
+                ...failure,
+                retryable: codexFailureRetryable(failure, [
+                  input.failureErrorInfo,
+                  notification?.errorInfo,
+                  retry?.errorInfo,
+                ]),
+              };
               const failureItemId = codexFailureItemId(input.context);
               return {
                 type: "turn.terminal",
@@ -7691,7 +7724,6 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   nativeCode: state.nativeCode,
                   failure: {
                     ...state.failure,
-                    retryable: false,
                     ...(codexErrorHttpStatus(errorInfo) === 429 ? { class: "usage_limit" } : {}),
                   },
                 },

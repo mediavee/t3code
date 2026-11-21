@@ -199,6 +199,13 @@ export type ProjectionRecoveryKind =
   | "delegated-completions"
   | "unread-steers";
 
+export interface ProjectionTransientFailureCandidate {
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+  readonly userMessageId: MessageId;
+  readonly completedAt: DateTime.Utc;
+}
+
 export type ProjectionLimitRecoveryCandidate = Pick<
   OrchestrationV2ThreadShell,
   | "id"
@@ -688,6 +695,11 @@ export interface ProjectionStoreV2Shape {
     readonly autoResume: boolean;
     readonly snooze: boolean;
   }) => Effect.Effect<ReadonlyArray<ProjectionLimitRecoveryCandidate>, ProjectionStoreV2Error>;
+  /** Threads whose latest run failed on a transient provider failure at or after `since`. */
+  readonly getTransientFailureCandidates: (
+    since: DateTime.Utc,
+    now: DateTime.Utc,
+  ) => Effect.Effect<ReadonlyArray<ProjectionTransientFailureCandidate>, ProjectionStoreV2Error>;
   /** Epoch ms of the next armed reset or snooze end after `now`, when a waiting thread becomes a candidate. */
   readonly getLimitRecoveryWakeAt: (
     now: DateTime.Utc,
@@ -2165,6 +2177,7 @@ type ShellThreadState = {
   readonly lastError: string | null;
   readonly lastErrorClass: OrchestrationV2ThreadShell["lastErrorClass"];
   readonly lastErrorCode: OrchestrationV2ThreadShell["lastErrorCode"];
+  readonly lastErrorRetryable: OrchestrationV2ThreadShell["lastErrorRetryable"];
   readonly usageLimitResetAt: OrchestrationV2ThreadShell["usageLimitResetAt"];
   readonly pendingRuntimeRequest: OrchestrationV2PendingRuntimeRequestSummary | null;
   readonly latestUserMessageAt: DateTime.Utc | null;
@@ -2344,6 +2357,7 @@ function shellFromState(input: {
     lastError: input.state.lastError,
     lastErrorClass: input.state.lastErrorClass,
     lastErrorCode: input.state.lastErrorCode,
+    lastErrorRetryable: input.state.lastErrorRetryable,
     usageLimitResetAt: input.state.usageLimitResetAt,
     pendingRuntimeRequest: input.state.pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(input.state.thread.guestShare),
@@ -5188,6 +5202,86 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
           });
         }
         return candidates;
+      },
+      Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+    );
+
+    const getTransientFailureCandidates = Effect.fn(
+      "ProjectionStore.getTransientFailureCandidates",
+    )(
+      function* (since: DateTime.Utc, now: DateTime.Utc) {
+        const sinceIso = DateTime.formatIso(since);
+        const nowIso = DateTime.formatIso(now);
+        const rows = yield* sql<{
+          readonly thread_id: string;
+          readonly run_id: string;
+          readonly user_message_id: string;
+          readonly completed_at: string;
+        }>`
+          SELECT t.thread_id, r.run_id, r.completed_at,
+            json_extract(r.payload_json, '$.userMessageId') AS user_message_id
+          FROM orchestration_v2_projection_threads t
+          INNER JOIN orchestration_v2_projection_runs r ON r.run_id = (
+            SELECT latest.run_id FROM orchestration_v2_projection_runs latest
+            WHERE latest.thread_id = t.thread_id
+              AND latest.status <> 'queued'
+              AND NOT (
+                latest.status = 'cancelled'
+                AND json_extract(latest.payload_json, '$.startedAt') IS NULL
+              )
+            -- latestExecutedRun: the run that ended last (runRanAfter).
+            ORDER BY latest.completed_at IS NULL DESC, latest.completed_at DESC,
+              latest.ordinal DESC, latest.run_id DESC
+            LIMIT 1
+          ) AND r.status = 'failed' AND r.completed_at >= ${sinceIso}
+          INNER JOIN orchestration_v2_projection_turn_items item ON item.turn_item_id = (
+            SELECT error.turn_item_id FROM orchestration_v2_projection_turn_items error
+            WHERE error.thread_id = t.thread_id AND error.run_id = r.run_id
+              AND error.type = 'error' AND error.status = 'failed'
+              AND error.node_id IS json_extract(r.payload_json, '$.rootNodeId')
+            ORDER BY error.updated_at DESC, error.ordinal DESC, error.turn_item_id DESC
+            LIMIT 1
+          )
+          WHERE t.deleted_at IS NULL
+            AND t.thread_id IN (
+              SELECT failure.thread_id FROM orchestration_v2_projection_turn_items failure
+              -- Spelled as in 104_TransientFailureIndex so the partial index serves it.
+              WHERE failure.type = 'error' AND failure.status = 'failed'
+                AND CASE WHEN json_valid(failure.payload_json) THEN
+                  json_extract(failure.payload_json, '$.failure.retryable') = 1
+                  AND json_extract(failure.payload_json, '$.failure.class') IS NOT 'usage_limit'
+                  ELSE 0 END
+                AND failure.updated_at >= ${sinceIso}
+            )
+            AND t.archived_at IS NULL
+            AND json_extract(t.payload_json, '$.settledOverride') IS NOT 'settled'
+            AND json_valid(item.payload_json)
+            AND json_extract(item.payload_json, '$.failure.retryable') = 1
+            AND json_extract(item.payload_json, '$.failure.class') IS NOT 'usage_limit'
+            AND (
+              json_extract(t.payload_json, '$.snoozedUntil') IS NULL
+              OR julianday(json_extract(t.payload_json, '$.snoozedUntil')) <= julianday(${nowIso})
+            )
+            -- A delegated task's failure already woke its parent, which owns the retry.
+            AND json_extract(t.payload_json, '$.lineage.relationshipToParent') IS NOT 'subagent'
+            AND json_extract(t.payload_json, '$.delegatedFrom') IS NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_runtime_requests request
+              WHERE request.thread_id = t.thread_id AND request.status = 'pending'
+            )
+            AND NOT EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_turn_items stop
+              WHERE stop.thread_id = t.thread_id AND stop.run_id = r.run_id
+                AND stop.type = 'run_interrupt_request'
+            )
+          ORDER BY r.completed_at, t.thread_id
+        `;
+        return rows.map((row) => ({
+          threadId: ThreadId.make(row.thread_id),
+          runId: RunId.make(row.run_id),
+          userMessageId: MessageId.make(row.user_message_id),
+          completedAt: DateTime.makeUnsafe(row.completed_at),
+        }));
       },
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
@@ -10127,6 +10221,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getProviderControlContext: readOnReader(getProviderControlContext),
       getLimitRecoveryCandidates: readOnReader(getLimitRecoveryCandidates),
       getLimitRecoveryWakeAt: readOnReader(getLimitRecoveryWakeAt),
+      getTransientFailureCandidates: readOnReader(getTransientFailureCandidates),
       getRecoveryThreadIds: readOnReader(getRecoveryThreadIds),
       getUnreadableThreadIds: readOnReader(getUnreadableThreadIds),
       getThreadSnapshot: readOnReader(getThreadSnapshot),
