@@ -12803,5 +12803,7 @@
     ")"
   ],
   "33d18dda74f6d7b3": "Cancel stack auto-merge",
-  "012c67c7f1a99e33": "Auto-merge stack"
+  "012c67c7f1a99e33": "Auto-merge stack",
+  "3d4448e3c061f894": "Other machine",
+  "349587beaf00ce5e": "{title}, delegated from {machine}, {count, plural, one {{count} task} other {{count} tasks}}"
 }

@@ -12794,5 +12794,7 @@
     ")"
   ],
   "33d18dda74f6d7b3": "Annuler la fusion automatique de la pile",
-  "012c67c7f1a99e33": "Fusion automatique de la pile"
+  "012c67c7f1a99e33": "Fusion automatique de la pile",
+  "3d4448e3c061f894": "Autre machine",
+  "349587beaf00ce5e": "{title}, délégué depuis {machine}, {count, plural, one {{count} tâche} other {{count} tâches}}"
 }

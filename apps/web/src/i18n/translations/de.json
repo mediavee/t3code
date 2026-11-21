@@ -12794,5 +12794,7 @@
     ")"
   ],
   "33d18dda74f6d7b3": "Auto-Merge für Stack abbrechen",
-  "012c67c7f1a99e33": "Auto-Merge für Stack"
+  "012c67c7f1a99e33": "Auto-Merge für Stack",
+  "3d4448e3c061f894": "Anderer Rechner",
+  "349587beaf00ce5e": "{title}, delegiert von {machine}, {count, plural, one {{count} Aufgabe} other {{count} Aufgaben}}"
 }

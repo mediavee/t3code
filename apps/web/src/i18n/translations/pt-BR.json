@@ -12794,5 +12794,7 @@
     ")"
   ],
   "33d18dda74f6d7b3": "Cancelar merge automático da pilha",
-  "012c67c7f1a99e33": "Merge automático da pilha"
+  "012c67c7f1a99e33": "Merge automático da pilha",
+  "3d4448e3c061f894": "Outra máquina",
+  "349587beaf00ce5e": "{title}, delegado de {machine}, {count, plural, one {{count} tarefa} other {{count} tarefas}}"
 }

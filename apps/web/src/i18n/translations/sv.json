@@ -12801,5 +12801,7 @@
     ")"
   ],
   "33d18dda74f6d7b3": "Avbryt automatisk merge för stacken",
-  "012c67c7f1a99e33": "Merga stacken automatiskt"
+  "012c67c7f1a99e33": "Merga stacken automatiskt",
+  "3d4448e3c061f894": "Annan dator",
+  "349587beaf00ce5e": "{title}, delegerad från {machine}, {count, plural, one {{count} uppgift} other {{count} uppgifter}}"
 }
