@@ -5642,5 +5642,13 @@
   "67d4a779cd49a863": "{count, plural, one {{count} klar} other {{count} klara}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} öppen PR} other {{count} öppna PR}}",
   "5c73b69a42cb7616": "Undertrådar",
-  "fa97f7ae0f746034": "{count, plural, one {{count} väntar på svar} other {{count} väntar på svar}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} väntar på svar} other {{count} väntar på svar}}",
+  "3e69738f0839ab45": "Hemligheter i verktygsutdata",
+  "abaacba7b0f79fe8": "Återställ",
+  "a8783c8c12d1d275": "Återställ maskering av hemligheter i verktygsutdata till standard",
+  "9d4bf2d6201e724e": "Maskera hemligheter i verktygsutdata",
+  "037a6649ca73c4dd": "Ersätter hemligheter som T3 känner till, privata nycklar och lösenord i URL:er med [redacted] i kommando- och verktygsutdata som sparas och visas.",
+  "947dbea939be4ff5": "hemligheter",
+  "514b87e667c4b9b7": "maskera",
+  "47fe19186c911efd": "censurera"
 }

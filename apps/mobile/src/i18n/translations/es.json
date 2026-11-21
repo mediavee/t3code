@@ -5636,5 +5636,13 @@
   "67d4a779cd49a863": "{count, plural, one {{count} terminado} other {{count} terminados}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} PR abierta} other {{count} PR abiertas}}",
   "5c73b69a42cb7616": "Hilos hijos",
-  "fa97f7ae0f746034": "{count, plural, one {{count} espera una respuesta} other {{count} esperan una respuesta}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} espera una respuesta} other {{count} esperan una respuesta}}",
+  "3e69738f0839ab45": "Secretos en la salida de herramientas",
+  "abaacba7b0f79fe8": "Restablecer",
+  "a8783c8c12d1d275": "Restablecer la ocultación de secretos en la salida de herramientas al valor predeterminado",
+  "9d4bf2d6201e724e": "Ocultar secretos en la salida de herramientas",
+  "037a6649ca73c4dd": "Sustituye por [redacted] los secretos que T3 conoce, las claves privadas y las contraseñas en URL en la salida de comandos y herramientas que guarda y muestra.",
+  "947dbea939be4ff5": "secretos",
+  "514b87e667c4b9b7": "ocultar",
+  "47fe19186c911efd": "censurar"
 }

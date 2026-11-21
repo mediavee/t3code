@@ -5636,5 +5636,13 @@
   "67d4a779cd49a863": "{count, plural, one {{count} concluído} other {{count} concluídos}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} PR aberta} other {{count} PRs abertas}}",
   "5c73b69a42cb7616": "Threads filhas",
-  "fa97f7ae0f746034": "{count, plural, one {{count} aguardando resposta} other {{count} aguardando resposta}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} aguardando resposta} other {{count} aguardando resposta}}",
+  "3e69738f0839ab45": "Segredos na saída das ferramentas",
+  "abaacba7b0f79fe8": "Redefinir",
+  "a8783c8c12d1d275": "Redefinir a ocultação de segredos na saída das ferramentas para o padrão",
+  "9d4bf2d6201e724e": "Ocultar segredos na saída das ferramentas",
+  "037a6649ca73c4dd": "Substitui por [redacted] os segredos que o T3 conhece, chaves privadas e senhas em URLs na saída de comandos e ferramentas que ele armazena e mostra.",
+  "947dbea939be4ff5": "segredos",
+  "514b87e667c4b9b7": "ocultar",
+  "47fe19186c911efd": "censurar"
 }

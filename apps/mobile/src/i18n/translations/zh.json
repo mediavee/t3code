@@ -5626,5 +5626,13 @@
   "67d4a779cd49a863": "{count, plural, other {{count} 个已完成}}",
   "5c412fd3159e13f3": "{count, plural, other {{count} 个打开的 PR}}",
   "5c73b69a42cb7616": "子线程",
-  "fa97f7ae0f746034": "{count, plural, other {{count} 个等待回答}}"
+  "fa97f7ae0f746034": "{count, plural, other {{count} 个等待回答}}",
+  "3e69738f0839ab45": "工具输出中的密钥",
+  "abaacba7b0f79fe8": "重置",
+  "a8783c8c12d1d275": "将工具输出中的密钥隐藏重置为默认值",
+  "9d4bf2d6201e724e": "在工具输出中隐藏密钥",
+  "037a6649ca73c4dd": "在保存和显示的命令与工具输出中，将 T3 已知的密钥、私钥和 URL 中的密码替换为 [redacted]。",
+  "947dbea939be4ff5": "密钥",
+  "514b87e667c4b9b7": "隐藏",
+  "47fe19186c911efd": "脱敏"
 }
