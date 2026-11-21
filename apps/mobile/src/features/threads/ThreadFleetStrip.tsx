@@ -1,20 +1,18 @@
 import { useAtomValue } from "@effect/atom-react";
 import type { ScopedThreadRef } from "@t3tools/contracts";
 import { useGT } from "gt-react-native";
-import { View } from "react-native";
+import { Platform, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
-import { Button } from "../../components/ui/Button";
+import { cn } from "../../lib/cn";
 import { threadFleetAtom } from "../../state/threads";
 import { useOpenThreadLink } from "./useOpenThreadLink";
 
 /** Where the children this thread started stand, so nobody has to ask. */
 export function ThreadFleetStrip({ threadRef }: { threadRef: ScopedThreadRef | null }) {
   const fleet = useAtomValue(threadFleetAtom(threadRef));
-  const openThread = useOpenThreadLink(threadRef?.environmentId ?? null);
   const gt = useGT();
-  if (fleet === null) return null;
-  const firstBlocked = fleet.firstBlocked;
+  if (threadRef === null || fleet === null) return null;
   const counts = [
     fleet.running > 0 &&
       gt("{count, plural, one {{count} running} other {{count} running}}", {
@@ -32,17 +30,19 @@ export function ThreadFleetStrip({ threadRef }: { threadRef: ScopedThreadRef | n
   return (
     <View
       accessibilityLabel={gt("Child threads")}
-      className="flex-row flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2"
+      className={cn(
+        "flex-row flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2",
+        Platform.OS === "android" ? "bg-thread-canvas" : "bg-screen",
+      )}
     >
-      {firstBlocked !== null ? (
-        <Button
+      {fleet.firstBlocked !== null ? (
+        <WaitingChip
+          via={threadRef}
+          child={fleet.firstBlocked}
           label={gt(
             "{count, plural, one {{count} waiting for an answer} other {{count} waiting for an answer}}",
             { count: fleet.blocked },
           )}
-          tone="text"
-          size="compact"
-          onPress={() => openThread(firstBlocked)}
         />
       ) : null}
       {counts.map((label) => (
@@ -51,5 +51,23 @@ export function ThreadFleetStrip({ threadRef }: { threadRef: ScopedThreadRef | n
         </Text>
       ))}
     </View>
+  );
+}
+
+function WaitingChip(props: {
+  readonly via: ScopedThreadRef;
+  readonly child: ScopedThreadRef;
+  readonly label: string;
+}) {
+  const openThread = useOpenThreadLink(props.via.environmentId);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      hitSlop={{ top: 8, bottom: 8 }}
+      className="rounded-full border border-warning-border bg-warning px-2.5 py-1"
+      onPress={() => openThread(props.child)}
+    >
+      <Text className="text-xs text-warning-foreground">{props.label}</Text>
+    </Pressable>
   );
 }

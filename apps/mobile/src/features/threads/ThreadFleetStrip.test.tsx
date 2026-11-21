@@ -12,17 +12,16 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("react-native", () => ({
+  Platform: { OS: "ios" },
+  Pressable: ({ children, onPress }: { children: ReactNode; onPress: () => void }) => (
+    <button type="button" onClick={onPress}>
+      {children}
+    </button>
+  ),
   View: ({ children }: { children: ReactNode }) => <div>{children}</div>,
 }));
 vi.mock("../../components/ui/AppText", () => ({
   AppText: ({ children }: { children: ReactNode }) => <span>{children}</span>,
-}));
-vi.mock("../../components/ui/Button", () => ({
-  Button: ({ label, onPress }: { label: string; onPress: () => void }) => (
-    <button type="button" onClick={onPress}>
-      {label}
-    </button>
-  ),
 }));
 vi.mock("../../state/threads", () => ({
   threadFleetAtom: () => Atom.make(mocks.fleet),
@@ -61,7 +60,10 @@ describe("ThreadFleetStrip", () => {
       firstBlocked: waitedLongest,
     });
     expect(
-      Array.from(screen.container.querySelectorAll("button, span"), (node) => node.textContent),
+      Array.from(
+        screen.container.querySelectorAll("div > button, div > span"),
+        (node) => node.textContent,
+      ),
     ).toEqual(["1 waiting for an answer", "2 running", "3 done", "1 open PR"]);
 
     act(() => screen.container.querySelector("button")!.click());
