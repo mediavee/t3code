@@ -394,6 +394,14 @@ describe("v2 thread shell lists", () => {
         .get(threads.navigationThreadShellsAtom)
         .map((thread) => `${thread.environmentId}/${thread.id}`);
     expect(listed()).toEqual([`${environmentId}/${parent.id}`]);
+    // So is one it delegated to another project here.
+    const localTask = { ...task, id: ThreadId.make("local-task"), projectId: otherProjectId };
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [parent, localTask],
+    });
+    expect(listed()).toEqual([`${environmentId}/${parent.id}`]);
+    registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [parent] });
 
     // The helper the task started there asks for approval: the parent here hears of it.
     registry.set(snapshotAtom(remoteEnvironmentId), {
