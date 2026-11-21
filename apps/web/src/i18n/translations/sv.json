@@ -12826,5 +12826,13 @@
   "185aca00f0cc4446": "Använd en modell för rollen {role}",
   "afefb672d4c5c274": "agent policy regler behörigheter autonomi prompt varje tråd subagenter",
   "8a3aabfbbfb30487": "Modeller per roll",
-  "69bad5ed2f17955e": "delegera uppgift routning granskning research design test implementering modell"
+  "69bad5ed2f17955e": "delegera uppgift routning granskning research design test implementering modell",
+  "8fab0f72ffbbf3e8": "Ingen gräns",
+  "c8b895e219d6fc93": "{gib} GiB",
+  "7f2c29b2312bd297": "Agentresurser",
+  "faf853c484b2b6fc": "Minne som varje agent och kommandona den kör får använda, utan swap, innan systemet stoppar den.",
+  "f77cd905c392b357": "Tillgängligt på Linux-servrar, där agenter körs i systemd-scopes.",
+  "633d27014d678cbf": "Återställ agenternas minnesgräns till standard",
+  "70957383caba7e76": "Agenternas minnesgräns",
+  "b3be8f59fe52c268": "minne gräns ram oom slut på minne cgroup systemd memorymax tmpdir temporär"
 }

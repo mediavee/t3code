@@ -12819,5 +12819,13 @@
   "185aca00f0cc4446": "Utiliser un modèle pour le rôle {role}",
   "afefb672d4c5c274": "politique agent règles permissions autonomie prompt chaque fil sous-agents",
   "8a3aabfbbfb30487": "Modèles par rôle",
-  "69bad5ed2f17955e": "déléguer tâche routage revue recherche conception test implémentation modèle"
+  "69bad5ed2f17955e": "déléguer tâche routage revue recherche conception test implémentation modèle",
+  "8fab0f72ffbbf3e8": "Aucun plafond",
+  "c8b895e219d6fc93": "{gib} Gio",
+  "7f2c29b2312bd297": "Ressources des agents",
+  "faf853c484b2b6fc": "Mémoire que chaque agent et les commandes qu’il lance peuvent utiliser, sans swap, avant que le système ne l’arrête.",
+  "f77cd905c392b357": "Disponible sur les serveurs Linux, où les agents tournent dans des scopes systemd.",
+  "633d27014d678cbf": "Réinitialiser le plafond mémoire des agents à la valeur par défaut",
+  "70957383caba7e76": "Plafond mémoire des agents",
+  "b3be8f59fe52c268": "mémoire limite ram oom manque de mémoire cgroup systemd memorymax tmpdir temporaire"
 }

@@ -12819,5 +12819,13 @@
   "185aca00f0cc4446": "Ein Modell für die Rolle {role} verwenden",
   "afefb672d4c5c274": "Agent Richtlinie Regeln Berechtigungen Autonomie Prompt jeder Thread Subagenten",
   "8a3aabfbbfb30487": "Modelle nach Rolle",
-  "69bad5ed2f17955e": "Aufgabe delegieren Routing Review Recherche Design Test Implementierung Modell"
+  "69bad5ed2f17955e": "Aufgabe delegieren Routing Review Recherche Design Test Implementierung Modell",
+  "8fab0f72ffbbf3e8": "Keine Obergrenze",
+  "c8b895e219d6fc93": "{gib} GiB",
+  "7f2c29b2312bd297": "Agentenressourcen",
+  "faf853c484b2b6fc": "Arbeitsspeicher, den jeder Agent und die von ihm gestarteten Befehle ohne Swap nutzen dürfen, bevor das System ihn beendet.",
+  "f77cd905c392b357": "Verfügbar auf Linux-Servern, auf denen Agenten in systemd-Scopes laufen.",
+  "633d27014d678cbf": "Speicherobergrenze für Agenten auf Standard zurücksetzen",
+  "70957383caba7e76": "Speicherobergrenze für Agenten",
+  "b3be8f59fe52c268": "Speicher Limit RAM OOM Speichermangel cgroup systemd memorymax tmpdir temporär"
 }
