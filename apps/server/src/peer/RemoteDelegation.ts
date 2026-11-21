@@ -603,7 +603,7 @@ const make = Effect.gen(function* () {
     client: {
       sessionId: `remote-task:${parent.id}`,
       label: parent.title,
-      access: "full-access",
+      access: parent.runtimeMode,
       narrowedTo: { runtimeMode: parent.runtimeMode, interactionMode: parent.interactionMode },
     },
   });

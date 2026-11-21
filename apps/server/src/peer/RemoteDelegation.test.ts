@@ -2808,6 +2808,53 @@ it.effect("a task cancelled while the box is unreachable is stopped there after 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect(
+  "a parent deleted while the box is unreachable stops its task there after a restart",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        // The parent is deleted while the box sleeps, then the laptop restarts before it wakes.
+        const delegated = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const before = yield* makeLaptop(database, offers, linking);
+            yield* linkTo(before.links, b, "full-access");
+            yield* seedParent(before);
+            const task = yield* delegateToBox(before);
+            yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+            const commandId = CommandId.make("command:delete:laptop-parent-restart");
+            yield* before.orchestrator.dispatch({
+              type: "thread.delete",
+              commandId,
+              threadId: parentThreadId,
+            });
+            // What the deletion's delegated-tasks.stop effect runs.
+            yield* before.threads.stopDelegatedTasks({ threadId: parentThreadId, commandId });
+            expect(yield* taskResult(before, task.taskId)).toMatchObject({ status: "interrupted" });
+            return task;
+          }),
+        );
+        expect(yield* Ref.get(thread.interrupted)).toBe(0);
+
+        yield* Ref.set(b.descriptor, box);
+        const after = yield* makeLaptop(database, offers, linking);
+        expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([
+          { parentThreadId, taskId: delegated.taskId },
+        ]);
+        yield* after.remote.start();
+        yield* Deferred.await(thread.interruptedOnce);
+        yield* stoppedThere(after, delegated.taskId, null);
+        expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([]);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 /** Waits until the laptop records that the task's thread there knows its parent is done. */
 const parentDoneThere = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
