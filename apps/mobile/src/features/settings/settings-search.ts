@@ -113,6 +113,9 @@ const SETTINGS_SEARCH_TERMS = {
     msg("usage limits", { $context: "settings search keyword" }),
     msg("auto-resume", { $context: "settings search keyword" }),
     msg("thread behavior", { $context: "settings search keyword" }),
+    msg("standing instructions", { $context: "settings search keyword" }),
+    msg("provider errors", { $context: "settings search keyword" }),
+    msg("retry", { $context: "settings search keyword" }),
   ],
   SettingsFollowUp: [
     msg("follow-ups", { $context: "settings search keyword" }),
@@ -166,6 +169,8 @@ const SETTINGS_SEARCH_TERMS = {
     msg("provider updates", { $context: "settings search keyword" }),
     msg("restart", { $context: "settings search keyword" }),
     msg("manage environments", { $context: "settings search keyword" }),
+    msg("memory ceiling", { $context: "settings search keyword" }),
+    msg("memory", { $context: "settings search keyword" }),
   ],
   SettingsAbout: [
     msg("version", { $context: "settings search keyword" }),
