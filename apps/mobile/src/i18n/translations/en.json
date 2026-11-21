@@ -5620,5 +5620,8 @@
   "856812e7e1fc445e": "Tool calls in chat",
   "8d545d54c0a9e950": "Hide the commands, edits, and searches agents run. Hide successful keeps failures. Zen shows only final answers. Approvals, questions, and errors always show.",
   "99d51127f573296b": "Another account",
-  "8ec2c57414669b79": "Connect a second {tracker} workspace or user."
+  "8ec2c57414669b79": "Connect a second {tracker} workspace or user.",
+  "3d4448e3c061f894": "Other machine",
+  "349587beaf00ce5e": "{title}, delegated from {machine}, {count, plural, one {{count} task} other {{count} tasks}}",
+  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} task} other {{count} tasks}}"
 }
