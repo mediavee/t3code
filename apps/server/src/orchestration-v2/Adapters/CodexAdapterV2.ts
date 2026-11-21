@@ -870,6 +870,41 @@ function codexCyberAccess(
   return descriptor?.type === "select" ? { defaultProgram: descriptor.currentValue } : undefined;
 }
 
+/** Nobody watches an agent's, a delegated or a scheduled turn, so nothing can answer its prompts. */
+const isAgentDrivenTurn = (input: {
+  readonly appThread?: Pick<OrchestrationV2AppThread, "createdBy" | "lineage" | "delegatedFrom">;
+  readonly scheduled?: boolean;
+}) =>
+  input.scheduled === true ||
+  (input.appThread !== undefined &&
+    (input.appThread.createdBy === "agent" || isDelegatedAppThread(input.appThread)));
+
+/** An enabled, callable app in the thread's Codex session, whose access prompts `never` declines. */
+export const codexHasPromptingApp = (apps: CodexSchema.V2AppsInstalledResponse) =>
+  apps.apps.some((app) => app.enabled && app.callable);
+
+// A disabled, cancelled, failed or unauthenticated server asks nothing, so it must not bring back
+// the command prompts `granular` adds.
+const runningServerStatuses: ReadonlySet<string | null | undefined> = new Set([
+  undefined,
+  null,
+  "notStarted",
+  "starting",
+  "connected",
+]);
+
+/** A running plugin MCP server in the session; servers configured outside plugins do not count. */
+export const codexHasPromptingPluginServer = (servers: CodexSchema.V2ListMcpServerStatusResponse) =>
+  servers.data.some(
+    (server) =>
+      server.pluginId !== undefined &&
+      server.pluginId !== null &&
+      runningServerStatuses.has(server.runtimeStatus),
+  );
+
+/** `mcpServerStatus/list` handshakes with every server not yet connected, up to 30 s each. */
+const CODEX_TOOL_LISTING_TIMEOUT = "2 seconds";
+
 export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
   function* (input: {
     readonly nativeThreadId: string;
@@ -882,6 +917,8 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly hasT3Mcp?: boolean;
     readonly agentFeedback?: AgentFeedbackMode;
     readonly browserToolsAvailable?: boolean;
+    /** The Codex session's own apps or plugin servers that ask the user, see `codexHasPromptingApp`. */
+    readonly codexPromptingTools?: boolean;
     readonly deviceToolsAvailable?: boolean;
     /** ChatGPT token sharing does not accept service tiers. */
     readonly omitServiceTier?: boolean;
@@ -891,13 +928,10 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     /** The user's `model_reasoning_summary` from the Codex config, when set. */
     readonly configuredReasoningSummary?: CodexSchema.V2TurnStartParams__ReasoningSummary;
   }) {
-    const agentDriven =
-      input.scheduled === true ||
-      (input.appThread !== undefined &&
-        (input.appThread.createdBy === "agent" || isDelegatedAppThread(input.appThread)));
     const runtimeModeDefaults = codexRuntimeModeTurnDefaults(
       input.runtimePolicy.runtimeMode,
-      !agentDriven && (input.browserToolsAvailable ?? true),
+      !isAgentDrivenTurn(input) &&
+        ((input.browserToolsAvailable ?? true) || input.codexPromptingTools === true),
     );
     const approvalPolicy =
       input.runtimePolicy.approvalPolicy === undefined
@@ -7958,6 +7992,41 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           ) {
             const threadId = yield* getNativeThreadId(turnInput.providerThread);
             const mcpSession = yield* mcpSessions.read(turnInput.threadId);
+            const scheduled = turnInput.message.scheduledTaskId !== undefined;
+            const browserToolsAvailable = mcpSession?.browserToolsAvailable ?? true;
+            // Only a watched full-access turn without T3's browser can lose a prompt to `never`.
+            // Each listing is bounded and falls back alone, so one failing never hides the other.
+            const listed = <A, E>(method: string, request: Effect.Effect<A, E>) =>
+              request.pipe(
+                Effect.timeoutOption(CODEX_TOOL_LISTING_TIMEOUT),
+                Effect.orElseSucceed(() => Option.none<A>()),
+                Effect.tap((result) =>
+                  Option.isNone(result)
+                    ? Effect.logDebug(`Codex ${method} failed or timed out.`)
+                    : Effect.void,
+                ),
+              );
+            // Only a watched full-access turn without T3's browser can lose a prompt to `never`.
+            const codexPromptingTools =
+              turnInput.runtimePolicy.runtimeMode === "full-access" &&
+              turnInput.runtimePolicy.approvalPolicy === undefined &&
+              !browserToolsAvailable &&
+              !isAgentDrivenTurn({ appThread: turnInput.appThread, scheduled })
+                ? Option.exists(
+                    yield* listed("app/installed", client.request("app/installed", { threadId })),
+                    codexHasPromptingApp,
+                  ) ||
+                  Option.exists(
+                    yield* listed(
+                      "mcpServerStatus/list",
+                      client.request("mcpServerStatus/list", {
+                        threadId,
+                        detail: "toolsAndAuthOnly",
+                      }),
+                    ),
+                    codexHasPromptingPluginServer,
+                  )
+                : false;
             const models = adapterOptions.models === undefined ? [] : yield* adapterOptions.models;
             const configuredReasoningSummary = yield* client
               .request("config/read", { cwd: turnInput.runtimePolicy.cwd, includeLayers: false })
@@ -7975,10 +8044,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               runtimePolicy: turnInput.runtimePolicy,
               modelSelection: turnInput.modelSelection,
               appThread: turnInput.appThread,
-              scheduled: turnInput.message.scheduledTaskId !== undefined,
+              scheduled,
               hasT3Mcp: mcpSession !== undefined,
               agentFeedback: turnInput.agentFeedback ?? "off",
-              browserToolsAvailable: mcpSession?.browserToolsAvailable ?? true,
+              browserToolsAvailable,
+              codexPromptingTools,
               deviceToolsAvailable: mcpSession?.capabilities?.has("device") ?? false,
               omitServiceTier: adapterOptions.resolveRuntime !== undefined,
               ...(turnInput.appContext === undefined ? {} : { appContext: turnInput.appContext }),
