@@ -12830,5 +12830,35 @@
   "67d4a779cd49a863": "{count, plural, one {{count} terminado} other {{count} terminados}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} PR abierta} other {{count} PR abiertas}}",
   "5c73b69a42cb7616": "Hilos hijos",
-  "fa97f7ae0f746034": "{count, plural, one {{count} espera una respuesta} other {{count} esperan una respuesta}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} espera una respuesta} other {{count} esperan una respuesta}}",
+  "acaf4e0d74541a20": "Ejecución iniciada",
+  "1297caf1422b5f9a": "Omitida: el comando terminó con 78",
+  "7a0bdd4a31f25e60": "Omitida: la misma salida que la última ejecución",
+  "f8f43e1550ea3ae4": "Fallida",
+  "fa891300374ac336": "Bloqueada por la política",
+  "a5099ec6e691530a": "Comando de control",
+  "253f645e9911c794": "opcional",
+  "8d07b99e1775d2fa": "Se ejecuta en un shell como el usuario de este servidor antes de cada ejecución programada. La salida 0 inicia la ejecución con la salida del comando; la salida 78, o la misma salida que la última ejecución iniciada, la omite; cualquier otra la hace fallar.",
+  "472cff2d538f1cf1": "Solo un dispositivo con acceso a la terminal puede cambiar el control.",
+  "430b587cb8d53ffe": "Carpeta del control",
+  "09f7ae8cca9b68b7": "predeterminada: la carpeta del proyecto",
+  "3e2b4d1001bb2d02": "Tiempo límite del control",
+  "fe38d9981aeea3f1": "segundos, 30 por defecto",
+  "73c3680625b8c71f": [
+    "Último control: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ",",
+    " ",
+    {
+      "t": "ScheduledRelativeLabel",
+      "i": 2
+    }
+  ],
+  "fe3927cdd40da07b": "Control no válido",
+  "74ff2ebf21a05651": "Una tarea de webhook no puede tener un comando de control.",
+  "ceb3cbae8957e562": "Introduce segundos enteros de 1 a {max} o déjalo en blanco."
 }
