@@ -247,7 +247,7 @@ describe("runMigrations", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         if (state === "numbered-head") {
-          yield* runMigrations({ toMigrationInclusive: 102 });
+          yield* runMigrations();
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_subagents_remote_parent_done_idx`;
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_turn_items_transient_failure_idx`;
           yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN last_run_thread_id`;
