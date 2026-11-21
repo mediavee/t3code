@@ -1,5 +1,9 @@
 import {
   type CommandId,
+  isProviderNativeSubagentThread,
+  type OrchestrationV2AppThread,
+  ProviderRequestKind,
+  type ProviderUserInputAnswers,
   type RuntimeRequestId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
@@ -8,12 +12,16 @@ import {
   type OrchestrationV2Command,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { modelSelectionCommandType } from "@t3tools/shared/model";
 import { topOfPinnedRunOrderKey } from "@t3tools/shared/pinOrderKey";
 
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
+import { runtimeModeRank } from "../../delegatedTaskModes.ts";
 import {
+  type Caller,
+  type CallerLimits,
   dispatchFailure,
   newCommandId,
   readCaller,
@@ -25,7 +33,7 @@ import * as ThreadMessageIntake from "../../../orchestration-v2/ThreadMessageInt
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTasks from "../../../scheduledTasks/ScheduledTaskService.ts";
 import { queuedRunsInDeliveryOrder } from "../../../orchestration-v2/QueuedRunOrder.ts";
-import { ThreadToolkit } from "./tools.ts";
+import { PENDING_APPROVAL_DECISIONS, ThreadToolkit } from "./tools.ts";
 
 function queueEntry(
   projection: Pick<OrchestrationV2ThreadProjection, "runs" | "messages">,
@@ -67,31 +75,120 @@ const topOfPinnedRunKey = Effect.fn("mcp.topOfPinnedRunKey")(function* (
   return topOfPinnedRunOrderKey(pinnedKeys) ?? undefined;
 });
 
-const readQuestion = Effect.fn("mcp.readQuestion")(function* (input: {
+type PendingDecision = (typeof PENDING_APPROVAL_DECISIONS)[number];
+
+/**
+ * A task the caller delegated: here, in another project here, or from the linked thread it acts
+ * for. A linked caller's sender header is its own claim, so the child must also come from its link.
+ */
+const isCallersChild = (
+  context: Caller,
+  child: Pick<
+    OrchestrationV2AppThread,
+    "lineage" | "creationSource" | "delegatedFrom" | "linkOrigin"
+  >,
+) => {
+  const from = child.delegatedFrom ?? undefined;
+  if (context.caller !== undefined) {
+    return (
+      (child.lineage.parentThreadId === context.caller.id &&
+        child.lineage.relationshipToParent === "subagent" &&
+        !isProviderNativeSubagentThread(child)) ||
+      (child.linkOrigin === undefined &&
+        from?.environmentId === context.scope.environmentId &&
+        from.threadId === context.caller.id)
+    );
+  }
+  const client = context.scope.client?.linked === true ? context.scope.client : undefined;
+  const sender = client?.senderThread;
+  return (
+    client !== undefined &&
+    sender !== undefined &&
+    child.linkOrigin?.sessionId === client.sessionId &&
+    from?.environmentId === sender.environmentId &&
+    from.threadId === sender.threadId
+  );
+};
+
+/**
+ * Whether the caller's own modes would let it do what the approval asks without asking. A request
+ * that reached the user despite full access (their ask rule, a provider check) only the user accepts.
+ */
+const withinCallerModes = (
+  limits: CallerLimits,
+  item: { readonly requestKind: ProviderRequestKind; readonly fullAccessOverride?: unknown },
+  decision: PendingDecision,
+) =>
+  decision === "decline" ||
+  (item.fullAccessOverride === undefined &&
+    limits.interactionMode === "default" &&
+    (limits.runtimeMode === "full-access" ||
+      ((item.requestKind === "file-change" || item.requestKind === "file-read") &&
+        runtimeModeRank(limits.runtimeMode) >= runtimeModeRank("auto-accept-edits"))));
+
+const isApprovalKind = Schema.is(ProviderRequestKind);
+
+const PROMPT_LIMIT = 16000;
+const truncated = (text: string | undefined) =>
+  text === undefined ? undefined : Array.from(text).slice(0, PROMPT_LIMIT).join("");
+
+const readRequest = Effect.fn("mcp.readPendingRequest")(function* (input: {
   threadId?: ThreadId | undefined;
   requestId: RuntimeRequestId;
 }) {
-  const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"]);
+  const context = yield* readThread(input.threadId, ["runtimeRequests", "turnItems"], {
+    turnItemTypes: ["user_input_request", "approval_request"],
+  });
   const request = context.projection.runtimeRequests.find(
-    (request) => request.id === input.requestId && request.kind === "user_input",
+    (request) => request.id === input.requestId,
   );
   const item = context.projection.turnItems.find(
-    (item) => item.type === "user_input_request" && item.requestId === input.requestId,
+    (item) =>
+      (item.type === "user_input_request" || item.type === "approval_request") &&
+      item.requestId === input.requestId,
   );
-  if (request === undefined || item?.type !== "user_input_request")
+  if (request?.kind === "user_input" && item?.type === "user_input_request") {
+    if (request.status !== "pending")
+      return yield* new OrchestratorMcpFailure({
+        code: "invalid_request",
+        message:
+          request.status === "resolved"
+            ? "The user-input request was already answered."
+            : `The user-input request is no longer pending (${request.status}).`,
+      });
+    return { ...context, request, item, decisions: [] as ReadonlyArray<PendingDecision> };
+  }
+  if (request === undefined || item?.type !== "approval_request")
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
       message: "The pending user-input request was not found.",
+    });
+  if (context.caller !== undefined && context.projection.thread.id === context.caller.id)
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "An agent cannot answer an approval on its own thread. The user answers it there.",
+    });
+  if (!isCallersChild(context, context.projection.thread))
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message:
+        "Only the thread that delegated this task can answer its approvals. The user can answer it in the thread.",
     });
   if (request.status !== "pending")
     return yield* new OrchestratorMcpFailure({
       code: "invalid_request",
       message:
         request.status === "resolved"
-          ? "The user-input request was already answered."
-          : `The user-input request is no longer pending (${request.status}).`,
+          ? "The approval was already answered."
+          : `The approval is no longer pending (${request.status}).`,
     });
-  return { ...context, request, item };
+  const offered = item.options?.map((option) => option.decision);
+  const decisions = PENDING_APPROVAL_DECISIONS.filter(
+    (decision) =>
+      (offered === undefined || offered.includes(decision)) &&
+      withinCallerModes(context.limits, item, decision),
+  );
+  return { ...context, request, item, decisions };
 });
 /** A field the chosen action needs. `null` counts as given, as in `beforeRunId: null`. */
 const required = <A>(value: A | undefined, name: string) =>
@@ -250,33 +347,63 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
     McpToolAccess.reads((input) =>
       Effect.gen(function* () {
         if (input.action === "list") {
-          const { projection } = yield* readThread(input.threadId, ["runtimeRequests"]);
+          const context = yield* readThread(input.threadId, ["runtimeRequests"]);
+          const approvals =
+            context.projection.thread.id !== context.caller?.id &&
+            isCallersChild(context, context.projection.thread);
           return {
-            requestIds: projection.runtimeRequests
-              .filter((request) => request.kind === "user_input" && request.status === "pending")
+            requestIds: context.projection.runtimeRequests
+              .filter(
+                (request) =>
+                  request.status === "pending" &&
+                  (request.kind === "user_input" || (approvals && isApprovalKind(request.kind))),
+              )
               .map((request) => request.id),
           };
         }
         const requestId = yield* required(input.requestId, "requestId");
-        const { item } = yield* readQuestion({ threadId: input.threadId, requestId });
-        return { requestId, questions: item.questions };
+        const read = yield* readRequest({ threadId: input.threadId, requestId });
+        if (read.item.type === "user_input_request")
+          return { requestId, questions: read.item.questions };
+        const { requestKind, prompt, reason, appName, fullAccessOverride } = read.item;
+        return {
+          requestId,
+          approval: {
+            kind: requestKind,
+            ...(prompt === undefined ? {} : { prompt: truncated(prompt) }),
+            ...(reason === undefined ? {} : { reason: truncated(reason) }),
+            ...(appName === undefined ? {} : { appName }),
+            ...(fullAccessOverride === undefined ? {} : { fullAccessOverride }),
+            decisions: read.decisions,
+          },
+        };
       }),
     ),
     writesThread((input) =>
       Effect.gen(function* () {
         const requestId = yield* required(input.requestId, "requestId");
-        const answers = yield* required(input.answers, "answers");
-        const { threads, projection } = yield* readQuestion({
-          threadId: input.threadId,
-          requestId,
-        });
-        const result = yield* threads
+        const read = yield* readRequest({ threadId: input.threadId, requestId });
+        let answer: { answers: ProviderUserInputAnswers } | { decision: PendingDecision };
+        if (read.item.type === "user_input_request") {
+          answer = { answers: yield* required(input.answers, "answers") };
+        } else {
+          const decision = yield* required(input.decision, "decision");
+          if (!read.decisions.includes(decision)) {
+            const { runtimeMode, interactionMode } = read.limits;
+            return yield* new OrchestratorMcpFailure({
+              code: "capability_denied",
+              message: `This caller cannot ${decision} this ${read.item.requestKind} approval: its ${runtimeMode}/${interactionMode} modes would not let it do that itself, or the provider does not offer it. It may: ${read.decisions.join(", ") || "nothing"}. Otherwise ask the user to answer it in the thread.`,
+            });
+          }
+          answer = { decision };
+        }
+        const result = yield* read.threads
           .dispatch({
             type: "runtime-request.respond",
-            threadId: projection.thread.id,
+            threadId: read.projection.thread.id,
             commandId: yield* newCommandId(),
             requestId,
-            answers,
+            ...answer,
           })
           .pipe(Effect.mapError(dispatchFailure));
         return { sequence: result.sequence };

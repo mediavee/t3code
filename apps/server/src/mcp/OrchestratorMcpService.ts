@@ -73,6 +73,7 @@ import {
   literalTemplateRefusal,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
+  isParentWakeRequestKind,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
 import {
@@ -145,6 +146,7 @@ import {
   interactionModeRank,
   resolveInteractionMode,
   resolveRuntimeMode,
+  runtimeModeSteppedDown,
   runtimeModeRank,
   taskPrompt,
 } from "./delegatedTaskModes.ts";
@@ -3019,13 +3021,16 @@ const make = Effect.gen(function* () {
         yield* requireCapability(callerScope);
         const scope = yield* requireThreadScope(callerScope, "delegate_task");
         // The task's child runs as an ordinary thread there; this thread keeps the task.
-        const { taskId } = yield* remoteDelegation.delegate(scope, {
+        const { taskId, runtimeModeSteppedDown } = yield* remoteDelegation.delegate(scope, {
           ...input,
           target: { ...input.target, environmentId },
         });
-        return yield* input.mode === "wait"
+        const result = yield* input.mode === "wait"
           ? awaitTask(scope, taskId, taskId, input.timeoutMs)
           : readTask(scope, taskId, false, true);
+        return runtimeModeSteppedDown === undefined
+          ? result
+          : { ...result, runtimeModeSteppedDown };
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
       // Another project here gets its own thread, recorded and followed as a task there would be.
@@ -3090,6 +3095,12 @@ const make = Effect.gen(function* () {
         parent.thread.runtimeMode,
         input.runtimeMode,
         target,
+      );
+      const reportSteppedDown = Effect.map(
+        (result: OrchestratorMcpDelegateTaskResult): OrchestratorMcpDelegateTaskResult => ({
+          ...result,
+          ...runtimeModeSteppedDown(parent.thread.runtimeMode, input.runtimeMode, runtimeMode),
+        }),
       );
       const interactionMode = yield* resolveInteractionMode(
         parent.thread.interactionMode,
@@ -3184,9 +3195,11 @@ const make = Effect.gen(function* () {
           },
           completionWake: input.mode === "wait" ? "settled_only" : "always",
         });
-        return yield* input.mode === "wait"
-          ? awaitTask(scope, taskId, taskId, input.timeoutMs)
-          : readTask(scope, taskId, false, true);
+        return yield* (
+          input.mode === "wait"
+            ? awaitTask(scope, taskId, taskId, input.timeoutMs)
+            : readTask(scope, taskId, false, true)
+        ).pipe(reportSteppedDown);
       }
       let workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined;
       if (input.isolation === "worktree" && !isRetryOfAcceptedDelegation) {
@@ -3284,9 +3297,11 @@ const make = Effect.gen(function* () {
               runId: childRunEvent.event.payload.id,
             });
           }
-          return yield* input.mode === "wait"
-            ? awaitTask(scope, taskId, key, input.timeoutMs, restore)
-            : restore(readTask(scope, taskId, false, true));
+          return yield* (
+            input.mode === "wait"
+              ? awaitTask(scope, taskId, key, input.timeoutMs, restore)
+              : restore(readTask(scope, taskId, false, true))
+          ).pipe(reportSteppedDown);
         }),
       );
     }),
@@ -3712,6 +3727,11 @@ const make = Effect.gen(function* () {
                 creationSource: projection.thread.creationSource,
                 providerInstanceId: resolvedModelSelection.instanceId,
                 model: resolvedModelSelection.model,
+                ...runtimeModeSteppedDown(
+                  parent.thread.runtimeMode,
+                  request.runtimeMode,
+                  runtimeMode,
+                ),
               } satisfies OrchestratorMcpCreatedThread;
             }),
           { concurrency: 1 },
@@ -4213,6 +4233,9 @@ const make = Effect.gen(function* () {
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
           ...(input.untilOutput === true ? { untilOutput: true } : {}),
           ...(scope.thread === undefined ? {} : { interruptOnMessageTo: scope.thread.threadId }),
+          ...(input.untilPendingRequestsChangeFrom === undefined
+            ? {}
+            : { untilPendingRequestsChangeFrom: input.untilPendingRequestsChangeFrom }),
         })
         .pipe(Effect.mapError(threadManagementFailure));
       if (result.waitingMessages !== undefined) {
@@ -4268,6 +4291,27 @@ const make = Effect.gen(function* () {
               resultRun: { runId: result.resultRun.id, status: runOutcome(result.resultRun) },
             }),
         ...(result.run?.output === undefined ? {} : { output: result.run.output.value }),
+        ...(result.pendingRequests === undefined
+          ? {}
+          : {
+              pendingRequests: result.pendingRequests.flatMap(({ request, prompt, reason }) =>
+                !isParentWakeRequestKind(request.kind)
+                  ? []
+                  : [
+                      {
+                        requestId: request.id,
+                        kind: request.kind,
+                        answeredByMessage: request.responseCapability.type === "message",
+                        ...(prompt === undefined
+                          ? {}
+                          : { prompt: Array.from(prompt).slice(0, 2000).join("") }),
+                        ...(reason === undefined
+                          ? {}
+                          : { reason: Array.from(reason).slice(0, 2000).join("") }),
+                      },
+                    ],
+              ),
+            }),
       } satisfies OrchestratorMcpThreadWaitResult;
     }),
     interruptThread: Effect.fn("OrchestratorMcpService.interruptThread")(function* (scope, input) {
