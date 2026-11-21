@@ -764,8 +764,11 @@ export const make = Effect.gen(function* () {
   const linkCreatedChangeRequests = Effect.fn("PullRequestSyncReactor.linkCreatedChangeRequests")(
     function* (threadId: ThreadId, item: CommandExecution) {
       if (isOrchestrationV2WorkActive(item.status)) return;
+      const createdChangeRequests = changeRequestsCreatedBy(item.input, item.output ?? "");
+      if (createdChangeRequests.length === 0) return;
+      const [before] = yield* projections.getThreadsWithPullRequests(threadId);
       yield* Effect.forEach(
-        changeRequestsCreatedBy(item.input, item.output ?? ""),
+        createdChangeRequests,
         (created) =>
           engine
             .dispatch({
@@ -779,6 +782,29 @@ export const make = Effect.gen(function* () {
               source: "created",
             })
             .pipe(
+              // The agent's own PR, newly linked: its credit footer goes once, as on pull_request_create.
+              Effect.andThen(
+                Effect.gen(function* () {
+                  const key = threadPullRequestKeyOf(created);
+                  if (
+                    (before?.pullRequests ?? []).some(
+                      (link) => threadPullRequestKeyOf(link) === key,
+                    )
+                  ) {
+                    return;
+                  }
+                  // Only threads with links are listed, so a first PR's thread is read once linked.
+                  const thread =
+                    before ?? (yield* projections.getThreadsWithPullRequests(threadId))[0];
+                  if (thread === undefined) return;
+                  yield* pullRequests.removeAgentCreditsFromBody({
+                    projectId: thread.projectId,
+                    host: created.host,
+                    repository: created.repository,
+                    number: created.number,
+                  });
+                }),
+              ),
               Effect.catchCause(
                 logSkipped("linking a pull request a command created failed", { threadId }),
               ),
