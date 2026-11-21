@@ -2327,6 +2327,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   lastError: Schema.optional(Schema.NullOr(Schema.String)),
   lastErrorClass: Schema.optional(Schema.NullOr(OrchestrationV2ProviderFailureClass)),
   lastErrorCode: Schema.optional(Schema.NullOr(Schema.String)),
+  lastErrorRetryable: Schema.optional(Schema.NullOr(Schema.Boolean)),
   usageLimitResetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
   /** Guest messages waiting for the owner to send or dismiss. Absent from older servers. */
@@ -3497,6 +3498,8 @@ export const OrchestrationV2Command = Schema.Union([
     sourcePlanRef: Schema.optional(Schema.Struct({ threadId: ThreadId, planId: PlanId })),
     restartContinuationOfRunId: Schema.optional(RunId),
     usageLimitContinuationOfRunId: Schema.optional(RunId),
+    /** Resumes this run after a transient provider failure; the orchestrator re-checks it is still due. */
+    transientFailureContinuationOfRunId: Schema.optional(RunId),
     manualContinuationOfRunId: Schema.optional(RunId),
     steerFollowUpOfRunId: Schema.optional(RunId),
     steerFollowUpAfterRunOrdinal: Schema.optional(NonNegativeInt),
@@ -3993,6 +3996,7 @@ export const ORCHESTRATION_V2_WS_METHODS = {
   getNativeChildWork: "orchestration.getNativeChildWork",
   stopWorkflow: "orchestration.stopWorkflow",
   forceStopThread: "orchestration.forceStopThread",
+  resumeFailedThreads: "orchestration.resumeFailedThreads",
   getTurnItem: "orchestration.getTurnItem",
   launchThread: "orchestration.launchThread",
   subscribeShell: "orchestration.subscribeShell",
@@ -4451,6 +4455,28 @@ export class OrchestrationV2ForceStopThreadError extends Schema.TaggedError<Orch
   }
 }
 
+export const OrchestrationV2ResumeFailedThreadsInput = Schema.Struct({
+  /** Threads whose latest run failed at or after this time. */
+  since: IsoDateTime,
+});
+export type OrchestrationV2ResumeFailedThreadsInput =
+  typeof OrchestrationV2ResumeFailedThreadsInput.Type;
+
+export const OrchestrationV2ResumeFailedThreadsResult = Schema.Struct({
+  resumedThreadIds: Schema.Array(ThreadId),
+});
+export type OrchestrationV2ResumeFailedThreadsResult =
+  typeof OrchestrationV2ResumeFailedThreadsResult.Type;
+
+export class OrchestrationV2ResumeFailedThreadsError extends Schema.TaggedError<OrchestrationV2ResumeFailedThreadsError>()(
+  "OrchestrationV2ResumeFailedThreadsError",
+  { cause: Schema.optional(Schema.Defect()) },
+) {
+  override get message(): string {
+    return "Failed to resume the failed threads.";
+  }
+}
+
 export const OrchestrationV2GetWorkflowScriptInput = Schema.Struct({
   threadId: ThreadId,
   scriptPath: TrimmedNonEmptyString,
@@ -4696,6 +4722,10 @@ export const OrchestrationV2RpcSchemas = {
   forceStopThread: {
     input: OrchestrationV2ForceStopThreadInput,
     output: OrchestrationV2ForceStopThreadResult,
+  },
+  resumeFailedThreads: {
+    input: OrchestrationV2ResumeFailedThreadsInput,
+    output: OrchestrationV2ResumeFailedThreadsResult,
   },
   getWorkflowScript: {
     input: OrchestrationV2GetWorkflowScriptInput,

@@ -2149,6 +2149,7 @@ export const layer: Layer.Layer<
                           knownProviderFailureMessage(squashed) ??
                           userFacingDatabaseErrorMessage(squashed),
                         class: "unknown",
+                        retryable: runtimeLost ? true : null,
                       }),
                       latestItemOrdinal + 1,
                     ),

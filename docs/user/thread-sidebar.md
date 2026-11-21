@@ -269,6 +269,15 @@ the snooze. Enable **Snooze until limits reset** in thread behavior settings to
 snooze limit stops by default. Providers without a reset time offer manual
 retry and the normal snooze choices.
 
+A turn that fails on a provider server error (5xx), a dropped connection, or a
+lost provider process resumes on its own: T3 Code sends "Continue where you left
+off" after 15 seconds, then 1 minute, then 3 minutes, and stops after the third
+try, leaving the failure visible. Refusals, sign-in errors, usage limits,
+turns you stopped, and delegated tasks (their parent hears of the failure) are
+not resumed. Turn this off with **Resume after provider
+errors** in **Settings → Threads**. When sessions failed this way in the last
+hour, the sidebar footer offers **Resume all** for them.
+
 On web and desktop, use **Agents** to follow work delegated to subagents. Click
 a subagent there or on its conversation card to open it in the right panel,
 beside the thread you are in. See
