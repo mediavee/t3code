@@ -480,7 +480,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             mixed={mixedAgentCredits}
             {...searchableSetting("remove-agent-credits-on-merge")}
             description={gt(
-              "Remove recognized agent credit lines from merge and squash messages on hosts that support it, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits.",
+              "Remove recognized agent credit lines, keeping human co-authors, from pull request descriptions T3 writes or links and from merge and squash messages on hosts that support it. Includes auto-merge. Excludes merge queues, stack merges, and existing commits.",
             )}
             resetAction={
               settings.removeAgentCreditsOnMerge ? (
@@ -493,7 +493,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             }
             control={
               <Switch
-                aria-label={gt("Remove agent credits when merging")}
+                aria-label={gt("Remove agent credits from pull requests")}
                 mixed={mixedAgentCredits}
                 checked={mixedAgentCredits ? false : settings.removeAgentCreditsOnMerge}
                 onCheckedChange={(enabled) =>
