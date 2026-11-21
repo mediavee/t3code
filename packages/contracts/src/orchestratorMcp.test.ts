@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
 import {
+  OrchestratorMcpCreateThreadsInput,
   OrchestratorMcpDelegateTaskInput,
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpLaunchModelSelection,
@@ -13,6 +14,7 @@ import {
 const decodeDelegateTaskInput = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskInput);
 const decodeDelegateTaskResult = Schema.decodeUnknownSync(OrchestratorMcpDelegateTaskResult);
 const decodeThreadWaitResult = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitResult);
+const decodeCreateThreadsInput = Schema.decodeUnknownSync(OrchestratorMcpCreateThreadsInput);
 
 describe("orchestrator MCP contracts", () => {
   it("decodes cross-provider delegated task requests and durable results", () => {
@@ -109,6 +111,25 @@ describe("orchestrator MCP contracts", () => {
       instanceId: "codex",
       model: "gpt-5.4",
     });
+    // The array form, and empty or absent options, decode as before.
+    const selection = { instanceId: "codex", model: "gpt-5.4" };
+    const array = [
+      { id: "effort", value: "max" },
+      { id: "fastMode", value: true },
+    ];
+    expect(decodeSelection({ ...selection, options: array })).toEqual({
+      ...selection,
+      options: array,
+    });
+    expect(decodeSelection({ ...selection, options: [] })).toEqual({ ...selection, options: [] });
+    expect(decodeSelection({ ...selection, options: {} })).toEqual({ ...selection, options: [] });
+    expect(decodeSelection({ ...selection, options: null })).toEqual(selection);
+    // A new thread's target is held to the same keys.
+    expect(() =>
+      decodeCreateThreadsInput({
+        threads: [{ target: { model: "gpt-5.4", effort: "max" } }],
+      }),
+    ).toThrow('Unknown key "effort" in target.');
     // The record form's coercion would drop these values; the agent hears which option instead.
     for (const options of [{ effort: 3 }, { effort: "" }, { effort: " " }, { " ": "max" }]) {
       expect(() => decodeSelection({ instanceId: "codex", model: "gpt-5.4", options })).toThrow(
