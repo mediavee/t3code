@@ -343,6 +343,37 @@ describe("CodexAdapterV2 runtime policy", () => {
     );
   });
 
+  it.effect("grants a multi-folder thread's other folders only to a writable sandbox", () =>
+    Effect.gen(function* () {
+      const workspace = {
+        folders: [{ name: "api", path: "/work/api", isGitRepository: true }],
+        extraRoots: ["/work/api"],
+      };
+      const build = (runtimeMode: "approval-required" | "auto-accept-edits" | "full-access") =>
+        CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId: `native-workspace-${runtimeMode}`,
+          codexInput: [{ type: "text", text: "test" }],
+          runtimePolicy: { runtimeMode, interactionMode: "default", cwd: "/work/app", workspace },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+          hasT3Mcp: false,
+        });
+
+      const autoAcceptEdits = yield* build("auto-accept-edits");
+      assert.deepEqual(autoAcceptEdits.sandboxPolicy, {
+        type: "workspaceWrite",
+        writableRoots: ["/work/api"],
+      });
+      assert.deepEqual((yield* build("approval-required")).sandboxPolicy, { type: "readOnly" });
+      assert.deepEqual((yield* build("full-access")).sandboxPolicy, { type: "dangerFullAccess" });
+      // The folder list reaches the model without T3 Code's MCP tools.
+      assert.deepEqual(Object.keys(autoAcceptEdits.additionalContext ?? {}), ["t3_code_workspace"]);
+      assert.include(
+        autoAcceptEdits.additionalContext?.["t3_code_workspace"]?.value,
+        "- api (Git repository): /work/api",
+      );
+    }),
+  );
+
   it.effect("sends the chosen cyber access program, else the model's default", () =>
     Effect.gen(function* () {
       const build = (value?: string, cyberAccess?: { defaultProgram: string | undefined }) =>
@@ -2397,6 +2428,96 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ),
         ),
       ),
+  );
+
+  it.effect.each([
+    { name: "dangerous command", networkApprovalContext: undefined, asks: false },
+    {
+      name: "managed-network command",
+      networkApprovalContext: { host: "example.com", protocol: "https" },
+      asks: true,
+    },
+  ] as const)("full access asks about a $name: $asks", ({ networkApprovalContext, asks }) =>
+    Effect.gen(function* () {
+      const nativeThreadId = "command-approval-thread";
+      const nativeTurnId = "command-approval-turn";
+      const prompt = "Clean node_modules.";
+      const pending = yield* Queue.unbounded<OrchestrationV2RuntimeRequest>();
+      const harness = yield* makeCodexReplayHarness(
+        makeCodexReplayTranscript({
+          scenario: "full-access-command-approval",
+          entries: [
+            ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
+            {
+              type: "emit_inbound",
+              frame: {
+                id: 0,
+                method: "item/commandExecution/requestApproval",
+                params: {
+                  threadId: nativeThreadId,
+                  turnId: nativeTurnId,
+                  itemId: "exec-rm",
+                  command: "/bin/bash -lc 'rm -rf ./node_modules'",
+                  startedAtMs: 0,
+                  ...(networkApprovalContext === undefined ? {} : { networkApprovalContext }),
+                },
+              },
+            },
+            ...(asks
+              ? []
+              : ([
+                  { type: "expect_outbound", frame: { id: 0, result: { decision: "accept" } } },
+                  {
+                    type: "emit_inbound",
+                    frame: {
+                      method: "turn/completed",
+                      params: {
+                        threadId: nativeThreadId,
+                        turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+                      },
+                    },
+                  },
+                ] as const)),
+          ],
+        }),
+        (event) =>
+          event.type === "runtime_request.updated" && event.runtimeRequest.status === "pending"
+            ? Queue.offer(pending, event.runtimeRequest)
+            : Effect.void,
+      );
+      const turnInput = makeCodexTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("command-approval-attempt"),
+        text: prompt,
+      });
+      yield* harness.runtime.startTurn({
+        ...turnInput,
+        runtimePolicy: { ...turnInput.runtimePolicy, runtimeMode: "full-access" },
+      });
+      const request = yield* Effect.raceFirst(
+        harness.firstTerminal.pipe(Effect.as(undefined)),
+        Queue.take(pending),
+      );
+      assert.equal(request?.kind, asks ? "command" : undefined);
+      if (!asks) {
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["completed"],
+        );
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect.each(["native", "ordinary"] as const)(
@@ -8167,7 +8288,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ),
           ["interrupted"],
         );
-        assert.equal(projection.runs.at(-1)?.status, "completed");
+        const [run, continuation] = projection.runs;
+        assert.equal(run?.status, "completed");
+        // The command was the thread's background work, so its loss wakes the run that left it.
+        assert.equal(continuation?.restartContinuationOfRunId, run?.id);
         assert.deepEqual(
           (yield* orchestrator.getThreadShell(threadId))?.pendingBackgroundTasks,
           [],
@@ -9513,6 +9637,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       if ("expectedRetryable" in scenario) {
         assert.equal(terminal.failure.retryable, scenario.expectedRetryable);
       }
+      assert.notInclude(terminal.failure.message, "dummy-sensitive");
       assert.equal(terminal.threadDisposition, "reusable");
       if (scenario.name === "message-reset")
         assert.equal(
