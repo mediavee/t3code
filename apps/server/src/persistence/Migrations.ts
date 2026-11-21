@@ -110,7 +110,11 @@ import Migration0099 from "./Migrations/099_BackgroundRecoveryIndexes.ts";
 import Migration0100 from "./Migrations/100_TurnStartReadIndexes.ts";
 import Migration0101 from "./Migrations/101_DelegatedTaskReadIndexes.ts";
 import Migration0102 from "./Migrations/102_ThreadItemCounts.ts";
-import { applyForkIndexes, forkIndexesPending } from "./Migrations/ForkIndexes.ts";
+import {
+  applyForkIndexes,
+  forgetForkLedgerRows,
+  forkIndexesPending,
+} from "./Migrations/ForkIndexes.ts";
 
 const migrationEntries = [
   [1, "OrchestrationEvents", Migration0001],
@@ -314,6 +318,8 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
     toMigrationInclusive === undefined || toMigrationInclusive >= FIRST_V2_MIGRATION_ID;
   // The reconcile takes the write lock; CLI startup must not contend with the server for a no-op.
   const previewMigrations = includesV2 && hasPending ? yield* reconcileV2PreviewMigration() : [];
+  // Before the history check and the highest-id read, which must not count the fork's old rows.
+  const forgottenForkRows = includesV2 && hasPending ? yield* forgetForkLedgerRows() : [];
   if (includesV2) {
     yield* assertV2MigrationsCanRun(toMigrationInclusive);
   }
@@ -352,6 +358,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
       : [];
   const migrations = [
     ...executedMigrations.map(([id, name]) => `${id}_${name}`),
+    ...forgottenForkRows,
     ...forkIndexChanges,
   ];
   yield* migrations.length === 0

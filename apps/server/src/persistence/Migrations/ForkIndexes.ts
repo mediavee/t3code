@@ -34,31 +34,57 @@ const forkIndexes = [
   },
 ] as const;
 
-// Earlier fork builds recorded these indexes as numbered migrations.
-const FORK_LEDGER_ROWS = `(migration_id = 103 AND name = 'RemoteParentDoneIndex')
-  OR (migration_id = 104 AND name = 'TransientFailureIndex')`;
+// Earlier fork builds recorded these indexes as numbered migrations; startup removes those rows.
+const FORK_LEDGER_ROWS = [
+  [103, "RemoteParentDoneIndex"],
+  [104, "TransientFailureIndex"],
+] as const;
+
+const FORK_LEDGER_ROW_CONDITION = FORK_LEDGER_ROWS.map(
+  ([id, name]) => `(migration_id = ${id} AND name = '${name}')`,
+).join(" OR ");
 
 const FORK_INDEX_NAMES = forkIndexes.map(({ name }) => `'${name}'`).join(", ");
 
-/** Whether `applyForkIndexes` has work to do; expects the migration ledger to exist. */
+/** The recorded history as startup leaves it once it has removed the fork's old ledger rows. */
+export function withoutForkLedgerRows<Row extends { readonly id: number; readonly name: string }>(
+  recorded: ReadonlyArray<Row>,
+): ReadonlyArray<Row> {
+  return recorded.filter(
+    (row) => !FORK_LEDGER_ROWS.some(([id, name]) => row.id === id && row.name === name),
+  );
+}
+
+/** Whether the fork's ledger rows or indexes need work; expects the migration ledger to exist. */
 export const forkIndexesPending = Effect.fn("forkIndexesPending")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ readonly ledgerRows: number; readonly indexes: number }>`
     SELECT
-      (SELECT COUNT(*) FROM effect_sql_migrations WHERE ${sql.literal(FORK_LEDGER_ROWS)}) AS ledgerRows,
+      (SELECT COUNT(*) FROM effect_sql_migrations
+        WHERE ${sql.literal(FORK_LEDGER_ROW_CONDITION)}) AS ledgerRows,
       (SELECT COUNT(*) FROM sqlite_master
         WHERE type = 'index' AND name IN (${sql.literal(FORK_INDEX_NAMES)})) AS indexes
   `;
   return (row?.ledgerRows ?? 0) > 0 || (row?.indexes ?? 0) < forkIndexes.length;
 });
 
-/** Creates the missing fork indexes and drops their old ledger rows; returns what it changed. */
-export const applyForkIndexes = Effect.fn("applyForkIndexes")(function* () {
+/** Deletes the fork's old ledger rows, matched by id and name; returns what it removed. */
+export const forgetForkLedgerRows = Effect.fn("forgetForkLedgerRows")(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const tables = yield* sql`
+    SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'effect_sql_migrations'
+  `;
+  if (tables.length === 0) return [];
   const forgotten = yield* sql<{ readonly migration_id: number; readonly name: string }>`
-    DELETE FROM effect_sql_migrations WHERE ${sql.literal(FORK_LEDGER_ROWS)}
+    DELETE FROM effect_sql_migrations WHERE ${sql.literal(FORK_LEDGER_ROW_CONDITION)}
     RETURNING migration_id, name
   `;
+  return forgotten.map((row) => `${row.migration_id}_${row.name} (ledger row removed)`);
+});
+
+/** Creates the missing fork indexes; returns their names. */
+export const applyForkIndexes = Effect.fn("applyForkIndexes")(function* () {
+  const sql = yield* SqlClient.SqlClient;
   const existing = yield* sql<{ readonly name: string }>`
     SELECT name FROM sqlite_master WHERE type = 'index' AND name IN (${sql.literal(FORK_INDEX_NAMES)})
   `;
@@ -69,8 +95,5 @@ export const applyForkIndexes = Effect.fn("applyForkIndexes")(function* () {
     yield* sql.unsafe(statement);
     created.push(name);
   }
-  return [
-    ...forgotten.map((row) => `${row.migration_id}_${row.name} (ledger row removed)`),
-    ...created,
-  ];
+  return created;
 });

@@ -187,17 +187,21 @@ describe("runMigrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect.each(["fresh", "numbered-head", "fork-recorded"] as const)(
+  it.effect.each(["fresh", "numbered-head", "fork-recorded", "fork-recorded-behind"] as const)(
     "creates the fork indexes without ledger rows on a %s database",
     (state) =>
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        if (state !== "fresh") {
+        if (state === "numbered-head") {
           yield* runMigrations({ toMigrationInclusive: 102 });
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_subagents_remote_parent_done_idx`;
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_turn_items_transient_failure_idx`;
         }
-        if (state === "fork-recorded") {
+        // With the indexes present, only the ledger rows make the database pending.
+        if (state === "fork-recorded") yield* runMigrations();
+        // The rows must be gone before the highest recorded id decides which migrations run.
+        if (state === "fork-recorded-behind") yield* runMigrations({ toMigrationInclusive: 101 });
+        if (state === "fork-recorded" || state === "fork-recorded-behind") {
           yield* sql`
             INSERT INTO effect_sql_migrations (migration_id, name)
             VALUES (103, 'RemoteParentDoneIndex'), (104, 'TransientFailureIndex')
