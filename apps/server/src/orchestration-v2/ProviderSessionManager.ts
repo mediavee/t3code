@@ -3098,6 +3098,8 @@ export const layerWithOptions = (
               ),
               Effect.andThen(
                 Effect.gen(function* () {
+                  // Before the settled item commits, so its viewers get the held end of the output.
+                  yield* releaseLiveOutput;
                   if (
                     event.type === "provider_thread.updated" &&
                     event.providerThread.status === "error"
@@ -3151,11 +3153,9 @@ export const layerWithOptions = (
                           ),
                         );
                     }).pipe(entry.requestEventPermit.withPermits(1));
-                    yield* releaseLiveOutput;
                     return;
                   }
                   yield* publishToSubscribers(entry.eventSubscribers, { type: "event", event });
-                  yield* releaseLiveOutput;
                 }),
               ),
             );
