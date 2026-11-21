@@ -1,7 +1,13 @@
 import * as Schema from "effect/Schema";
 
 import { AuthEnvironmentScope, AuthMcpClientAccess } from "./auth.ts";
-import { EnvironmentId, ThreadId, TrimmedNonEmptyString, TurnItemId } from "./baseSchemas.ts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+  TurnItemId,
+} from "./baseSchemas.ts";
 
 /**
  * A link from this environment to another one (the peer). This environment
@@ -222,6 +228,27 @@ export const PeerLinkParentDoneResult = Schema.Struct({
   outcome: Schema.Literals(["marked", "thread_not_found"]),
 });
 export type PeerLinkParentDoneResult = typeof PeerLinkParentDoneResult.Type;
+
+/** The base a delegated task's new worktree in `projectId` here starts from. */
+export const PeerLinkWorktreeBaseRequest = Schema.Struct({
+  projectId: ProjectId,
+  /** Omitted: the project's default branch, fetched from its remote. */
+  baseRef: Schema.optional(TrimmedNonEmptyString),
+});
+export type PeerLinkWorktreeBaseRequest = typeof PeerLinkWorktreeBaseRequest.Type;
+
+export const PeerLinkWorktreeBaseResult = Schema.Union([
+  Schema.Struct({
+    outcome: Schema.Literal("resolved"),
+    baseRef: TrimmedNonEmptyString,
+    startFromOrigin: Schema.Boolean,
+  }),
+  Schema.Struct({
+    outcome: Schema.Literals(["project_not_found", "not_repository", "base_not_found"]),
+    message: Schema.String,
+  }),
+]);
+export type PeerLinkWorktreeBaseResult = typeof PeerLinkWorktreeBaseResult.Type;
 
 /**
  * The user's answer to an agent asking to link an environment. The pairing

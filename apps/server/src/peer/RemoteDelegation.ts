@@ -174,13 +174,16 @@ export class RemoteDelegation extends Context.Service<
       },
     ) => Effect.Effect<OrchestratorMcpTaskCancelResult, OrchestratorMcpFailure>;
     /**
-     * The status of the task's run there, or null when it cannot be read: an
-     * unreachable machine reads as no news rather than failing the read here.
+     * The status of the task's run there and the checkout it has there of its own, or null when
+     * it cannot be read: an unreachable machine reads as no news rather than failing the read here.
      */
-    readonly runStatus: (
+    readonly readThere: (
       scope: ThreadScope,
       task: OrchestrationV2Subagent,
-    ) => Effect.Effect<OrchestratorMcpThreadRun["status"] | null>;
+    ) => Effect.Effect<{
+      readonly status: OrchestratorMcpThreadRun["status"] | null;
+      readonly worktree: { readonly path: string; readonly branch: string | null } | null;
+    } | null>;
     /**
      * Follows every open remote task until it ends, including after a
      * restart, and a finished one again when a Stop here owes it a stop there.
@@ -427,6 +430,42 @@ const make = Effect.gen(function* () {
     return chosen.providerInstanceId;
   });
 
+  /**
+   * The new checkout's base, resolved and checked there: a commit only this checkout has would
+   * not resolve there, and an older peer would silently put the task in the shared checkout.
+   */
+  const remoteWorktreeBase = Effect.fn("RemoteDelegation.remoteWorktreeBase")(function* (
+    environmentId: EnvironmentId,
+    projectId: ProjectId,
+    baseRef: string | undefined,
+  ) {
+    const base = yield* links
+      .worktreeBase(environmentId, { projectId, ...(baseRef === undefined ? {} : { baseRef }) })
+      .pipe(
+        Effect.mapError(
+          (error) =>
+            new OrchestratorMcpFailure({
+              code: error.reason === "incompatible" ? "invalid_request" : "orchestration_error",
+              message: error.message,
+            }),
+        ),
+      );
+    if (base.outcome === "resolved") {
+      return {
+        type: "worktree" as const,
+        baseRef: base.baseRef,
+        startFromOrigin: base.startFromOrigin,
+      };
+    }
+    return yield* new OrchestratorMcpFailure({
+      code: "invalid_request",
+      message:
+        base.outcome === "base_not_found" && baseRef !== undefined
+          ? `${base.message} No task was started. A commit that exists only here is not there: push it, or omit baseRef to start from that project's default branch.`
+          : `${base.message} No task was started.`,
+    });
+  });
+
   const delegate: RemoteDelegation["Service"]["delegate"] = Effect.fn("RemoteDelegation.delegate")(
     function* (scope, input) {
       const parent = yield* threads.getThreadRecords(scope.thread.threadId, ["runs"]).pipe(
@@ -453,13 +492,10 @@ const make = Effect.gen(function* () {
       }
       const parentNodeId = parentRun.rootNodeId;
       const { target } = input;
-      // A worktree there would branch from a commit this checkout has and the
-      // other may not, so a remote task runs in that project's checkout.
-      if (input.isolation === "worktree") {
+      if (input.baseRef !== undefined && input.isolation !== "worktree") {
         return yield* new OrchestratorMcpFailure({
           code: "invalid_request",
-          message:
-            'A task in a linked environment runs in that project\'s checkout; isolation "worktree" is not supported there. Omit isolation, or use t3_thread_launch with environmentId and a worktree workspaceStrategy.',
+          message: 'baseRef starts a new checkout there, so it needs isolation "worktree".',
         });
       }
       // The provider and model inherit as they do for a task here. Another
@@ -503,6 +539,10 @@ const make = Effect.gen(function* () {
         parent.thread.projectId,
         target.projectId,
       );
+      const workspaceStrategy =
+        input.isolation === "worktree"
+          ? yield* remoteWorktreeBase(target.environmentId, projectId, input.baseRef)
+          : undefined;
       // One key for the launch there and the record here, so a retry finds both.
       // Both are scoped to the provider session, as every key a caller passes is:
       // the forwarder scopes the launch's, and the record's names it.
@@ -519,6 +559,7 @@ const make = Effect.gen(function* () {
           modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
           ...(runtimeMode === undefined ? {} : { runtimeMode }),
           ...(interactionMode === undefined ? {} : { interactionMode }),
+          ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
           message: task,
           clientRequestId: `delegate:${scope.thread.threadId}:${key}`,
           // The thread there shows it is this thread's subagent, with a way back.
@@ -1525,21 +1566,31 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const runStatus = Effect.fn("RemoteDelegation.runStatus")(
+  const readThere = Effect.fn("RemoteDelegation.readThere")(
     function* (scope: ThreadScope, task: OrchestrationV2Subagent) {
       const remote = task.remoteChild;
-      if (remote?.runId === undefined) return null;
+      if (remote === undefined) return null;
       if (isHere(remote)) {
+        if (remote.runId === undefined) return null;
         const { runs } = yield* threads.getThreadRecords(remote.threadId, ["runs"]);
         const run = runs.find((candidate) => candidate.id === remote.runId);
-        return run === undefined ? null : runOutcome(run);
+        return { status: run === undefined ? null : runOutcome(run), worktree: null };
       }
       const read = yield* forwarding.readThread(
         followScope(scope.thread, remote),
         remote.environmentId,
         { threadId: remote.threadId, limit: 1, runLimit: 50 },
       );
-      return read.recentRuns.find((run) => run.runId === remote.runId)?.status ?? null;
+      return {
+        status:
+          remote.runId === undefined
+            ? null
+            : (read.recentRuns.find((run) => run.runId === remote.runId)?.status ?? null),
+        worktree:
+          read.thread.worktreePath === null
+            ? null
+            : { path: read.thread.worktreePath, branch: read.thread.branch },
+      };
     },
     Effect.orElseSucceed(() => null),
   );
@@ -1575,7 +1626,7 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.ignoreCause({ log: true })),
     );
 
-  return RemoteDelegation.of({ delegate, adoptLocal, followUp, cancel, runStatus, start });
+  return RemoteDelegation.of({ delegate, adoptLocal, followUp, cancel, readThere, start });
 });
 
 /** A defect, logged, as a failure, so a retry covers it. */

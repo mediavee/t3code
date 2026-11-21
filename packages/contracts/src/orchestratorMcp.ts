@@ -246,7 +246,13 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   isolation: Schema.optional(
     Schema.Literals(["shared", "worktree"]).annotate({
       description:
-        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child. Uncommitted edits stay out.",
+        "'shared' (default): parent checkout. 'worktree': new prepared checkout from the parent commit, for a separate checkout or PR per child; in another environment, from its project's default branch freshly fetched, or `baseRef`. Uncommitted edits stay out.",
+    }),
+  ),
+  baseRef: Schema.optional(
+    TrimmedNonEmptyString.annotate({
+      description:
+        "With `target.environmentId` and isolation 'worktree': a branch, tag or commit there to start from. Push local commits first.",
     }),
   ),
   mode: Schema.optional(
@@ -298,6 +304,10 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
     Schema.Struct({ environmentId: EnvironmentId, threadId: ThreadId, label: Schema.String }),
   ),
   link: Schema.optional(Schema.String),
+  /** A remote task's own checkout there, once it is ready. */
+  worktree: Schema.optional(
+    Schema.Struct({ path: Schema.String, branch: Schema.NullOr(Schema.String) }),
+  ),
   childRunId: Schema.NullOr(RunId),
   childNodeId: NodeId,
   status: OrchestratorMcpDelegatedTaskStatus.annotate({
