@@ -64,6 +64,7 @@ import {
   ThreadId,
   isOrchestrationV2WorkActive,
   latestProviderTurnForAttempt,
+  literalTemplateRefusal,
   resolveProjectProviderInstanceEnabled,
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
@@ -2924,6 +2925,11 @@ const make = Effect.gen(function* () {
       };
     }),
     delegateTask: Effect.fn("OrchestratorMcpService.delegateTask")(function* (callerScope, input) {
+      const templateRefusal =
+        input.allowLiteralTemplates === true
+          ? undefined
+          : literalTemplateRefusal("task", input.task);
+      if (templateRefusal !== undefined) return yield* failure("invalid_request", templateRefusal);
       const environmentId =
         input.target === undefined
           ? undefined
