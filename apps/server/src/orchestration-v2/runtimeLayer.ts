@@ -46,6 +46,7 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
 import * as ProviderRuntimeRecoveryService from "./ProviderRuntimeRecoveryService.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -132,6 +133,7 @@ const layerProviderEventIngestorProvided = ProviderEventIngestor.layer.pipe(
       ProjectionStore.layer,
       ThreadCommandExecutor.layer,
       GitVcsDriver.layer,
+      KnownSecrets.layer,
     ),
   ),
 );
@@ -148,7 +150,7 @@ const layerProviderSwitchServiceProvided = ProviderSwitchService.layer.pipe(
 );
 
 const layerCommandOutputHubProvided = CommandOutputHub.layer.pipe(
-  Layer.provide(Layer.merge(layerEventSink, ProjectionStore.layer)),
+  Layer.provide(Layer.mergeAll(layerEventSink, ProjectionStore.layer, KnownSecrets.layer)),
 );
 
 const layerProviderSessionManagerProvided = ProviderSessionManager.layer.pipe(
@@ -329,7 +331,7 @@ const layerWorkflowsProvided = WorkflowRuntime.layer.pipe(
   Layer.provide(PeerMcpClient.layer.pipe(Layer.provideMerge(PeerLinks.layer))),
 );
 const layerSecretRequestsProvided = SecretRequests.layer.pipe(
-  Layer.provide(layerThreadManagementProvided),
+  Layer.provide(Layer.merge(layerThreadManagementProvided, KnownSecrets.layer)),
 );
 // Cards are shown from /mcp and answered over WebSocket; one instance serializes both.
 const layerFeedbackStoreProvided = FeedbackStore.layer.pipe(
