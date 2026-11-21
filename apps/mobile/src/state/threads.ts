@@ -1,3 +1,4 @@
+import { createThreadFleetAtom } from "@t3tools/client-runtime/state/thread-fleet";
 import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -69,6 +70,10 @@ export const steadyNavigationThreadShellsAtom = steadyThreadShells.navigationThr
 export const steadyQuietThreadShellsAtom = steadyThreadShells.quietThreadShellsAtom;
 /** Delegated tasks among those threads, grouped by a parent no list shows. */
 export const steadyDelegatedTaskGroupsAtom = steadyThreadShells.delegatedTaskGroupsAtom;
+export const threadFleetAtom = createThreadFleetAtom({
+  catalogValueAtom: environmentCatalog.catalogValueAtom,
+  environmentThreadsAtom: environmentThreadShells.environmentThreadsAtom,
+});
 export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
   childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,
   pendingRequestsAtom: environmentThreadDetails.pendingRequestsAtom,

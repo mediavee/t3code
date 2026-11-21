@@ -5608,5 +5608,11 @@
   "8ec2c57414669b79": "2つ目の {tracker} ワークスペースまたはユーザーを接続します。",
   "3d4448e3c061f894": "別のマシン",
   "349587beaf00ce5e": "{title}、{machine} から委任、{count, plural, other {{count} 件のタスク}}",
-  "88bcb7d812dfb32a": "{machine} · {count, plural, other {{count} 件のタスク}}"
+  "88bcb7d812dfb32a": "{machine} · {count, plural, other {{count} 件のタスク}}",
+  "948185631ef288e6": "{count, plural, other {{count} 件実行中}}",
+  "425e4a3d6c5c2867": "{count, plural, other {{count} 件失敗}}",
+  "67d4a779cd49a863": "{count, plural, other {完了 {count}}}",
+  "5c412fd3159e13f3": "{count, plural, other {オープンな PR {count}}}",
+  "5c73b69a42cb7616": "子スレッド",
+  "fa97f7ae0f746034": "{count, plural, other {回答待ち {count}}}"
 }
