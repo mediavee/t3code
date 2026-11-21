@@ -66,10 +66,12 @@ hours.
 ## Secrets in tool output
 
 A command an agent runs can still print a secret, for example `cat .env`. T3 Code replaces these
-with `[redacted]` in the command and tool output it saves and shows, on every device, and in the
-result a task delegated to another environment sends back:
+with `[redacted]` in the command and tool output it saves and shows (file and web search results
+and file edits included), on every device, in the provider event logs, and in the result a task
+delegated to another environment sends back:
 
-- values you gave through a secret request card, from when you answer until the server restarts
+- values you gave through a secret request card, from when you answer until the server restarts;
+  a card field shown in clear, such as an email, is not masked
 - values read from a secret reference, and provider environment variables marked sensitive
 - private key blocks (`-----BEGIN … PRIVATE KEY-----`)
 - the password in a URL, such as `mysql://user:password@host`

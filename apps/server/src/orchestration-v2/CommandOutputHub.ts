@@ -156,10 +156,13 @@ export const make = Effect.gen(function* () {
     const key = commandKey(target);
     const known = yield* knownSecrets.current;
     const redaction = redactions.get(key);
-    if (known === null && redaction === undefined) return yield* appendVisible(key, chunk);
+    if (known === null) {
+      redactions.delete(key);
+      return yield* appendVisible(key, (redaction?.release() ?? "") + chunk);
+    }
     const stream = redaction ?? new SecretRedactionStream();
-    redactions.set(key, stream);
-    yield* appendVisible(key, stream.push(chunk, known ?? []));
+    setBounded(redactions, key, stream, MAX_LIVE_COMMANDS);
+    yield* appendVisible(key, stream.push(chunk, known));
   });
 
   const finish: CommandOutputHubShape["finish"] = Effect.fn("CommandOutputHub.finish")(

@@ -46,6 +46,21 @@ describe("redactSecrets", () => {
     ],
     ["a URL without a password", "https://user@example.com", "https://user@example.com"],
     ["a long token, in linear time", "x".repeat(200_000), "x".repeat(200_000)],
+    [
+      "repeated unclosed key headers, in linear time",
+      "-----BEGIN RSA PRIVATE KEY-----\n".repeat(20_000),
+      "-----BEGIN RSA PRIVATE KEY-----\n".repeat(20_000),
+    ],
+    [
+      "repeated headers that are not keys, in linear time",
+      "-----BEGIN BUILD LOG-----\n".repeat(20_000),
+      "-----BEGIN BUILD LOG-----\n".repeat(20_000),
+    ],
+    [
+      "two key blocks and the text between them",
+      `${KEY}\nmiddle\n${KEY}`,
+      `${MASKED_KEY}\nmiddle\n${MASKED_KEY}`,
+    ],
   ])("masks %s", (_name, text, expected) => {
     expect(redactSecrets(text, [FAKE])).toBe(expected);
   });
@@ -90,6 +105,54 @@ describe("SecretRedactionStream", () => {
     ],
   ])("masks %s", (_name, chunks, expected) => {
     expect(streamed(chunks, [FAKE])).toBe(expected);
+  });
+
+  it.each([
+    [
+      "whose last character is its first",
+      ["xfake-secret-000x", " ok\n"],
+      ["xfake-secret-000x"],
+      "[redacted] ok\n",
+    ],
+    [
+      "ending like a URL scheme",
+      ["fake_access_token:", " ok\n"],
+      ["fake_access_token:"],
+      "[redacted] ok\n",
+    ],
+    [
+      "overlapping another one",
+      ["fake-secret-AAAA-BBBB", " ok\n"],
+      ["fake-secret-AAAA", "AAAA-BBBB-fake"],
+      "[redacted]-BBBB ok\n",
+    ],
+  ])("never lets part of a complete secret %s through", (_name, chunks, known, expected) => {
+    expect(streamed(chunks, known)).toBe(expected);
+  });
+
+  it("keeps output flowing after a header that is not a private key", () => {
+    const stream = new SecretRedactionStream();
+    expect(stream.push("-----BEGIN BUILD LOG-----\n", [])).toBe("-----BEGIN BUILD LOG-----\n");
+    for (let i = 0; i < 100; i++) expect(stream.push(`line ${i}\n`, [])).toBe(`line ${i}\n`);
+    expect(stream.push("x -----BEGIN ", [])).toBe("x ");
+    expect(stream.push("BUILD LOG\n", [])).toBe("-----BEGIN BUILD LOG\n");
+  });
+
+  it("finds an end marker split across chunks after a key too long to hold", () => {
+    const body = "A".repeat(64 * 1024);
+    const end = "-----END RSA PRIVATE KEY-----";
+    const out = streamed([
+      `-----BEGIN RSA PRIVATE KEY-----\n${body}\n${end.slice(0, 12)}`,
+      `${end.slice(12)}\nafter\n`,
+    ]);
+    expect(out).toBe(`-----BEGIN RSA PRIVATE KEY-----\n[redacted]\n${end}\nafter\n`);
+  });
+
+  it("releases held text unmasked once masking is turned off", () => {
+    const stream = new SecretRedactionStream();
+    expect(stream.push("value fake-sec", [FAKE])).toBe("value ");
+    expect(stream.release()).toBe("fake-sec");
+    expect(stream.end([FAKE])).toBe("");
   });
 
   it("releases held text that turned out not to be a secret", () => {

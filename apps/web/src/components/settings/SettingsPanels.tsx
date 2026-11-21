@@ -2532,6 +2532,19 @@ export function MaintenanceSettingsPanel() {
             "Replace secrets T3 knows, private keys and passwords in URLs with [redacted] in the command and tool output it stores and shows.",
           )}
           settingKeys={["maskSecretsInToolOutput"]}
+          resetAction={
+            settings.maskSecretsInToolOutput !==
+            DEFAULT_UNIFIED_SETTINGS.maskSecretsInToolOutput ? (
+              <SettingResetButton
+                ariaLabel={gt("Reset secret masking in tool output to default")}
+                onClick={() =>
+                  updateSettings({
+                    maskSecretsInToolOutput: DEFAULT_UNIFIED_SETTINGS.maskSecretsInToolOutput,
+                  })
+                }
+              />
+            ) : null
+          }
           control={
             <ScopedSwitch
               settingKeys={["maskSecretsInToolOutput"]}

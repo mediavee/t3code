@@ -9966,6 +9966,7 @@
   "ae3a141bcd5f923a": "Actividad en segundo plano",
   "d24e3cd7bcf08490": "Mantener activo mientras trabajan los agentes",
   "9d4bf2d6201e724e": "Ocultar secretos en la salida de herramientas",
+  "a8783c8c12d1d275": "Restablecer la ocultación de secretos en la salida de herramientas al valor predeterminado",
   "4aa5b903c1dfaa34": "Modo de los hilos nuevos",
   "ed85b885e759dfb9": "Los worktrees nuevos parten del remoto",
   "c286809ec2e3d9b2": "Directorio base para añadir proyectos",

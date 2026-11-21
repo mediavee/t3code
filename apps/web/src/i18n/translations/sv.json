@@ -9976,6 +9976,7 @@
   "ae3a141bcd5f923a": "Bakgrundsaktivitet",
   "d24e3cd7bcf08490": "Håll vaken medan agenter arbetar",
   "9d4bf2d6201e724e": "Maskera hemligheter i verktygsutdata",
+  "a8783c8c12d1d275": "Återställ maskering av hemligheter i verktygsutdata till standard",
   "4aa5b903c1dfaa34": "Läge för nya trådar",
   "ed85b885e759dfb9": "Nya worktrees startar från fjärrgrenen",
   "c286809ec2e3d9b2": "Baskatalog för att lägga till projekt",

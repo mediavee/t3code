@@ -9978,6 +9978,7 @@
   "ae3a141bcd5f923a": "Background activity",
   "d24e3cd7bcf08490": "Keep awake while agents work",
   "9d4bf2d6201e724e": "Mask secrets in tool output",
+  "a8783c8c12d1d275": "Reset secret masking in tool output to default",
   "4aa5b903c1dfaa34": "New thread mode",
   "ed85b885e759dfb9": "New worktrees start from remote",
   "c286809ec2e3d9b2": "Add project base directory",

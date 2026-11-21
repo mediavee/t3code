@@ -40,7 +40,13 @@ const STORE_NAME_PATTERN = /^(secret-request-[0-9a-f]{32})\.bin$/;
 const FILE_NAME_PATTERN = /^[0-9a-f]{32}(\.partial)?$/;
 
 const StoredSecret = Schema.fromJsonString(
-  Schema.Struct({ projectId: Schema.String, value: Schema.String, savedAt: Schema.Number }),
+  Schema.Struct({
+    projectId: Schema.String,
+    value: Schema.String,
+    savedAt: Schema.Number,
+    /** Set to false for a field the card shows in clear, which output masking leaves alone. */
+    secret: Schema.optional(Schema.Boolean),
+  }),
 );
 const encodeStored = Schema.encodeEffect(StoredSecret);
 const decodeStored = Schema.decodeUnknownOption(StoredSecret);
@@ -190,7 +196,12 @@ const make = Effect.gen(function* () {
           : (answerValues(item, input.answer) ??
             (yield* new SecretRequestError({ reason: "fields_mismatch" })));
     if (values !== undefined) {
-      yield* known.remember(values.map(([, value]) => value));
+      const shown = new Set(
+        item.fields?.filter((field) => field.secret === false).map((field) => field.name),
+      );
+      yield* known.remember(
+        values.filter(([field]) => field === undefined || !shown.has(field)).map(([, v]) => v),
+      );
       const savedAt = yield* Clock.currentTimeMillis;
       // Cleared when interrupted too, or a retry would keep these values beside its own.
       yield* Effect.forEach(values, ([field, value]) =>
@@ -199,6 +210,7 @@ const make = Effect.gen(function* () {
             projectId: records.thread.projectId,
             value,
             savedAt,
+            ...(field !== undefined && shown.has(field) ? { secret: false } : {}),
           }).pipe(Effect.orDie);
           yield* store
             .create(
@@ -304,7 +316,7 @@ const make = Effect.gen(function* () {
       return yield* new SecretRequestError({ reason: "ref_expired" });
     }
     // Answered before a restart, which forgot it.
-    yield* known.remember([decoded.value.value]);
+    if (decoded.value.secret !== false) yield* known.remember([decoded.value.value]);
     return decoded.value.value;
   });
 

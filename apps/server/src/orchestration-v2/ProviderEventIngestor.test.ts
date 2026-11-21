@@ -1799,7 +1799,7 @@ layer("ProviderEventIngestorV2", (it) => {
     }),
   );
 
-  it.effect("stores and serves command and tool output with known secrets masked", () =>
+  it.effect("stores and serves tool output of every kind with known secrets masked", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const eventSink = yield* EventSink.EventSinkV2;
@@ -1848,9 +1848,44 @@ layer("ProviderEventIngestorV2", (it) => {
         input: {},
         output: { content: [{ type: "text", text: `api_key: ${FAKE_SECRET}` }] },
       };
+      const fileSearch: OrchestrationV2TurnItem = {
+        ...base,
+        id: TurnItemId.make("turn-item:grep-token"),
+        ordinal: 3,
+        title: "Grep",
+        type: "file_search",
+        pattern: "TOKEN",
+        results: [{ fileName: ".env", line: 1, preview: `TOKEN=${FAKE_SECRET}` }],
+      };
+      const webSearch: OrchestrationV2TurnItem = {
+        ...base,
+        id: TurnItemId.make("turn-item:web-token"),
+        ordinal: 4,
+        title: "Web search",
+        type: "web_search",
+        patterns: [`why does ${FAKE_SECRET} fail`],
+        results: [
+          {
+            title: "Result",
+            url: `https://example.com/?q=${FAKE_SECRET}`,
+            snippet: `the key ${FAKE_SECRET} expired`,
+          },
+        ],
+      };
+      const fileChange: OrchestrationV2TurnItem = {
+        ...base,
+        id: TurnItemId.make("turn-item:edit-env"),
+        ordinal: 5,
+        title: "Edit .env",
+        type: "file_change",
+        fileName: ".env",
+        diffStr: `-TOKEN=old\n+TOKEN=${FAKE_SECRET}\n`,
+        oldStr: "TOKEN=old",
+        newStr: `TOKEN=${FAKE_SECRET}`,
+      };
 
       yield* eventSink.write({ events: [threadEvent] });
-      for (const turnItem of [command, tool]) {
+      for (const turnItem of [command, tool, fileSearch, webSearch, fileChange]) {
         yield* ingestor.ingestNormalized({
           providerSessionId,
           providerInstanceId: modelSelection.instanceId,
@@ -1881,6 +1916,35 @@ layer("ProviderEventIngestorV2", (it) => {
       assert.deepEqual(readTool?.type === "dynamic_tool" ? readTool.output : null, {
         content: [{ type: "text", text: "api_key: [redacted]" }],
       });
+      const read = (itemId: TurnItemId) =>
+        projectionStore.getTurnItem({ threadId: threadEvent.threadId, itemId });
+      const readFileSearch = yield* read(fileSearch.id);
+      assert.deepEqual(readFileSearch?.type === "file_search" ? readFileSearch.results : null, [
+        { fileName: ".env", line: 1, preview: "TOKEN=[redacted]" },
+      ]);
+      const readWebSearch = yield* read(webSearch.id);
+      assert.deepEqual(
+        readWebSearch?.type === "web_search"
+          ? { patterns: readWebSearch.patterns, results: readWebSearch.results }
+          : null,
+        {
+          patterns: ["why does [redacted] fail"],
+          results: [
+            {
+              title: "Result",
+              url: "https://example.com/?q=[redacted]",
+              snippet: "the key [redacted] expired",
+            },
+          ],
+        },
+      );
+      const readFileChange = yield* read(fileChange.id);
+      assert.deepEqual(
+        readFileChange?.type === "file_change"
+          ? [readFileChange.diffStr, readFileChange.oldStr, readFileChange.newStr]
+          : null,
+        ["-TOKEN=old\n+TOKEN=[redacted]\n", "TOKEN=old", "TOKEN=[redacted]"],
+      );
     }),
   );
 

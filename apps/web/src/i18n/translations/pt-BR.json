@@ -9967,6 +9967,7 @@
   "ae3a141bcd5f923a": "Atividade em segundo plano",
   "d24e3cd7bcf08490": "Manter ativo enquanto os agentes trabalham",
   "9d4bf2d6201e724e": "Ocultar segredos na saída das ferramentas",
+  "a8783c8c12d1d275": "Redefinir a ocultação de segredos na saída das ferramentas para o padrão",
   "4aa5b903c1dfaa34": "Modo de nova thread",
   "ed85b885e759dfb9": "Novos worktrees começam do remoto",
   "c286809ec2e3d9b2": "Diretório base para adicionar projetos",

@@ -9968,6 +9968,7 @@
   "ae3a141bcd5f923a": "Activité en arrière-plan",
   "d24e3cd7bcf08490": "Empêcher la mise en veille pendant que les agents travaillent",
   "9d4bf2d6201e724e": "Masquer les secrets dans la sortie des outils",
+  "a8783c8c12d1d275": "Réinitialiser le masquage des secrets dans la sortie des outils à la valeur par défaut",
   "4aa5b903c1dfaa34": "Mode des nouveaux fils",
   "ed85b885e759dfb9": "Les nouveaux worktrees partent du distant",
   "c286809ec2e3d9b2": "Répertoire de base pour l’ajout de projets",
