@@ -24,6 +24,8 @@ import {
   toSafeThreadAttachmentSegment,
 } from "../attachmentStore.ts";
 import type * as ResourceAttribution from "../resourceTelemetry/ResourceAttribution.ts";
+import type * as KnownSecrets from "../secrets/KnownSecrets.ts";
+import { redactSecretsInValue } from "../secrets/secretRedaction.ts";
 
 const MEBIBYTE = 1024 * 1024;
 const DAY_MS = 24 * 60 * 60 * 1_000;
@@ -84,6 +86,7 @@ export interface EventNdjsonLogStoreOptions {
   readonly maxFiles?: number;
   readonly batchWindowMs?: number;
   readonly attribution?: ResourceAttribution.ResourceAttribution["Service"];
+  readonly knownSecrets?: KnownSecrets.KnownSecrets["Service"];
 }
 
 export class EventNdjsonLogDirectoryError extends Schema.TaggedError<EventNdjsonLogDirectoryError>()(
@@ -110,6 +113,7 @@ interface ResolvedOptions {
   readonly maxBufferedBytes: number;
   readonly maxBufferedRecords: number;
   readonly attribution: ResourceAttribution.ResourceAttribution["Service"] | undefined;
+  readonly knownSecrets: KnownSecrets.KnownSecrets["Service"] | undefined;
 }
 
 export interface PendingRecord {
@@ -490,6 +494,7 @@ function resolveOptions(options: EventNdjsonLogStoreOptions): Effect.Effect<Reso
     maxBufferedBytes: DEFAULT_MAX_BUFFERED_BYTES,
     maxBufferedRecords: DEFAULT_MAX_BUFFERED_RECORDS,
     attribution: options.attribution,
+    knownSecrets: options.knownSecrets,
   } satisfies ResolvedOptions;
 
   return Effect.succeed(resolved);
@@ -742,11 +747,14 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
 
     const write = Effect.fnUntraced(function* (event: unknown, threadId: ThreadId | null) {
       if (!shouldPersistProviderEvent(stream, event)) return;
-      let payload = yield* serializeEvent(boundProviderEventForLogging(event));
+      const known = resolved.knownSecrets ? yield* resolved.knownSecrets.current : null;
+      const mask = (value: unknown) =>
+        known === null ? value : redactSecretsInValue(value, known);
+      let payload = yield* serializeEvent(mask(boundProviderEventForLogging(event)));
       if (payload === undefined) return;
       // Escaping can expand strings beyond their input size.
       if (Buffer.byteLength(payload) > MAX_RECORD_CHARACTERS) {
-        payload = yield* serializeEvent(summarizeProviderEvent(event));
+        payload = yield* serializeEvent(mask(summarizeProviderEvent(event)));
         if (payload === undefined) return;
       }
 

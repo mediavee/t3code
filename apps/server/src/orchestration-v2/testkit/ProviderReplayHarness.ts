@@ -53,6 +53,7 @@ import * as ProviderInstallationGate from "../../provider/ProviderInstallationGa
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import * as ProviderRuntimeRecoveryService from "../ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "../ProviderSessionManager.ts";
+import * as KnownSecrets from "../../secrets/KnownSecrets.ts";
 import * as CommandOutputRecorder from "./CommandOutputRecorder.ts";
 import * as ProviderSwitchService from "../ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "../ProviderTurnControlService.ts";
@@ -620,6 +621,7 @@ export function layerWithRegistry<Error>(
     layerCommandOutputHubProvided,
     ThreadCommandExecutor.layer,
   ).pipe(
+    Layer.provide(KnownSecrets.layer.pipe(Layer.provide(layerServerSettings))),
     Layer.provide(ProviderTurnStartServiceTestkit.layer),
     Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
   );

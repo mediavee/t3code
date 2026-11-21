@@ -23,6 +23,8 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
+import { SecretRedactionStream } from "../secrets/secretRedaction.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 
@@ -106,7 +108,10 @@ function setBounded<V>(
 export const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const knownSecrets = yield* KnownSecrets.KnownSecrets;
   const tails = new Map<string, TerminalOutputState>();
+  /** Per live command, the masking state that holds back a secret split across chunks. */
+  const redactions = new Map<string, SecretRedactionStream>();
   const finished = new Map<string, TerminalOutputState>();
   const subscribers = new Map<string, Set<Subscriber>>();
 
@@ -127,29 +132,53 @@ export const make = Effect.gen(function* () {
       { discard: true },
     );
 
-  const append: CommandOutputHubShape["append"] = ({ chunk, ...target }) =>
+  const appendVisible = (key: string, text: string) =>
     Effect.suspend(() => {
-      if (chunk.length === 0) return Effect.void;
-      const key = commandKey(target);
-      const tail = appendTerminalOutput(tails.get(key) ?? EMPTY_TERMINAL_OUTPUT, chunk);
+      if (text.length === 0) return Effect.void;
+      const tail = appendTerminalOutput(tails.get(key) ?? EMPTY_TERMINAL_OUTPUT, text);
       setBounded(tails, key, tail, MAX_LIVE_COMMANDS, (oldest) => {
+        redactions.delete(oldest);
         // Eviction invalidates viewers' state; resync on their next frame.
         for (const subscriber of subscribers.get(oldest) ?? []) {
           subscriber.needsReplace = true;
           subscriber.pendingAppend = "";
         }
       });
-      return wakeAll(key, chunk);
+      return wakeAll(key, text);
     });
 
-  const finish: CommandOutputHubShape["finish"] = (target) =>
-    Effect.sync(() => {
+  // Untraced: this runs per output chunk, and a flood would make a span each.
+  const append: CommandOutputHubShape["append"] = Effect.fnUntraced(function* ({
+    chunk,
+    ...target
+  }) {
+    if (chunk.length === 0) return;
+    const key = commandKey(target);
+    const known = yield* knownSecrets.current;
+    const redaction = redactions.get(key);
+    if (known === null) {
+      redactions.delete(key);
+      return yield* appendVisible(key, (redaction?.release() ?? "") + chunk);
+    }
+    const stream = redaction ?? new SecretRedactionStream();
+    setBounded(redactions, key, stream, MAX_LIVE_COMMANDS);
+    yield* appendVisible(key, stream.push(chunk, known));
+  });
+
+  const finish: CommandOutputHubShape["finish"] = Effect.fn("CommandOutputHub.finish")(
+    function* (target) {
       const key = commandKey(target);
+      const redaction = redactions.get(key);
+      if (redaction !== undefined) {
+        redactions.delete(key);
+        yield* appendVisible(key, redaction.end((yield* knownSecrets.current) ?? []));
+      }
       const tail = tails.get(key);
       if (tail === undefined) return;
       tails.delete(key);
       setBounded(finished, key, tail, MAX_FINISHED_COMMANDS);
-    });
+    },
+  );
 
   const subscribe: CommandOutputHubShape["subscribe"] = (target) =>
     Stream.unwrap(
@@ -303,5 +332,5 @@ export const make = Effect.gen(function* () {
 export const layer: Layer.Layer<
   CommandOutputHub,
   never,
-  EventSink.EventSinkV2 | ProjectionStore.ProjectionStoreV2
+  EventSink.EventSinkV2 | ProjectionStore.ProjectionStoreV2 | KnownSecrets.KnownSecrets
 > = Layer.effect(CommandOutputHub, make);
