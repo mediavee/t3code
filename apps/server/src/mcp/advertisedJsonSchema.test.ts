@@ -6,6 +6,7 @@ import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
 import { ProjectToolkit } from "./toolkits/project/tools.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
+import { ThreadToolkit } from "./toolkits/thread/tools.ts";
 
 it("drops JSON noise, merges tagged unions, and keeps null where it is required", () => {
   const Every = Schema.Struct({ ms: Schema.Int });
@@ -79,10 +80,18 @@ it("advertises the key-checked dispatch objects without allOf or open additional
     advertisedJsonSchema(tool).properties as Record<string, unknown>;
   const { target } = propertiesOf(OrchestratorToolkit.tools.delegate_task);
   const { modelSelection } = propertiesOf(ProjectToolkit.tools.t3_thread_launch);
-  collect([target, modelSelection]);
+  const configured = propertiesOf(ThreadToolkit.tools.t3_thread_configure).modelSelection;
+  const { defaultModelSelection } = propertiesOf(ProjectToolkit.tools.t3_project_update);
+  const { threads } = propertiesOf(OrchestratorToolkit.tools.create_threads) as {
+    threads: { items: { properties: { target: unknown } } };
+  };
+  const newThreadTarget = threads.items.properties.target;
+  collect([target, modelSelection, configured, defaultModelSelection, newThreadTarget]);
 
   expect(keys).not.toContain("allOf");
   expect(open).toEqual([]);
   expect(target).toMatchObject({ properties: { model: {}, options: {} } });
+  expect(newThreadTarget).toEqual(target);
   expect(modelSelection).toMatchObject({ required: ["model"] });
+  expect(configured).toEqual(modelSelection);
 });

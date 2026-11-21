@@ -43,7 +43,11 @@ import {
   type OrchestrationV2ThreadShell,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
-import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
+import {
+  isKeptOptionEntry,
+  ProviderOptionSelection,
+  ProviderOptionSelectionValue,
+} from "./model.ts";
 import { ModelSelection } from "./modelSelection.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 
@@ -100,11 +104,7 @@ const rejectingUnknownKeys = <Fields extends Schema.Struct.Fields>(
  */
 const droppedOptionsRefusal = (options: unknown) => {
   if (typeof options !== "object" || options === null || Array.isArray(options)) return undefined;
-  const dropped = Object.entries(options).filter(
-    ([id, value]) =>
-      id.trim().length === 0 ||
-      !(typeof value === "boolean" || (typeof value === "string" && value.trim().length > 0)),
-  );
+  const dropped = Object.entries(options).filter(([id, value]) => !isKeptOptionEntry(id, value));
   if (dropped.length === 0) return undefined;
   const named = dropped.map(([id]) => JSON.stringify(id.slice(0, 64))).join(", ");
   return `Option${dropped.length === 1 ? "" : "s"} ${named} in modelSelection.options need${dropped.length === 1 ? "s" : ""} a non-empty id and a non-empty string or boolean value.`;
@@ -355,7 +355,7 @@ export type OrchestratorMcpTaskCancelResult = typeof OrchestratorMcpTaskCancelRe
 export const OrchestratorMcpCreateThreadRequest = Schema.Struct({
   prompt: Schema.optional(OrchestratorMcpPrompt),
   title: Schema.optional(OrchestratorMcpTitle),
-  target: Schema.optional(OrchestratorMcpTarget),
+  target: Schema.optional(OrchestratorMcpDelegateTarget),
   runtimeMode: Schema.optional(OrchestratorMcpRuntimeMode),
   interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
 });

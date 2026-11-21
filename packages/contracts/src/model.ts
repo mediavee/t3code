@@ -76,19 +76,21 @@ export const ProviderOptionSelections = Schema.Union([
 ]);
 export type ProviderOptionSelections = typeof ProviderOptionSelections.Type;
 
+/** Whether the record form keeps an entry: a non-blank id with a non-blank string or a boolean. */
+export const isKeptOptionEntry = (id: string, value: unknown): value is string | boolean =>
+  id.trim().length > 0 &&
+  (typeof value === "boolean" || (typeof value === "string" && value.trim().length > 0));
+
 function coerceLegacyOptionsObjectToArray(
   record: Record<string, unknown>,
 ): ReadonlyArray<ProviderOptionSelection> {
   const entries: Array<ProviderOptionSelection> = [];
   for (const [rawKey, rawValue] of Object.entries(record)) {
-    const id = typeof rawKey === "string" ? rawKey.trim() : "";
-    if (id.length === 0) continue;
-    if (typeof rawValue === "string") {
-      const trimmed = rawValue.trim();
-      if (trimmed.length > 0) entries.push({ id, value: trimmed });
-    } else if (typeof rawValue === "boolean") {
-      entries.push({ id, value: rawValue });
-    }
+    if (!isKeptOptionEntry(rawKey, rawValue)) continue;
+    entries.push({
+      id: rawKey.trim(),
+      value: typeof rawValue === "string" ? rawValue.trim() : rawValue,
+    });
   }
   return entries;
 }
