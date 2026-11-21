@@ -34,6 +34,13 @@ const handlers = {
       return yield* service.taskStatus(scope, taskId);
     }),
   ),
+  t3_fleet: McpToolAccess.readsAsCaller((input) =>
+    Effect.gen(function* () {
+      const scope = yield* McpInvocationContext.McpInvocationContext;
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      return yield* service.fleet(scope, input);
+    }),
+  ),
   task_cancel: McpToolAccess.actsAsCaller((input) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;

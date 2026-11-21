@@ -328,6 +328,15 @@ run but still shows as running on the parent is cancelled there and reported as
 `cancelled`. Published task results remain available. It accepts an
 optional cancellation reason.
 
+### `t3_fleet`
+
+Reads every child the calling thread started, from its task records, in one bounded
+call. A child here is read from its shell, with its pending questions and approvals
+counted from the runtime request records. A child in a linked environment is read from
+what its task record here knows, with no call there, so its counts are `null`. A child
+followed up with `t3_thread_send` appears once. The read acknowledges nothing, unlike
+`task_status`. `t3_thread_launch` threads record no task, so they are not listed.
+
 ### `create_threads`
 
 Creates between one and twenty ordinary top-level T3 threads:

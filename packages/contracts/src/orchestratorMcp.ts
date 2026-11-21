@@ -40,6 +40,7 @@ import {
   OrchestrationV2CreationSource,
   OrchestrationV2DelegatedFrom,
   OrchestrationV2RunStatus,
+  type OrchestrationV2ThreadShell,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
@@ -692,6 +693,82 @@ export const OrchestratorMcpThreadInterruptResult = Schema.Struct({
   ]),
 });
 export type OrchestratorMcpThreadInterruptResult = typeof OrchestratorMcpThreadInterruptResult.Type;
+
+export const OrchestratorMcpFleetInput = Schema.Struct({
+  limit: Schema.optional(clampedPositiveInt(50)).annotate({ description: "Default 20, max 50." }),
+});
+export type OrchestratorMcpFleetInput = typeof OrchestratorMcpFleetInput.Type;
+
+export const OrchestratorMcpFleetWorkState = Schema.Literals([
+  "working",
+  "waiting_for_children",
+  "needs_answer",
+  "failed",
+  "done",
+]);
+export type OrchestratorMcpFleetWorkState = typeof OrchestratorMcpFleetWorkState.Type;
+
+const LIVE_FLEET_STATUSES: ReadonlySet<OrchestrationV2ThreadShell["status"]> = new Set([
+  "queued",
+  "preparing",
+  "starting",
+  "running",
+  "waiting",
+]);
+
+/** One reading of a child's state for `t3_fleet` and the client's fleet strip. */
+export function fleetWorkState(
+  child: Pick<OrchestrationV2ThreadShell, "status" | "activityRunStatus" | "blockedOnThreadWait">,
+  needsAnswer: boolean,
+  backgroundWorkHolds: boolean,
+): OrchestratorMcpFleetWorkState {
+  if (needsAnswer) return "needs_answer";
+  if ((child.activityRunStatus ?? null) !== null || LIVE_FLEET_STATUSES.has(child.status)) {
+    return "working";
+  }
+  if (child.blockedOnThreadWait === true || backgroundWorkHolds) return "waiting_for_children";
+  return child.status === "failed" || child.status === "interrupted" ? "failed" : "done";
+}
+
+export const OrchestratorMcpFleetChild = Schema.Struct({
+  taskId: NodeId,
+  threadId: ThreadId,
+  title: Schema.String,
+  link: Schema.String,
+  /** Null for a child in this environment. */
+  environmentLabel: Schema.NullOr(Schema.String),
+  model: Schema.NullOr(Schema.String),
+  workState: OrchestratorMcpFleetWorkState,
+  /** Null for a child in a linked environment: it is answered there. */
+  pendingQuestions: Schema.NullOr(NonNegativeInt),
+  pendingApprovals: Schema.NullOr(NonNegativeInt),
+  pullRequests: Schema.Array(
+    Schema.Struct({
+      url: TrimmedNonEmptyString,
+      repository: TrimmedNonEmptyString,
+      number: PositiveInt,
+      state: Schema.NullOr(PullRequestState),
+    }),
+  ),
+  lastProgress: Schema.NullOr(Schema.String),
+  lastActivityAt: IsoDateTime,
+});
+export type OrchestratorMcpFleetChild = typeof OrchestratorMcpFleetChild.Type;
+
+export const OrchestratorMcpFleetResult = Schema.Struct({
+  counts: Schema.Struct({
+    working: NonNegativeInt,
+    waitingForChildren: NonNegativeInt,
+    needsAnswer: NonNegativeInt,
+    failed: NonNegativeInt,
+    done: NonNegativeInt,
+  }),
+  openPullRequestCount: NonNegativeInt,
+  /** Children that need you first, then the most recently active. */
+  children: Schema.Array(OrchestratorMcpFleetChild),
+  total: NonNegativeInt,
+});
+export type OrchestratorMcpFleetResult = typeof OrchestratorMcpFleetResult.Type;
 
 export const OrchestratorMcpCapabilitiesInput = Schema.Struct({
   environmentId: OrchestratorMcpEnvironmentTarget,
