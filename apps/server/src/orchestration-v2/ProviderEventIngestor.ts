@@ -33,6 +33,8 @@ import {
 } from "../telemetry/ProviderUsageAnalytics.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
+import { redactTurnItemOutput } from "../secrets/secretRedaction.ts";
 import { UsageLimitResetFallback } from "../usage/UsageLimitSources.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
@@ -246,6 +248,7 @@ export const layer: Layer.Layer<
   | ProjectionStore.ProjectionStoreV2
   | ThreadCommandExecutor.ThreadCommandExecutor
   | ProviderInstanceRegistry.ProviderInstanceRegistry
+  | KnownSecrets.KnownSecrets
 > = Layer.effect(
   ProviderEventIngestorV2,
   Effect.gen(function* () {
@@ -257,6 +260,7 @@ export const layer: Layer.Layer<
     const analytics = yield* ProviderTurnAnalytics;
     const agentScope = yield* AgentScope;
     const instances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
+    const knownSecrets = yield* KnownSecrets.KnownSecrets;
     const usageLimitResets = yield* UsageLimitResetFallback;
     const scope = yield* Effect.scope;
     const completedTurnAnalytics = new Set<string>();
@@ -580,7 +584,9 @@ export const layer: Layer.Layer<
                   type: "turn-item.updated",
                   threadId: input.event.turnItem.threadId,
                   payload: boundFileChangeForStorage(
-                    stripUnservedToolOutputImageBytes(input.event.turnItem),
+                    stripUnservedToolOutputImageBytes(
+                      redactTurnItemOutput(input.event.turnItem, yield* knownSecrets.current),
+                    ),
                   ),
                   runId: input.event.turnItem.runId,
                   nodeId: input.event.turnItem.nodeId,
