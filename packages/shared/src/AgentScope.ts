@@ -16,7 +16,8 @@ export interface AgentScopeShape {
      */
     readonly shared?: boolean | undefined;
   }) => Effect.Effect<AgentScopeCommand>;
-  readonly oomKilled: (threadId: string) => Effect.Effect<boolean>;
+  /** The kill names the per-agent memory ceiling the scope ran under, if any. */
+  readonly oomKilled: (threadId: string) => Effect.Effect<false | AgentOomKill>;
   /**
    * Reaps processes left after the owning agent exits, including setsid
    * descendants outside its process group. Preserves systemd OOM diagnosis.
@@ -34,6 +35,10 @@ export interface AgentScopeShape {
    * it, even when the next session runs without one (Cursor, OpenCode).
    */
   readonly clear: (threadId: string) => Effect.Effect<void>;
+}
+
+export interface AgentOomKill {
+  readonly memoryMaxGiB: number | null;
 }
 
 export interface AgentScopeCommand {

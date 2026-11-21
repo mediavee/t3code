@@ -1,9 +1,11 @@
-// @effect-diagnostics nodeBuiltinImport:off -- unit names and RAM size come from the host.
+// @effect-diagnostics nodeBuiltinImport:off -- unit names, RAM size and temp paths come from the host.
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import {
   AgentScope,
+  type AgentScopeCommand,
   agentScopeCommand,
   type AgentScopeShape,
   type AgentSystemdScope,
@@ -18,6 +20,7 @@ import * as Semaphore from "effect/Semaphore";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderProcesses from "./providerProcesses.ts";
 
 const AGENT_SLICE = "app-t3code-agents.slice";
@@ -34,6 +37,50 @@ export function ownedAgentSlice(stateDir: string): string {
 }
 
 const GiB = 1024 ** 3;
+
+const THREAD_TEMP_ROOT = "thread-tmp";
+const TEMP_VARIABLES = ["TMPDIR", "TMP", "TEMP"] as const;
+
+export function threadTempRoot(stateDir: string): string {
+  return NodePath.join(stateDir, THREAD_TEMP_ROOT);
+}
+
+/** One path component per thread; ids that could escape it are hashed. */
+export function threadTempDirectoryName(threadId: string): string {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(threadId)
+    ? threadId
+    : `h-${NodeCrypto.createHash("sha256").update(threadId).digest("hex").slice(0, 32)}`;
+}
+
+export function threadTempDirectory(stateDir: string, threadId: string): string {
+  return NodePath.join(threadTempRoot(stateDir), threadTempDirectoryName(threadId));
+}
+
+/**
+ * Removes one entry under the thread temp root. `rm` unlinks symlinks without following them;
+ * a symlinked root, which would redirect the whole removal, is left alone.
+ */
+export const removeThreadTempEntry = Effect.fn("agentScope.removeThreadTempEntry")(function* (
+  stateDir: string,
+  name: string,
+) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const root = threadTempRoot(stateDir);
+  if (name.length === 0 || name.includes("/") || name === "." || name === "..") return;
+  if (!(yield* fileSystem.exists(root))) return;
+  const realRoot = yield* fileSystem.realPath(root);
+  const realParent = yield* fileSystem.realPath(stateDir);
+  if (realRoot !== NodePath.join(realParent, THREAD_TEMP_ROOT)) return;
+  yield* fileSystem.remove(NodePath.join(realRoot, name), { recursive: true, force: true });
+});
+
+/** An instance's own TMPDIR, TMP or TEMP differs from the server's; the server's is replaced. */
+function setsOwnTempDirectory(env: NodeJS.ProcessEnv | undefined, host: NodeJS.ProcessEnv) {
+  return (
+    env !== undefined &&
+    TEMP_VARIABLES.some((name) => env[name] !== undefined && env[name] !== host[name])
+  );
+}
 
 /**
  * Agents leave about 6 GB free before throttling and 4 GB before an OOM kill (at
@@ -100,13 +147,52 @@ const MAX_TRACKED_THREADS = 500;
 
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
-  if (platform !== "linux") return AgentScope.defaultValue();
-
-  const runner = yield* ProcessRunner.ProcessRunner;
   const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
   const hostEnvironment = yield* HostProcess.Environment;
   const { stateDir } = yield* ServerConfig.ServerConfig;
+  const settings = yield* ServerSettings.ServerSettingsService;
+
+  // Agents on a shared host otherwise fill one TMPDIR, often a RAM tmpfs, and clean up each other's files.
+  const threadTempAssignments = Effect.fn("agentScope.threadTempAssignments")(function* (
+    threadId: string | undefined,
+    env: NodeJS.ProcessEnv | undefined,
+  ) {
+    if (threadId === undefined || setsOwnTempDirectory(env, hostEnvironment)) return [];
+    const directory = threadTempDirectory(stateDir, threadId);
+    const created = yield* fileSystem
+      .makeDirectory(directory, { recursive: true, mode: 0o700 })
+      .pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          Effect.logWarning("Could not create a thread temp directory", { threadId, cause }).pipe(
+            Effect.as(false),
+          ),
+        ),
+      );
+    return created ? TEMP_VARIABLES.map((name) => `${name}=${directory}`) : [];
+  });
+  // `env` applies the variables whatever environment the caller spawns with.
+  const withAssignments = (
+    command: string,
+    args: ReadonlyArray<string>,
+    assignments: ReadonlyArray<string>,
+  ): AgentScopeCommand =>
+    assignments.length === 0
+      ? { command, args }
+      : { command: "/usr/bin/env", args: [...assignments, command, ...args] };
+
+  if (platform === "win32") return AgentScope.defaultValue();
+  if (platform !== "linux") {
+    return {
+      ...AgentScope.defaultValue(),
+      wrap: Effect.fn("AgentScope.wrap")(function* ({ command, args, threadId, env }) {
+        return withAssignments(command, args, yield* threadTempAssignments(threadId, env));
+      }),
+    } satisfies AgentScopeShape;
+  }
+
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const path = yield* Path.Path;
   const { hasOtherLiveOwner } = yield* ProviderProcesses.ProviderProcesses;
   const ownedSlice = ownedAgentSlice(stateDir);
   const layerScope = yield* Effect.scope;
@@ -256,7 +342,10 @@ export const make = Effect.gen(function* () {
   yield* systemd;
 
   // `shared` scopes serve other threads too: tracked only for OOM diagnosis on old systemd.
-  const scopeByThread = new Map<string, { unit: string; oomKilled: boolean; shared: boolean }>();
+  const scopeByThread = new Map<
+    string,
+    { unit: string; oomKilled: boolean; shared: boolean; memoryMaxGiB: number | null }
+  >();
 
   const readScope = Effect.fn("agentScope.readScope")(function* (systemctl: string, unit: string) {
     const shown = yield* run(systemctl, [
@@ -319,10 +408,12 @@ export const make = Effect.gen(function* () {
     threadId: string,
     unit: string | undefined,
     shared = false,
+    memoryMaxGiB: number | null = null,
   ) {
     const previous = scopeByThread.get(threadId);
     scopeByThread.delete(threadId);
-    if (unit !== undefined) scopeByThread.set(threadId, { unit, oomKilled: false, shared });
+    if (unit !== undefined)
+      scopeByThread.set(threadId, { unit, oomKilled: false, shared, memoryMaxGiB });
     if (previous !== undefined) yield* forget(systemctl, previous.unit);
     if (scopeByThread.size > MAX_TRACKED_THREADS) yield* evictOldest(systemctl);
   });
@@ -331,7 +422,8 @@ export const make = Effect.gen(function* () {
     function* (threadId) {
       const tracked = scopeByThread.get(threadId);
       if (tracked === undefined) return false;
-      if (tracked.oomKilled) return true;
+      const killed = { memoryMaxGiB: tracked.memoryMaxGiB };
+      if (tracked.oomKilled) return killed;
       const scope = yield* systemd;
       if (scope === undefined) return false;
       for (let attempt = 0; attempt < STOPPING_POLL_ATTEMPTS; attempt++) {
@@ -350,7 +442,7 @@ export const make = Effect.gen(function* () {
           unit: tracked.unit,
         });
         tracked.oomKilled = true;
-        return true;
+        return killed;
       }
       return false;
     },
@@ -433,17 +525,33 @@ export const make = Effect.gen(function* () {
       shared,
     }) {
       const resolved = yield* resolve(command, env ?? hostEnvironment);
-      if (resolved === null) return { command, args };
+      const assignments = yield* threadTempAssignments(threadId, env);
+      if (resolved === null) return withAssignments(command, args, assignments);
+      const launch = withAssignments(resolved, args, assignments);
       const scope = yield* systemd;
-      if (scope === undefined) return agentScopeCommand({ command: resolved, args });
+      if (scope === undefined) return agentScopeCommand(launch);
       yield* scope.applyMemoryLimits;
+      // Terminals and thread-less shared servers stay unbounded; the slice still caps them.
+      const memoryMaxGiB =
+        threadId === undefined
+          ? null
+          : yield* settings.getSettings.pipe(
+              Effect.map((current) => current.agentMemoryMaxGiB),
+              Effect.orElseSucceed(() => null),
+            );
       const unit = `t3code-${name}-${NodeCrypto.randomUUID().slice(0, 8)}.scope`;
       // A continuing shared scope cannot attribute a tool's OOM to one thread.
       // Clear the launch thread's previous scope instead.
       const continuing = shared === true && scope.supportsOomPolicy;
       const owned = threadId !== undefined && !continuing;
       if (threadId !== undefined)
-        yield* track(scope.systemctl, threadId, owned ? unit : undefined, shared === true);
+        yield* track(
+          scope.systemctl,
+          threadId,
+          owned ? unit : undefined,
+          shared === true,
+          memoryMaxGiB,
+        );
       const systemdScope: AgentSystemdScope = {
         systemdRun: scope.systemdRun,
         runtimeDir: scope.runtimeDir,
@@ -457,9 +565,12 @@ export const make = Effect.gen(function* () {
             ? [`--property=OOMPolicy=${continuing ? "continue" : "stop"}`]
             : []),
           ...(owned ? [] : ["--collect"]),
+          ...(memoryMaxGiB === null
+            ? []
+            : [`--property=MemoryMax=${memoryMaxGiB * GiB}`, "--property=MemorySwapMax=0"]),
         ],
       };
-      return { ...agentScopeCommand({ command: resolved, args, scope: systemdScope }), unit };
+      return { ...agentScopeCommand({ ...launch, scope: systemdScope }), unit };
     }),
     oomKilled,
     stop,

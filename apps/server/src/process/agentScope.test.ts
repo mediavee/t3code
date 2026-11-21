@@ -17,8 +17,18 @@ import { vi } from "vite-plus/test";
 import * as ServerConfig from "../config.ts";
 import { makeCodexAppServerSpawnCommand } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as ProviderProcesses from "./providerProcesses.ts";
-import { classifyScope, make, ownedAgentSlice, type ScopeState } from "./agentScope.ts";
+import {
+  classifyScope,
+  make,
+  ownedAgentSlice,
+  removeThreadTempEntry,
+  type ScopeState,
+  threadTempDirectory,
+  threadTempDirectoryName,
+  threadTempRoot,
+} from "./agentScope.ts";
 
 const GiB = 1024 ** 3;
 const memory = vi.hoisted(() => ({ total: 16 * 1024 ** 3, swapKb: 2 * 1024 ** 2 }));
@@ -60,6 +70,7 @@ const withFakeSystemd = <A, E>(
     readonly failingVerbs: Set<string>;
     readonly stateDir: string;
     readonly cgroupRoot: string;
+    readonly bin: string;
   }) => Effect.Effect<A, E>,
   // A user manager older than systemd 253 rejects OOMPolicy on scopes.
   {
@@ -67,11 +78,15 @@ const withFakeSystemd = <A, E>(
     stopFails = false,
     leftovers = false,
     liveOwner = false,
+    memoryMaxGiB = null,
+    environment = {},
   }: {
     readonly oomPolicy?: boolean;
     readonly stopFails?: boolean;
     readonly leftovers?: boolean;
     readonly liveOwner?: boolean;
+    readonly memoryMaxGiB?: number | null;
+    readonly environment?: NodeJS.ProcessEnv;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -129,7 +144,11 @@ const withFakeSystemd = <A, E>(
       Effect.provideService(ProviderProcesses.ProviderProcesses, { hasOtherLiveOwner: liveOwner }),
       Effect.provideService(ProcessRunner.ProcessRunner, runner),
       Effect.provideService(HostProcess.Platform, "linux"),
-      Effect.provideService(HostProcess.Environment, { PATH: bin, XDG_RUNTIME_DIR: "/run/user/1" }),
+      Effect.provideService(HostProcess.Environment, {
+        PATH: bin,
+        XDG_RUNTIME_DIR: "/run/user/1",
+        ...environment,
+      }),
       Effect.provideService(FileSystem.FileSystem, {
         ...fileSystem,
         readFileString: (path, encoding) =>
@@ -140,15 +159,16 @@ const withFakeSystemd = <A, E>(
           fileSystem.writeFileString(path.replace("/sys/fs/cgroup", cgroupRoot), data, options),
       }),
     );
-    return yield* body({ scope, units, calls, failingVerbs, stateDir, cgroupRoot }).pipe(
+    return yield* body({ scope, units, calls, failingVerbs, stateDir, cgroupRoot, bin }).pipe(
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(bin, { recursive: true, force: true }))),
     );
   }).pipe(
     Effect.scoped,
     Effect.provide(
-      ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-scope-" }).pipe(
-        Layer.provideMerge(NodeServices.layer),
-      ),
+      Layer.mergeAll(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-scope-" }),
+        ServerSettings.ServerSettingsService.layerTest({ agentMemoryMaxGiB: memoryMaxGiB }),
+      ).pipe(Layer.provideMerge(NodeServices.layer)),
     ),
   );
 
@@ -207,9 +227,9 @@ describe("AgentScope service", () => {
         expect(yield* scope.oomKilled("a")).toBe(false);
 
         units.set(unitOf(second), { activeState: "failed", result: "oom-kill" });
-        expect(yield* scope.oomKilled("a")).toBe(true);
+        expect(yield* scope.oomKilled("a")).toStrictEqual({ memoryMaxGiB: null });
         units.delete(unitOf(second));
-        expect(yield* scope.oomKilled("a")).toBe(true);
+        expect(yield* scope.oomKilled("a")).toStrictEqual({ memoryMaxGiB: null });
 
         yield* scope.clear("a");
         expect(yield* scope.oomKilled("a")).toBe(false);
@@ -225,7 +245,7 @@ describe("AgentScope service", () => {
           const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
           expect(agent.args).toContain("--property=OOMPolicy=stop");
           units.set(unitOf(agent), { activeState: "failed", result: "oom-kill" });
-          expect(yield* scope.oomKilled("a")).toBe(true);
+          expect(yield* scope.oomKilled("a")).toStrictEqual({ memoryMaxGiB: null });
 
           const codex = yield* launchCodex(scope, "a");
           expect(codex.args).toContain("--property=OOMPolicy=continue");
@@ -282,7 +302,7 @@ describe("AgentScope service", () => {
           yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: `other-${index}` });
         }
         units.set(unitOf(live), { activeState: "failed", result: "oom-kill" });
-        expect(yield* scope.oomKilled("live")).toBe(true);
+        expect(yield* scope.oomKilled("live")).toStrictEqual({ memoryMaxGiB: null });
       }),
     ),
   );
@@ -453,9 +473,9 @@ describe("AgentScope service", () => {
 
             if (oomPolicy) {
               units.set(unit, { activeState: "failed", result: "oom-kill" });
-              expect(yield* scope.oomKilled("a")).toBe(true);
+              expect(yield* scope.oomKilled("a")).toStrictEqual({ memoryMaxGiB: null });
               units.delete(unit);
-              expect(yield* scope.oomKilled("a")).toBe(true);
+              expect(yield* scope.oomKilled("a")).toStrictEqual({ memoryMaxGiB: null });
             }
           }),
         { oomPolicy },
@@ -487,4 +507,143 @@ describe("AgentScope service", () => {
       }),
     ),
   );
+
+  it.effect("starts thread agents in their own temp directory unless the instance sets one", () =>
+    withFakeSystemd(
+      ({ scope, stateDir, bin }) =>
+        Effect.gen(function* () {
+          const directory = threadTempDirectory(stateDir, "a");
+          const agent = yield* scope.wrap({
+            command: "agent",
+            args: ["--flag"],
+            name: "t",
+            threadId: "a",
+            env: { PATH: bin, TMPDIR: "/tmp/shared" },
+          });
+          const command = agent.args.slice(agent.args.indexOf("--") + 1);
+          expect(command).toEqual([
+            "/usr/bin/env",
+            `TMPDIR=${directory}`,
+            `TMP=${directory}`,
+            `TEMP=${directory}`,
+            NodePath.join(bin, "agent"),
+            "--flag",
+          ]);
+          expect(NodeFS.statSync(directory).mode & 0o777).toBe(0o700);
+
+          const configured = yield* scope.wrap({
+            command: "agent",
+            args: [],
+            name: "t",
+            threadId: "b",
+            env: { PATH: bin, TMPDIR: "/scratch/mine" },
+          });
+          expect(configured.args.join(" ")).not.toContain("TMPDIR=");
+          const threadless = yield* scope.wrap({ command: "agent", args: [], name: "t" });
+          expect(threadless.args.join(" ")).not.toContain("TMPDIR=");
+          expect(NodeFS.existsSync(threadTempDirectory(stateDir, "b"))).toBe(false);
+        }),
+      { environment: { TMPDIR: "/tmp/shared" } },
+    ),
+  );
+
+  it.effect("starts thread agents in their own temp directory without systemd", () =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      for (const platform of ["linux", "darwin"] as const) {
+        const scope = yield* make.pipe(
+          Effect.provideService(HostProcess.Platform, platform),
+          Effect.provideService(HostProcess.Environment, { PATH: "/usr/bin:/bin" }),
+          Effect.provideService(ProviderProcesses.ProviderProcesses, { hasOtherLiveOwner: false }),
+          Effect.provide(ProcessRunner.layer),
+        );
+        const launch = yield* scope.wrap({ command: "sh", args: [], name: "t", threadId: "a" });
+        const directory = threadTempDirectory(stateDir, "a");
+        expect(launch.args).toContain(`TMPDIR=${directory}`);
+        expect(launch.args.join(" ")).not.toContain("MemoryMax");
+        expect(yield* fileSystem.exists(directory)).toBe(true);
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-scope-" }),
+          ServerSettings.ServerSettingsService.layerTest({ agentMemoryMaxGiB: 4 }),
+        ).pipe(Layer.provideMerge(NodeServices.layer)),
+      ),
+    ),
+  );
+
+  it.effect("caps a thread agent's memory only when a ceiling is set", () =>
+    withFakeSystemd(
+      ({ scope, units }) =>
+        Effect.gen(function* () {
+          const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
+          expect(agent.args).toContain(`--property=MemoryMax=${4 * GiB}`);
+          expect(agent.args).toContain("--property=MemorySwapMax=0");
+          const terminal = yield* scope.wrap({
+            command: "agent",
+            args: [],
+            name: "terminal",
+            survivesRestart: true,
+          });
+          expect(terminal.args.join(" ")).not.toContain("MemoryMax");
+          units.set(unitOf(agent), { activeState: "failed", result: "oom-kill" });
+          expect(yield* scope.oomKilled("a")).toStrictEqual({ memoryMaxGiB: 4 });
+        }),
+      { memoryMaxGiB: 4 },
+    ),
+  );
+
+  it.effect("launches without a memory ceiling by default", () =>
+    withFakeSystemd(({ scope }) =>
+      Effect.gen(function* () {
+        const agent = yield* scope.wrap({ command: "agent", args: [], name: "t", threadId: "a" });
+        expect(agent.args.join(" ")).not.toMatch(/MemoryMax|MemorySwapMax/);
+      }),
+    ),
+  );
+});
+
+describe("removeThreadTempEntry", () => {
+  it.effect("removes a thread's temp directory without following symlinks", () =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const outside = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-thread-tmp-outside-"));
+      NodeFS.writeFileSync(NodePath.join(outside, "keep"), "x");
+      const directory = threadTempDirectory(stateDir, "a");
+      NodeFS.mkdirSync(directory, { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(directory, "scratch"), "x");
+      NodeFS.symlinkSync(outside, NodePath.join(directory, "link"));
+      NodeFS.symlinkSync(outside, threadTempDirectory(stateDir, "b"));
+
+      yield* removeThreadTempEntry(stateDir, threadTempDirectoryName("a"));
+      yield* removeThreadTempEntry(stateDir, threadTempDirectoryName("b"));
+      expect(NodeFS.existsSync(directory)).toBe(false);
+      expect(NodeFS.existsSync(threadTempDirectory(stateDir, "b"))).toBe(false);
+      expect(NodeFS.readFileSync(NodePath.join(outside, "keep"), "utf8")).toBe("x");
+
+      // A symlinked root would redirect the removal into another tree.
+      NodeFS.rmSync(threadTempRoot(stateDir), { recursive: true });
+      NodeFS.mkdirSync(NodePath.join(outside, "c"));
+      NodeFS.symlinkSync(outside, threadTempRoot(stateDir));
+      yield* removeThreadTempEntry(stateDir, "c");
+      expect(NodeFS.existsSync(NodePath.join(outside, "c"))).toBe(true);
+      NodeFS.rmSync(outside, { recursive: true, force: true });
+    }).pipe(
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-thread-tmp-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
+  it("keeps thread ids that could leave the root inside one hashed component", () => {
+    expect(threadTempDirectoryName("thread-1")).toBe("thread-1");
+    for (const id of ["..", "a/../../b", ".hidden", ""]) {
+      expect(threadTempDirectoryName(id)).toMatch(/^h-[0-9a-f]{32}$/);
+    }
+  });
 });

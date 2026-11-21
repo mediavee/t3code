@@ -53,6 +53,11 @@ import { checkpointRefForScopeOrdinal } from "./orchestration-v2/CheckpointServi
 import { threadHasQueuedTurnStart } from "./orchestration-v2/ThreadSettlementService.ts";
 import { MAX_OVERDUE_ARM_MS } from "./orchestration-v2/UsageLimitRecoveryWorker.ts";
 import * as WorktreeBranchSync from "./orchestration-v2/WorktreeBranchSync.ts";
+import {
+  removeThreadTempEntry,
+  threadTempDirectoryName,
+  threadTempRoot,
+} from "./process/agentScope.ts";
 import { forkParked } from "./serverActivation.ts";
 import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -98,6 +103,7 @@ class WorktreeDirectoryReadError extends Schema.TaggedError<WorktreeDirectoryRea
 }
 
 const DAY_MS = 86_400_000;
+const THREAD_TEMP_GRACE_MS = 3_600_000;
 // Give settle scripts time to open terminals that protect the worktree.
 const SETTLE_SCRIPT_GRACE_MS = 60_000;
 // Worktree creation can precede its thread row, including review-guide checkouts.
@@ -1707,6 +1713,27 @@ const make = Effect.gen(function* () {
     return removed;
   });
 
+  // Archive and delete remove a thread's temp directory; this catches threads gone while that failed or the server was down.
+  const cleanThreadTemp = Effect.fn("StorageCleanup.cleanThreadTemp")(function* (now: number) {
+    const root = threadTempRoot(config.stateDir);
+    if (!(yield* fs.exists(root))) return;
+    const active = new Set(
+      (yield* projections.listActiveShellIndex()).map((thread) =>
+        threadTempDirectoryName(thread.id),
+      ),
+    );
+    for (const name of yield* fs.readDirectory(root)) {
+      if (active.has(name)) continue;
+      // A thread created after that read may already be using its new directory.
+      const modified = yield* fs.stat(path.join(root, name)).pipe(
+        Effect.map((stat) => Option.getOrNull(stat.mtime)?.getTime() ?? 0),
+        Effect.orElseSucceed(() => 0),
+      );
+      if (modified > now - THREAD_TEMP_GRACE_MS) continue;
+      yield* removeThreadTempEntry(config.stateDir, name);
+    }
+  });
+
   const reportRef = yield* SubscriptionRef.make<StorageCleanupReport | null>(null);
   const cleanCheckpointRefs = Effect.fn("StorageCleanup.cleanCheckpointRefs")(function* () {
     // Forks display their source history even after its thread is deleted. Keep
@@ -1833,6 +1860,9 @@ const make = Effect.gen(function* () {
     const entries: StorageCleanupReportEntry[] = [];
     yield* cleanCheckpointRefs().pipe(
       Effect.catch((cause) => Effect.logWarning("checkpoint ref cleanup failed", { cause })),
+    );
+    yield* cleanThreadTemp(now).pipe(
+      Effect.catch((cause) => Effect.logWarning("thread temp cleanup failed", { cause })),
     );
     const deletedWorktrees = yield* cleanWorktrees(serverSettings, now, entries, trigger).pipe(
       Effect.catch((error) =>

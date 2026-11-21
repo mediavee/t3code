@@ -12392,5 +12392,13 @@
   "185aca00f0cc4446": "Usar un modelo para el rol {role}",
   "afefb672d4c5c274": "agente política reglas permisos autonomía prompt cada hilo subagentes",
   "8a3aabfbbfb30487": "Modelos por rol",
-  "69bad5ed2f17955e": "delegar tarea enrutamiento revisión investigación diseño prueba implementación modelo"
+  "69bad5ed2f17955e": "delegar tarea enrutamiento revisión investigación diseño prueba implementación modelo",
+  "8fab0f72ffbbf3e8": "Sin límite",
+  "c8b895e219d6fc93": "{gib} GiB",
+  "7f2c29b2312bd297": "Recursos de los agentes",
+  "faf853c484b2b6fc": "Memoria que cada agente y los comandos que ejecuta pueden usar, sin swap, antes de que el sistema lo detenga.",
+  "f77cd905c392b357": "Disponible en servidores Linux, donde los agentes se ejecutan en scopes de systemd.",
+  "633d27014d678cbf": "Restablecer el límite de memoria de los agentes al valor predeterminado",
+  "70957383caba7e76": "Límite de memoria de los agentes",
+  "b3be8f59fe52c268": "memoria límite ram oom sin memoria cgroup systemd memorymax tmpdir temporal"
 }
