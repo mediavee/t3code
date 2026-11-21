@@ -292,7 +292,7 @@ const mcpClient = McpSchema.McpServerClient.of({
  * Environment A: its own orchestrator toolkit with forwarding, and a thread
  * caller whose modes the test picks. Its local threads never matter here.
  */
-const makeLaptop = Effect.gen(function* () {
+const makeLaptopWith = Effect.fnUntraced(function* (incomingMessage: Effect.Effect<number>) {
   const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
   const layerHere = Layer.mergeAll(
     McpHttpServer.layerOrchestratorToolkit,
@@ -319,6 +319,7 @@ const makeLaptop = Effect.gen(function* () {
     Layer.provide(NodeCrypto.layer),
     Layer.provideMerge(
       Layer.mock(ThreadManagement.ThreadManagementService)({
+        awaitIncomingMessage: () => incomingMessage,
         getThreadShell: (threadId) =>
           Effect.succeed(
             threadId === ThreadId.make("thread:laptop-from-desk")
@@ -402,6 +403,7 @@ const makeLaptop = Effect.gen(function* () {
     );
   return { links: Context.get(linking, PeerLinks.PeerLinks), call, callAsClient };
 });
+const makeLaptop = makeLaptopWith(Effect.never);
 
 const failureOf = (result: McpSchema.CallToolResult) => {
   const text = result.content[0];
@@ -480,6 +482,33 @@ it.effect("an agent here works on a linked environment's threads within its own 
         `thread.stop ${boxThread}`,
         `delegated-tasks.stop ${boxThread}`,
       ]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("ends a forwarded wait when a message reaches the caller here", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const seen = yield* Ref.make<Seen>(nothingSeen);
+      const linkSession = yield* Ref.make("");
+      const b = yield* serveBox(seen, linkSession);
+      const a = yield* makeLaptopWith(Effect.succeed(2));
+      yield* linkTo(a.links, b, "auto");
+      yield* Ref.set(linkSession, (yield* b.linkedSessions)[0]!.sessionId);
+
+      const waited = yield* a.call("thread:laptop-full", "t3_thread_wait", {
+        environmentId: box.environmentId,
+        threadId: boxThread,
+        timeoutMs: 600_000,
+      });
+      expect(waited.structuredContent).toEqual({
+        threadId: boxThread,
+        runId: null,
+        status: "running",
+        timedOut: false,
+        interruptedByIncomingMessage: true,
+        waitingMessages: 2,
+      });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

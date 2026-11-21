@@ -824,12 +824,14 @@ const make = Effect.gen(function* () {
    * Stops the task's own thread there as its Stop button does: its running turn, queued
    * messages, pull request watches and delegated tasks. `key` names the stop (the follower
    * sends one, each cancel its own), and each is recorded there once however often it is sent.
+   * A cancel here also drops the turns agents queued on it, as `task_cancel` does locally.
    */
   const stopThere = (
     scope: McpInvocationContext.McpInvocationScope,
     remote: OrchestrationV2RemoteTaskChild,
     key: string,
     reason?: string,
+    cancelAgentMessages = false,
   ) =>
     isHere(remote)
       ? threads
@@ -841,6 +843,7 @@ const make = Effect.gen(function* () {
             ),
             threadId: remote.threadId,
             ...(reason === undefined ? {} : { reason }),
+            ...(cancelAgentMessages ? { cancelAgentMessages } : {}),
           })
           .pipe(Effect.asVoid, Effect.mapError(localFailure))
       : forwarding
@@ -1112,7 +1115,7 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
-    if (waited.timedOut) return false;
+    if (waited.timedOut || waited.interruptedByIncomingMessage === true) return false;
     // A task recorded without its run waits on the thread's latest; a
     // thread there with none has nothing left to wait for.
     if (waited.runId === null) {
@@ -1355,8 +1358,8 @@ const make = Effect.gen(function* () {
         : null;
       const stopTask =
         parentModes === null
-          ? stopThere(there, remote, key, reason)
-          : stopThere(there, remote, key, reason).pipe(
+          ? stopThere(there, remote, key, reason, true)
+          : stopThere(there, remote, key, reason, true).pipe(
               Effect.provideService(DispatchModeLimit, {
                 runtimeMode: parentModes.runtimeMode,
                 interactionMode: parentModes.interactionMode,

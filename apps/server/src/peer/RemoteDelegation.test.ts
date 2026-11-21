@@ -150,6 +150,10 @@ interface BoxThread {
   readonly stops: Ref.Ref<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>;
   /** The launch starts no run, as one recorded before its run was kept. */
   readonly runless: Ref.Ref<boolean>;
+  /** The launch reports no run while the thread there runs one, as an older peer does. */
+  readonly launchedRunless: Ref.Ref<boolean>;
+  /** Completed once a wait there starts. */
+  readonly waitStarted: Deferred.Deferred<void>;
   /** Completed on the first interrupt there. */
   readonly interruptedOnce: Deferred.Deferred<void>;
   readonly finished: Deferred.Deferred<void>;
@@ -204,6 +208,8 @@ const makeBoxThread = Effect.gen(function* () {
     interrupted: yield* Ref.make(0),
     stops: yield* Ref.make<ReadonlyArray<"interrupt" | "thread.stop" | "delegated-tasks">>([]),
     runless: yield* Ref.make(false),
+    launchedRunless: yield* Ref.make(false),
+    waitStarted: yield* Deferred.make<void>(),
     interruptedOnce: yield* Deferred.make<void>(),
     finished: yield* Deferred.make<void>(),
     laterFinished: yield* Deferred.make<void>(),
@@ -327,6 +333,7 @@ const boxToolkitLayer = (thread: BoxThread) => {
     waitForThread: (input) =>
       Effect.gen(function* () {
         yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
+        yield* Deferred.succeed(thread.waitStarted, undefined);
         // A thread with no run has nothing to wait for.
         if (yield* Ref.get(thread.runless)) {
           return { threadId: input.threadId, run: null, timedOut: false };
@@ -577,7 +584,11 @@ const boxToolkitLayer = (thread: BoxThread) => {
   });
   const layerBoxLaunches = Layer.mock(ThreadLaunch.ThreadLaunchService)({
     launch: (input) =>
-      Ref.get(thread.runless).pipe(
+      Effect.zipWith(
+        Ref.get(thread.runless),
+        Ref.get(thread.launchedRunless),
+        (a, b) => a || b,
+      ).pipe(
         Effect.flatMap((runless) =>
           Ref.set(thread.launched, input.threadId!).pipe(
             Effect.andThen(Ref.set(thread.linkOrigin, input.linkOrigin ?? null)),
@@ -3553,6 +3564,52 @@ it.effect("a task whose thread there has no run ends with its last reply", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect("a message to the parent does not settle a task there recorded without its run", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      yield* Ref.set(thread.launchedRunless, true);
+
+      const delegated = yield* delegateToBox(a);
+      yield* Deferred.await(thread.waitStarted);
+      // Arrives while the follower waits there on the thread's latest run.
+      yield* a.orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("command:owner-asks-parent"),
+        threadId: parentThreadId,
+        messageId: MessageId.make("message:owner-asks-parent"),
+        text: "How is the suite going?",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      // Short of the follower's wait there: the task must still be open after it.
+      yield* TestClock.adjust("10 seconds");
+      const open = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+        (task) => task.id === delegated.taskId,
+      );
+      expect(open?.result).toBeNull();
+      yield* Ref.set(thread.reply, "Suite green.");
+      yield* Ref.set(thread.status, "completed");
+      yield* Deferred.succeed(thread.finished, undefined);
+
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+        status: "completed",
+        result: "Suite green.",
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 /** `delegate_task` to another project here, as a task that reports back. */
 const delegateHere = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
@@ -3831,6 +3888,45 @@ it.effect("stopping the parent stops its task in another project here", () =>
       yield* stoppedThere(a, delegated.taskId, null);
       const child = yield* a.orchestrator.getThreadProjection(delegated.remoteChild.threadId);
       expect(child.runs[0]?.status).toMatch(/^(stopping|cancelled|interrupted)$/);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("cancelling a task in another project here drops the turns agents queued on it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+
+      const delegated = yield* delegateHere(a);
+      const child = delegated.remoteChild.threadId;
+      const queue = (id: string, createdBy: "agent" | "user") =>
+        a.orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`command:queue-${id}`),
+          threadId: child,
+          messageId: MessageId.make(`message:queue-${id}`),
+          text: id,
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          ...(createdBy === "agent" ? { senderThreadId: parentThreadId } : {}),
+          createdBy,
+          creationSource: createdBy === "agent" ? "mcp" : "web",
+        });
+      yield* queue("agent", "agent");
+      yield* queue("owner", "user");
+
+      const cancel = yield* a.call("task_cancel", { taskId: delegated.taskId });
+      expect(cancel.isError, JSON.stringify(cancel.content)).toBe(false);
+      const runs = (yield* a.orchestrator.getThreadProjection(child)).runs;
+      const statusOf = (id: string) =>
+        runs.find((run) => run.userMessageId === MessageId.make(`message:queue-${id}`))?.status;
+      expect(statusOf("agent")).toBe("cancelled");
+      expect(statusOf("owner")).toBe("queued");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
