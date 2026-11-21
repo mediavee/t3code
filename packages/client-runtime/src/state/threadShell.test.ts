@@ -452,6 +452,99 @@ describe("v2 thread shell lists", () => {
     registry.dispose();
   });
 
+  it("groups tasks by parent while no list can show the parent", () => {
+    const { registry, threads, snapshotAtom, catalogValueAtom } = makeHarness([
+      environmentId,
+      remoteEnvironmentId,
+    ]);
+    const parent = { ...v2ThreadShell, id: ThreadId.make("parent"), title: "Coordinator" };
+    const otherParent = { ...parent, id: ThreadId.make("other-parent"), title: "Other" };
+    const task = (id: string, from: typeof parent, at: string) => ({
+      ...v2ThreadShell,
+      id: ThreadId.make(id),
+      creationSource: "mcp" as const,
+      updatedAt: DateTime.makeUnsafe(at),
+      delegatedFrom: { environmentId: remoteEnvironmentId, threadId: from.id, title: from.title },
+    });
+    const older = task("older", parent, "2026-06-20T01:00:00.000Z");
+    const newer = task("newer", parent, "2026-06-20T02:00:00.000Z");
+    const alone = task("alone", otherParent, "2026-06-20T03:00:00.000Z");
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [older, newer, alone],
+    });
+    registry.set(snapshotAtom(remoteEnvironmentId), {
+      ...v2ShellSnapshot,
+      threads: [parent, otherParent],
+    });
+    const dispose = registry.mount(threads.delegatedTaskGroupsAtom);
+    const key = (thread: { id: ThreadId }, env = environmentId) => `${env}:${thread.id}`;
+    const groups = () =>
+      registry.get(threads.delegatedTaskGroupsAtom).groups.map((group) => ({
+        parent: group.key,
+        title: group.title,
+        label: group.environmentLabel,
+        representative: group.representativeKey,
+        tasks: group.taskKeys,
+      }));
+    const setRemoteEnabled = (enabled: boolean) => {
+      const catalog = registry.get(catalogValueAtom);
+      const entries = new Map(catalog.entries);
+      entries.set(remoteEnvironmentId, { ...entries.get(remoteEnvironmentId)!, enabled });
+      registry.set(catalogValueAtom, { ...catalog, entries });
+    };
+
+    // Listed parents keep their tasks under them.
+    expect(groups()).toEqual([]);
+
+    // The parent's machine is off: one group per parent, newest task first.
+    setRemoteEnabled(false);
+    registry.set(snapshotAtom(remoteEnvironmentId), null);
+    expect(groups()).toEqual([
+      {
+        parent: key(parent, remoteEnvironmentId),
+        title: "Coordinator",
+        label: "Environment",
+        representative: key(newer),
+        tasks: [key(newer), key(older)],
+      },
+      {
+        parent: key(otherParent, remoteEnvironmentId),
+        title: "Other",
+        label: "Environment",
+        representative: key(alone),
+        tasks: [key(alone)],
+      },
+    ]);
+    expect([...registry.get(threads.delegatedTaskGroupsAtom).foldedKeys]).toEqual([key(older)]);
+
+    // An unsettled task stands for the group until every task is settled.
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [older, { ...newer, settledOverride: "settled" as const }, alone],
+    });
+    expect(groups()[0]?.representative).toBe(key(older));
+    registry.set(snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [
+        { ...older, settledOverride: "settled" as const },
+        { ...newer, settledOverride: "settled" as const },
+        alone,
+      ],
+    });
+    expect(groups()[0]?.representative).toBe(key(newer));
+
+    // A parent known to be archived leaves its tasks on their own.
+    setRemoteEnabled(true);
+    registry.set(snapshotAtom(remoteEnvironmentId), {
+      ...v2ShellSnapshot,
+      threads: [{ ...parent, archivedAt: v2Now }],
+    });
+    expect(groups().map((group) => group.parent)).toEqual([key(otherParent, remoteEnvironmentId)]);
+    dispose();
+    registry.dispose();
+  });
+
   it("brings an approval up a chain of tasks across three environments to its root", () => {
     const thirdEnvironmentId = EnvironmentId.make("third-environment-v2");
     const { registry, threads, snapshotAtom } = makeHarness([

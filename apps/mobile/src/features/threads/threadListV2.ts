@@ -14,6 +14,10 @@ import {
   type SnoozePreset,
 } from "@t3tools/client-runtime/state/thread-settled";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import type {
+  DelegatedTaskGroup,
+  DelegatedTaskGroups,
+} from "@t3tools/client-runtime/state/threads";
 import { resolveThreadProviderStack } from "@t3tools/client-runtime/state/models";
 import {
   threadSearchMatchKey,
@@ -415,6 +419,31 @@ export interface ThreadListV2Item {
   readonly pinned: boolean;
   readonly wokeAt: string | null;
   readonly isLast: boolean;
+  /** Set when this place shows a delegated task group instead of the thread, its representative. */
+  readonly delegatedGroup?: ThreadListV2DelegatedGroup;
+  /** A task listed under its open delegated task group. */
+  readonly nested?: boolean;
+}
+
+export interface ThreadListV2DelegatedGroup {
+  readonly group: DelegatedTaskGroup;
+  readonly tasks: ReadonlyArray<EnvironmentThreadShell>;
+  readonly expanded: boolean;
+}
+
+/**
+ * The most urgent status among a delegated task group's tasks. A waiting or finished
+ * task is quiet, as the group row only rolls up what needs attention or is running.
+ */
+export function resolveDelegatedGroupStatus(
+  tasks: ReadonlyArray<Parameters<typeof resolveThreadListV2RowStatus>[0]>,
+): ThreadListV2Status {
+  const statuses = new Set(tasks.map(resolveThreadListV2RowStatus));
+  return (
+    (["approval", "input", "request", "working", "failed", "limited"] as const).find((status) =>
+      statuses.has(status),
+    ) ?? "ready"
+  );
 }
 
 export interface ThreadListV2Layout {
@@ -446,6 +475,13 @@ export interface ThreadListV2ThreadListItem {
   readonly hasQueuedMessages: boolean;
   readonly canMoveUp: boolean;
   readonly canMoveDown: boolean;
+}
+
+export interface ThreadListV2DelegatedGroupListItem {
+  readonly type: "v2-delegated-group";
+  readonly key: string;
+  readonly item: ThreadListV2Item & { readonly delegatedGroup: ThreadListV2DelegatedGroup };
+  readonly showTrailingDivider: boolean;
 }
 
 export interface ThreadListV2PendingListItem {
@@ -483,6 +519,7 @@ export interface ThreadListV2SettledShelfListItem {
 
 export type ThreadListV2ListItem =
   | ThreadListV2ThreadListItem
+  | ThreadListV2DelegatedGroupListItem
   | ThreadListV2PendingListItem
   | ThreadListV2WorkingShelfListItem
   | ThreadListV2SnoozedShelfListItem
@@ -493,6 +530,7 @@ export function isThreadListV2ListItem(value: {
 }): value is ThreadListV2ListItem {
   return (
     value.type === "v2-thread" ||
+    value.type === "v2-delegated-group" ||
     value.type === "v2-pending" ||
     value.type === "v2-working-shelf" ||
     value.type === "v2-snoozed-shelf" ||
@@ -515,6 +553,7 @@ export function threadListV2ListItemsAreEqual(
         previous.item.snoozed === item.item.snoozed &&
         previous.item.pinned === item.item.pinned &&
         previous.item.wokeAt === item.item.wokeAt &&
+        previous.item.nested === item.item.nested &&
         previous.snoozeWakeLabelText === item.snoozeWakeLabelText &&
         previous.timeLabel === item.timeLabel &&
         previous.snoozePresetMinute === item.snoozePresetMinute &&
@@ -523,6 +562,20 @@ export function threadListV2ListItemsAreEqual(
         previous.canMoveUp === item.canMoveUp &&
         previous.canMoveDown === item.canMoveDown
       );
+    case "v2-delegated-group": {
+      if (previous.type !== "v2-delegated-group") return false;
+      const before = previous.item.delegatedGroup;
+      const after = item.item.delegatedGroup;
+      return (
+        previous.key === item.key &&
+        previous.item.variant === item.item.variant &&
+        previous.showTrailingDivider === item.showTrailingDivider &&
+        before.group === after.group &&
+        before.expanded === after.expanded &&
+        before.tasks.length === after.tasks.length &&
+        before.tasks.every((task, index) => task === after.tasks[index])
+      );
+    }
     case "v2-pending":
       return (
         previous.type === "v2-pending" &&
@@ -600,6 +653,14 @@ export function buildThreadListV2ListItems(input: {
   const resolve = input.resolve ?? m;
   const queuedThreadKeys = input.queuedThreadKeys?.size ? input.queuedThreadKeys : undefined;
   const threadItems = input.items.map((item): ThreadListV2ListItem => {
+    if (item.delegatedGroup !== undefined) {
+      return {
+        type: "v2-delegated-group",
+        key: `v2-delegated-group:${item.delegatedGroup.group.key}`,
+        item: { ...item, delegatedGroup: item.delegatedGroup },
+        showTrailingDivider: false,
+      };
+    }
     const snoozeWakeLabelText =
       item.snoozed && item.thread.snoozedUntil != null && input.snoozeLabelNow !== undefined
         ? snoozeWakeLabel(item.thread.snoozedUntil, { now: input.snoozeLabelNow }, resolve)
@@ -679,10 +740,18 @@ export function buildThreadListV2ListItems(input: {
     result.push(...threadItems.slice(settledShelfHeaderIndex));
   }
   return result.map((entry, index) => {
-    if (entry.type !== "v2-thread" && entry.type !== "v2-pending") return entry;
+    if (
+      entry.type !== "v2-thread" &&
+      entry.type !== "v2-delegated-group" &&
+      entry.type !== "v2-pending"
+    ) {
+      return entry;
+    }
     const next = result[index + 1];
     const showTrailingDivider =
-      next?.type === "v2-thread" || (next?.type === "v2-pending" && !next.showPendingDivider);
+      next?.type === "v2-thread" ||
+      next?.type === "v2-delegated-group" ||
+      (next?.type === "v2-pending" && !next.showPendingDivider);
     return showTrailingDivider === entry.showTrailingDivider
       ? entry
       : { ...entry, showTrailingDivider };
@@ -737,6 +806,9 @@ export function buildThreadListV2Items(input: {
   readonly isListedSettled?: (thread: EnvironmentThreadShell) => boolean;
   /** Settled threads in scope that are not local (older settled threads not loaded). */
   readonly unloadedSettledCount?: number;
+  /** Outside a search, each group lists in its representative's place, its tasks under it when open. */
+  readonly delegatedTaskGroups?: DelegatedTaskGroups;
+  readonly expandedDelegatedGroupKeys?: ReadonlySet<string>;
 }): ThreadListV2Layout {
   const now = input.now;
   const pending =
@@ -786,7 +858,20 @@ export function buildThreadListV2Items(input: {
   // Threads listed only because their messages match; only their rows show
   // the message and open at it.
   const contentOnlyThreadKeys = new Set<string>();
+  const delegatedGroups =
+    rankedMatches === null && (input.delegatedTaskGroups?.groups.length ?? 0) > 0
+      ? input.delegatedTaskGroups
+      : undefined;
+  const delegatedTaskByKey = new Map<string, EnvironmentThreadShell>();
   for (const thread of listedThreads) {
+    if (delegatedGroups !== undefined) {
+      const key = `${thread.environmentId}:${thread.id}`;
+      if (delegatedGroups.byRepresentativeKey.has(key)) delegatedTaskByKey.set(key, thread);
+      if (delegatedGroups.foldedKeys.has(key)) {
+        delegatedTaskByKey.set(key, thread);
+        continue;
+      }
+    }
     if (matchingThreads !== null && !matchingThreads.has(thread)) {
       const key = threadSearchMatchKey({
         environmentId: thread.environmentId,
@@ -869,7 +954,14 @@ export function buildThreadListV2Items(input: {
     (left, right) =>
       parseTimestampMs(left.snoozedUntil ?? "") - parseTimestampMs(right.snoozedUntil ?? ""),
   );
-  const selectedThreadKey = input.selectedThreadKey ?? null;
+  // An open grouped task keeps its group's place listed, as an open thread keeps its own.
+  const selectedThreadKey =
+    (input.selectedThreadKey == null
+      ? undefined
+      : delegatedGroups?.groups.find((group) => group.taskKeys.includes(input.selectedThreadKey!))
+          ?.representativeKey) ??
+    input.selectedThreadKey ??
+    null;
   const visibleWorking =
     input.workingShelfExpanded === true
       ? orderedWorking
@@ -908,12 +1000,36 @@ export function buildThreadListV2Items(input: {
         );
 
   const items: ThreadListV2Item[] = [];
+  const pushItem = (item: ThreadListV2Item) => {
+    const group = delegatedGroups?.byRepresentativeKey.get(
+      `${item.thread.environmentId}:${item.thread.id}`,
+    );
+    if (group === undefined) {
+      items.push(item);
+      return;
+    }
+    const tasks = group.taskKeys.flatMap((key) => delegatedTaskByKey.get(key) ?? []);
+    const expanded = input.expandedDelegatedGroupKeys?.has(group.key) === true;
+    items.push({ ...item, delegatedGroup: { group, tasks, expanded } });
+    if (!expanded) return;
+    for (const thread of tasks) {
+      items.push({
+        thread,
+        variant: "slim",
+        snoozed: false,
+        pinned: false,
+        wokeAt: null,
+        isLast: false,
+        nested: true,
+      });
+    }
+  };
   for (const thread of applyPendingThreadOrder(
     sortPinnedThreadsByOrderKey(pinned),
     "pinned",
     pending,
   )) {
-    items.push({
+    pushItem({
       thread,
       variant: "card",
       snoozed: false,
@@ -923,7 +1039,7 @@ export function buildThreadListV2Items(input: {
     });
   }
   for (const thread of orderedActive) {
-    items.push({
+    pushItem({
       thread,
       variant: "card",
       snoozed: false,
@@ -934,7 +1050,7 @@ export function buildThreadListV2Items(input: {
   }
   const workingShelfHeaderIndex = orderedWorking.length > 0 ? items.length : null;
   for (const thread of visibleWorking) {
-    items.push({
+    pushItem({
       thread,
       variant: "card",
       snoozed: false,
@@ -945,7 +1061,7 @@ export function buildThreadListV2Items(input: {
   }
   const snoozedShelfHeaderIndex = orderedSnoozed.length > 0 ? items.length : null;
   for (const thread of visibleSnoozed) {
-    items.push({
+    pushItem({
       thread,
       variant: "slim",
       snoozed: true,
@@ -956,7 +1072,7 @@ export function buildThreadListV2Items(input: {
   }
   const settledShelfHeaderIndex = settledTotal > 0 ? items.length : null;
   for (const thread of visibleSettled) {
-    items.push({
+    pushItem({
       thread,
       variant: "slim",
       snoozed: false,

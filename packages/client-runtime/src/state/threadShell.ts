@@ -19,6 +19,11 @@ import { Atom } from "effect/reactivity";
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
 import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
+import {
+  delegatedTaskGroupsEqual,
+  groupDelegatedTasks,
+  NO_DELEGATED_TASK_GROUPS,
+} from "./delegatedTaskGroups.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
   arrayElementsEqual,
@@ -28,6 +33,12 @@ import {
   threadKey,
   threadRefsEqual,
 } from "./entities.ts";
+
+export {
+  groupDelegatedTasks,
+  type DelegatedTaskGroup,
+  type DelegatedTaskGroups,
+} from "./delegatedTaskGroups.ts";
 
 const EMPTY_THREADS: ReadonlyArray<OrchestrationV2ThreadShell> = Object.freeze([]);
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
@@ -779,6 +790,24 @@ export function createEnvironmentThreadShellAtoms(input: {
     return next;
   }).pipe(Atom.withLabel("environment-navigation-thread-shells"));
 
+  // Tasks whose parent no list shows, one group per parent; lists give each group a row.
+  let previousDelegatedTaskGroups = NO_DELEGATED_TASK_GROUPS;
+  const delegatedTaskGroupsAtom = Atom.make((get) => {
+    const catalog = get(input.catalogValueAtom);
+    const next = groupDelegatedTasks({
+      threads: get(navigationThreadShellsAtom),
+      isParentArchived: (parent) =>
+        (get(environmentThreadIndexAtom(parent.environmentId)).get(parent.threadId)?.archivedAt ??
+          null) !== null,
+      environmentLabel: (environmentId) => catalog.entries.get(environmentId)?.target.label ?? null,
+    });
+    if (delegatedTaskGroupsEqual(previousDelegatedTaskGroups, next)) {
+      return previousDelegatedTaskGroups;
+    }
+    previousDelegatedTaskGroups = next;
+    return next;
+  }).pipe(Atom.withLabel("environment-delegated-task-groups"));
+
   return {
     environmentThreadsAtom,
     environmentThreadIndexAtom,
@@ -792,6 +821,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     quietThreadShellsAtom,
     navigationThreadShellsAtom,
     delegatedUnderParentAtom,
+    delegatedTaskGroupsAtom,
     pendingSubagentRequestsAtom,
     threadShellsForProjectRefsAtom: (refs: ReadonlyArray<ScopedProjectRef>) =>
       threadShellsForProjectRefsAtomFamily(projectRefCollectionKey(refs)),
