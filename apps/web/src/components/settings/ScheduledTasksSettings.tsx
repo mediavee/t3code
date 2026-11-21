@@ -1,5 +1,8 @@
 import { thrownErrorMessage } from "@t3tools/client-runtime/errors";
-import { managedCapabilityDenial } from "@t3tools/client-runtime/contract-labels";
+import {
+  managedCapabilityDenial,
+  managedRuntimeModeDenial,
+} from "@t3tools/client-runtime/contract-labels";
 import { useAtomValue } from "@effect/atom-react";
 import { connectionStatusTitle } from "@t3tools/client-runtime/connection";
 import { AsyncResult } from "effect/reactivity";
@@ -107,6 +110,7 @@ import {
   scheduleFromDraft,
   scheduleLabel,
   scheduledTaskDefaultModel,
+  pickScheduledTaskModel,
   weekdayShortLabel,
   taskToDraft,
   unbindDraftFromThread,
@@ -122,6 +126,8 @@ import { Skeleton } from "../ui/skeleton";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { createModelSelection } from "@t3tools/shared/model";
+import { runtimeModeConfig, runtimeModeOptions } from "../chat/runtimeModeConfig";
+import { getProviderModelCapabilities } from "../../providerModels";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
@@ -1607,6 +1613,12 @@ function ScheduledTaskEditorForm({
   const shownSelection = draft.threadId
     ? (boundThread?.modelSelection ?? null)
     : { instanceId: activeInstanceId, model: activeModel };
+  const shownRuntimeMode = draft.threadId
+    ? (boundThread?.runtimeMode ?? draft.runtimeMode)
+    : draft.runtimeMode;
+  const shownInteractionMode = draft.threadId
+    ? (boundThread?.interactionMode ?? draft.interactionMode)
+    : draft.interactionMode;
   const shownInstanceId = shownSelection?.instanceId ?? activeInstanceId;
   const shownModel = shownSelection?.model ?? "";
   const activeEntry = instanceEntries.find((entry) => entry.instanceId === activeInstanceId);
@@ -1717,7 +1729,7 @@ function ScheduledTaskEditorForm({
       ...(offersThreadModes ? { threadMode: draft.threadMode } : {}),
       workspaceStrategy,
       modelSelection: selection,
-      // Tasks have no mode picker; a mode above the administrator's ceiling would fail every run.
+      // A mode saved before the administrator's ceiling would fail every run.
       runtimeMode:
         clampManagedRuntimeMode(environment?.serverConfig?.managedPolicy, draft.runtimeMode) ??
         draft.runtimeMode,
@@ -1987,9 +1999,22 @@ function ScheduledTaskEditorForm({
                 onInstanceModelChange={(instanceId, model) => {
                   if (instanceId === activeSelection?.instanceId && model === activeSelection.model)
                     return;
+                  const entry = instanceEntries.find(
+                    (candidate) => candidate.instanceId === instanceId,
+                  );
+                  const descriptors =
+                    entry === undefined
+                      ? []
+                      : (getProviderModelCapabilities(entry.models, model, entry.driverKind)
+                          .optionDescriptors ?? []);
                   setDraft((current) => ({
                     ...current,
-                    modelSelection: createModelSelection(instanceId, model),
+                    modelSelection: pickScheduledTaskModel(
+                      activeSelection,
+                      instanceId,
+                      model,
+                      descriptors,
+                    ),
                   }));
                 }}
               />
@@ -2013,6 +2038,59 @@ function ScheduledTaskEditorForm({
               ) : null}
             </div>
           </Field>
+
+          {/* Bound runs keep their thread's modes, like its model. */}
+          <Field label={gt("Permissions")}>
+            <Select
+              value={shownRuntimeMode}
+              disabled={saving || !connected || draft.threadId !== ""}
+              onValueChange={(value) => {
+                if (value) setDraft((current) => ({ ...current, runtimeMode: value }));
+              }}
+            >
+              <SelectTrigger size="sm" aria-label={gt("Permissions")}>
+                <SelectValue>{messages(runtimeModeConfig[shownRuntimeMode].label)}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup>
+                {runtimeModeOptions.map((mode) => {
+                  const managedReason = managedRuntimeModeDenial(
+                    environment?.serverConfig?.managedPolicy,
+                    mode,
+                    messages,
+                  );
+                  return (
+                    <SelectItem key={mode} value={mode} disabled={managedReason !== undefined}>
+                      <div className="grid gap-0.5">
+                        <span className="font-medium">
+                          {messages(runtimeModeConfig[mode].label)}
+                        </span>
+                        <span className="text-xs leading-4 text-muted-foreground">
+                          {managedReason ?? messages(runtimeModeConfig[mode].description)}
+                        </span>
+                      </div>
+                    </SelectItem>
+                  );
+                })}
+              </SelectPopup>
+            </Select>
+          </Field>
+
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="scheduled-task-plan-mode">
+              <T>Plan mode</T>
+            </Label>
+            <Switch
+              id="scheduled-task-plan-mode"
+              checked={shownInteractionMode === "plan"}
+              disabled={saving || !connected || draft.threadId !== ""}
+              onCheckedChange={(checked) =>
+                setDraft((current) => ({
+                  ...current,
+                  interactionMode: checked ? "plan" : "default",
+                }))
+              }
+            />
+          </div>
 
           <div className="space-y-3">
             {task?.schedule.type === "interval" &&

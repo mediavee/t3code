@@ -9960,6 +9960,7 @@
   "5a3f881a6bc1c4ff": "Crear un worktree nuevo",
   "3b91d2c532294f88": "Usar el checkout del proyecto",
   "08dfe6dcf5ae8c40": "Usar un checkout concreto",
+  "5f2880bcab957d87": "Modo plan",
   "038b86fd8ba9a6aa": "Esta tarea usa un intervalo antiguo de menos de un minuto. Al guardar se actualiza a un minuto como mínimo.",
   "2f3f300a16007bd8": "Programación",
   "ce1b005dfc83db03": "A una hora",

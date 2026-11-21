@@ -37,8 +37,8 @@ import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
@@ -4632,6 +4632,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       defaults: {
         readonly project: ScheduledTask["modelSelection"] | null;
         readonly environment?: ScheduledTask["modelSelection"];
+        readonly providers?: ReadonlyArray<never>;
       } = { project: existing.modelSelection },
     ) =>
       OrchestratorMcpService.layer.pipe(
@@ -4649,7 +4650,9 @@ describe("OrchestratorMcpService provider resolution", () => {
                 ? {}
                 : { defaultModelSelection: defaults.environment },
             ),
-            Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed(defaults.providers ?? []),
+            }),
             Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
               list: () => Effect.succeed([]),
             }),
@@ -4697,6 +4700,279 @@ describe("OrchestratorMcpService provider resolution", () => {
           { type: "worktree", baseRef: "origin/master", startFromOrigin: true },
         ]);
       }),
+    );
+
+    it.effect("stores a named model, workspace and runtime mode within the caller's limits", () =>
+      Effect.gen(function* () {
+        const inputs = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              {
+                ...masterRepository,
+                listWorktreePaths: () => Effect.succeed([workspaceRoot, "/repo/scheduled-base-wt"]),
+              },
+              yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+              existing,
+              inputs,
+              {
+                project: existing.modelSelection,
+                providers: [
+                  { instanceId: ProviderInstanceId.make("claudeAgent"), models: [] } as never,
+                ],
+              },
+            ),
+          ),
+        );
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-5-5",
+          options: [{ id: "effort", value: "high" }],
+        };
+        const workspaceStrategy = { type: "root", branch: "nightly" } as const;
+        yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          modelSelection,
+          workspaceStrategy,
+          runtimeMode: "approval-required",
+        });
+        const above = yield* mcp
+          .scheduleTask(client, {
+            projectId,
+            prompt: "Check the build",
+            schedule,
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.flip);
+        assert.equal(above.code, "runtime_mode_escalation_denied");
+        const unknown = yield* mcp
+          .scheduleTask(client, {
+            projectId,
+            prompt: "Check the build",
+            schedule,
+            modelSelection: { instanceId: ProviderInstanceId.make("missing"), model: "x" },
+          })
+          .pipe(Effect.flip);
+        assert.equal(unknown.code, "invalid_request");
+        const outside = { type: "existing_worktree", worktreePath: "/home/someone" } as const;
+        const outsideCreate = yield* mcp
+          .scheduleTask(client, {
+            projectId,
+            prompt: "Check the build",
+            schedule,
+            workspaceStrategy: outside,
+          })
+          .pipe(Effect.flip);
+        assert.equal(outsideCreate.code, "invalid_request");
+        const outsideUpdate = yield* mcp
+          .updateScheduledTask(client, {
+            scheduledTaskId: existing.id,
+            workspaceStrategy: outside,
+          })
+          .pipe(Effect.flip);
+        assert.equal(outsideUpdate.code, "invalid_request");
+        yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo/scheduled-base-wt" },
+        });
+        yield* mcp.updateScheduledTask(client, {
+          scheduledTaskId: existing.id,
+          modelSelection,
+          workspaceStrategy,
+        });
+        const refusedUpdate = yield* mcp
+          .updateScheduledTask(client, { scheduledTaskId: existing.id, runtimeMode: "auto" })
+          .pipe(Effect.flip);
+        assert.equal(refusedUpdate.code, "runtime_mode_escalation_denied");
+        assert.deepEqual(
+          (yield* Ref.get(inputs)).map((input) => [
+            input.modelSelection,
+            input.workspaceStrategy,
+            input.runtimeMode,
+          ]),
+          [
+            [modelSelection, workspaceStrategy, "approval-required"],
+            [
+              existing.modelSelection,
+              { type: "existing_worktree", worktreePath: "/repo/scheduled-base-wt" },
+              "approval-required",
+            ],
+            [modelSelection, workspaceStrategy, "approval-required"],
+          ],
+        );
+      }),
+    );
+
+    it.effect("stores a model's normalized options on create and update", () =>
+      Effect.gen(function* () {
+        const inputs = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              masterRepository,
+              yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+              existing,
+              inputs,
+              {
+                project: existing.modelSelection,
+                providers: [
+                  {
+                    instanceId: ProviderInstanceId.make("claudeAgent"),
+                    models: [
+                      {
+                        slug: "ultracode-model",
+                        name: "ultracode-model",
+                        isCustom: false,
+                        capabilities: {
+                          optionDescriptors: [
+                            {
+                              id: "effort",
+                              label: "Reasoning",
+                              type: "select",
+                              options: [
+                                { id: "high", label: "High" },
+                                { id: "xhigh", label: "Extra High" },
+                              ],
+                            },
+                            { id: "ultracode", label: "Ultracode", type: "boolean" },
+                          ],
+                        },
+                      },
+                    ],
+                  } as never,
+                ],
+              },
+            ),
+          ),
+        );
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "ultracode-model",
+          options: [{ id: "effort", value: "ultracode" }],
+        };
+        yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          modelSelection,
+        });
+        yield* mcp.updateScheduledTask(client, { scheduledTaskId: existing.id, modelSelection });
+        assert.deepEqual(
+          (yield* Ref.get(inputs)).map((input) => input.modelSelection.options),
+          [
+            [
+              { id: "effort", value: "xhigh" },
+              { id: "ultracode", value: true },
+            ],
+            [
+              { id: "effort", value: "xhigh" },
+              { id: "ultracode", value: true },
+            ],
+          ],
+        );
+      }),
+    );
+
+    it.effect("refuses an agent's own mode from a caller below full access", () =>
+      Effect.gen(function* () {
+        const inputs = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              masterRepository,
+              yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+              existing,
+              inputs,
+              {
+                project: existing.modelSelection,
+                providers: [
+                  {
+                    instanceId: ProviderInstanceId.make("acp-agent"),
+                    models: [
+                      {
+                        slug: "default",
+                        name: "Default",
+                        isCustom: false,
+                        capabilities: {
+                          optionDescriptors: [
+                            {
+                              id: "_t3/session-mode",
+                              label: "Mode",
+                              type: "select",
+                              options: [
+                                { id: "default", label: "Default" },
+                                { id: "yolo", label: "YOLO" },
+                              ],
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  } as never,
+                ],
+              },
+            ),
+          ),
+        );
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make("acp-agent"),
+          model: "default",
+          options: [{ id: "_t3/session-mode", value: "yolo" }],
+        };
+        const created = yield* mcp
+          .scheduleTask(client, { projectId, prompt: "Check the build", schedule, modelSelection })
+          .pipe(Effect.flip);
+        const updated = yield* mcp
+          .updateScheduledTask(client, { scheduledTaskId: existing.id, modelSelection })
+          .pipe(Effect.flip);
+        assert.equal(created.code, "runtime_mode_escalation_denied");
+        assert.equal(updated.code, "runtime_mode_escalation_denied");
+        assert.deepEqual(yield* Ref.get(inputs), []);
+      }),
+    );
+
+    it.effect("stores an existing worktree as the path Git registered", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const root = yield* fileSystem.makeTempDirectoryScoped();
+        const registered = `${root}/scheduled-wt`;
+        const alias = `${root}/alias-wt`;
+        yield* fileSystem.makeDirectory(registered);
+        yield* fileSystem.symlink(registered, alias);
+        const inputs = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              {
+                ...masterRepository,
+                listWorktreePaths: () => Effect.succeed([workspaceRoot, registered]),
+              },
+              yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+              existing,
+              inputs,
+            ),
+          ),
+        );
+        const workspaceStrategy = { type: "existing_worktree", worktreePath: alias } as const;
+        yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          workspaceStrategy,
+        });
+        yield* mcp.updateScheduledTask(client, { scheduledTaskId: existing.id, workspaceStrategy });
+        assert.deepEqual(
+          (yield* Ref.get(inputs)).map((input) => input.workspaceStrategy),
+          [
+            { type: "existing_worktree", worktreePath: registered },
+            { type: "existing_worktree", worktreePath: registered },
+          ],
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     );
 
     it.effect("uses the environment's default model when the project inherits it", () =>

@@ -41,6 +41,7 @@ import {
   OrchestrationV2DelegatedFrom,
   OrchestrationV2RemoteTaskWorktree,
   OrchestrationV2RunStatus,
+  OrchestrationV2ThreadLaunchWorkspaceStrategy,
   type OrchestrationV2ThreadShell,
   OrchestrationV2TurnItemStatus,
 } from "./orchestrationV2.ts";
@@ -947,6 +948,19 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
         "Runs share one thread but each starts a fresh session. Unbound: the first run makes the thread.",
     }),
   ),
+  modelSelection: Schema.optional(
+    OrchestratorMcpLaunchModelSelection.annotate({
+      description: "Model for new run threads. Default: yours. From `orchestrator_capabilities`.",
+    }),
+  ),
+  workspaceStrategy: Schema.optional(
+    OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({
+      description: "Checkout for new run threads, as in `t3_thread_launch`.",
+    }),
+  ),
+  runtimeMode: Schema.optional(
+    RuntimeMode.annotate({ description: "Default: yours. Above yours is rejected." }),
+  ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -1013,6 +1027,9 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   enabled: Schema.optional(Schema.Boolean),
   bindToCurrentThread: Schema.optional(Schema.Boolean),
   freshSession: Schema.optional(Schema.Boolean),
+  modelSelection: OrchestratorMcpScheduleTaskInput.fields.modelSelection,
+  workspaceStrategy: OrchestratorMcpScheduleTaskInput.fields.workspaceStrategy,
+  runtimeMode: OrchestratorMcpScheduleTaskInput.fields.runtimeMode,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
