@@ -12798,5 +12798,12 @@
   "99963c0142e17f00": "For the new {tracker} account.",
   "6d8e4ebc889bace9": "Add account",
   "3d4448e3c061f894": "Other machine",
-  "349587beaf00ce5e": "{title}, delegated from {machine}, {count, plural, one {{count} task} other {{count} tasks}}"
+  "349587beaf00ce5e": "{title}, delegated from {machine}, {count, plural, one {{count} task} other {{count} tasks}}",
+  "bc34446a962cdcfe": "Resume after provider errors",
+  "079d0bd4815b5348": "Provider errors",
+  "bb9d9afd0523940a": "Resume a turn that failed on a provider server or connection error, up to three times, after 15 seconds, 1 minute and 3 minutes.",
+  "ae62ee82e0c146bb": "retry failed error 502 503 gateway connection recover continue",
+  "0d1c02eb9bb693c4": "Could not resume the failed sessions",
+  "72516ad01a8e3386": "{count, plural, one {{count} session failed in the last hour} other {{count} sessions failed in the last hour}}",
+  "253a12fc99873da8": "Resume all"
 }

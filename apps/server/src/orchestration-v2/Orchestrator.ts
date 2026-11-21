@@ -7,6 +7,7 @@ import type {
   ProjectId,
 } from "@t3tools/contracts";
 import {
+  isTransientProviderFailure,
   latestExecutedRun,
   latestRootProviderFailure,
   orchestrationV2WorktreePending,
@@ -24,6 +25,7 @@ import {
 } from "../sourceControl/threadPullRequests.ts";
 import {
   ORCHESTRATION_V2_WORKSPACE_PREPARATION_FAILURE_CODE,
+  isDelegatedAppThread,
   type ChatAttachment,
   CommandId,
   type GuestMessageId,
@@ -870,7 +872,11 @@ function threadCreateInitialMessage(
 function mayStartSubagentFollowup(
   command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
 ): boolean {
-  if (command.scheduledTaskId !== undefined || command.restartContinuationOfRunId !== undefined)
+  if (
+    command.scheduledTaskId !== undefined ||
+    command.restartContinuationOfRunId !== undefined ||
+    command.transientFailureContinuationOfRunId !== undefined
+  )
     return false;
   if (isCompactionCommandMessage({ role: "user", ...command })) return false;
   if (command.notification !== undefined)
@@ -7260,6 +7266,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               command.manualContinuationOfRunId,
               command.restartContinuationOfRunId,
               command.usageLimitContinuationOfRunId,
+              command.transientFailureContinuationOfRunId,
               command.steerFollowUpOfRunId,
               ...(command.dispatchMode.type === "steer_active" ||
               command.dispatchMode.type === "restart_active"
@@ -7412,6 +7419,44 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           threadId: command.threadId,
           occurredAt: yield* DateTime.now,
           payload: projection.thread,
+        });
+        return;
+      }
+    }
+
+    if (command.transientFailureContinuationOfRunId !== undefined) {
+      const source = projection.runs.find(
+        (run) => run.id === command.transientFailureContinuationOfRunId,
+      );
+      const failure = latestRootProviderFailure(source ?? null, projection.turnItems);
+      const { thread } = projection;
+      const now = yield* DateTime.now;
+      if (
+        source === undefined ||
+        failure === null ||
+        !isTransientProviderFailure(failure) ||
+        latestExecutedRun(projection.runs)?.id !== source.id ||
+        // A follow-up the user queued behind the failure takes its place.
+        projection.runs.some((run) => run.ordinal > source.ordinal && !cancelledBeforeStart(run)) ||
+        thread.archivedAt !== null ||
+        thread.deletedAt !== null ||
+        thread.settledOverride === "settled" ||
+        (thread.snoozedUntil != null && DateTime.isGreaterThan(thread.snoozedUntil, now)) ||
+        // A delegated task's failure already woke its parent, which owns the retry.
+        isDelegatedAppThread(thread) ||
+        thread.providerInstanceId !== source.providerInstanceId ||
+        !modelSelectionsEqual(thread.modelSelection, source.modelSelection) ||
+        projection.runtimeRequests.some((request) => request.status === "pending") ||
+        (yield* stopReachedRun(command, command.threadId, source.id))
+      ) {
+        yield* emit(
+          events,
+          command,
+        )({
+          type: "thread.metadata-updated",
+          threadId: command.threadId,
+          occurredAt: now,
+          payload: thread,
         });
         return;
       }
@@ -7691,6 +7736,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const continuedRunId =
       command.restartContinuationOfRunId ??
       command.usageLimitContinuationOfRunId ??
+      command.transientFailureContinuationOfRunId ??
       command.manualContinuationOfRunId;
     const outputSchema =
       command.outputSchema ??
@@ -7754,7 +7800,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (command.creationSource !== "server" && command.creationSource !== "provider") ||
         (dispatchMode.type !== "queue_after_active" &&
           !(
-            command.restartContinuationOfRunId !== undefined &&
+            (command.restartContinuationOfRunId !== undefined ||
+              command.transientFailureContinuationOfRunId !== undefined) &&
             dispatchMode.type === "start_immediately"
           )))
     ) {

@@ -235,6 +235,7 @@ import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
+  knownProviderFailureMessage,
   makeProviderFailure,
   makeProviderRetryTurnItem,
   PROVIDER_RETRY_BUDGET_MS,
@@ -5153,7 +5154,7 @@ function providerFailureFromResult(
         ? (message.terminal_reason ?? "sdk_result_error")
         : `api_error_${apiErrorStatus}`,
     class: failureClass,
-    retryable: apiErrorStatus === 429 || apiErrorStatus === 529 ? true : null,
+    retryable: apiErrorStatus === 429 || (apiErrorStatus ?? 0) >= 500 ? true : null,
     resetAt: resetAt ?? null,
   });
 }
@@ -6795,7 +6796,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (retry === undefined) return;
             yield* failStalledTurn(
               context,
-              { ...retry.failure, retryable: false },
+              retry.failure,
               Effect.map(isCurrentRetry, (current) => current !== undefined),
             );
           },
@@ -6818,7 +6819,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               class: "transport_error",
               code: "claude_request_unanswered",
               message: `Claude sent nothing for ${PROVIDER_RETRY_BUDGET_MS / 60_000} minutes. The API or a gateway in front of it is not responding.`,
-              retryable: false,
+              retryable: true,
             }),
             // Once the stop is sent, a frame clearing the silence must not skip forced settlement.
             Effect.map(Ref.get(activeTurn), (active) => active === context),
@@ -10260,6 +10261,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       cause: cause === undefined ? undefined : Cause.squash(cause),
                       ...(cause === undefined ? {} : claudeProcessExitFailure(cause)),
                       class: "transport_error",
+                      // A setup error T3 names, like a root refusal, fails the same way again.
+                      retryable:
+                        cause === undefined ||
+                        knownProviderFailureMessage(Cause.squash(cause)) === undefined,
                     }),
                   }),
             });
