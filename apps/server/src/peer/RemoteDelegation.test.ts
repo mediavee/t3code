@@ -25,6 +25,7 @@ import {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
+import { DELEGATED_CHILD_COMMAND_HOLD_MS } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -3854,6 +3855,75 @@ const wakes = (
     Effect.andThen(SubscriptionRef.get(offers)),
     Effect.map((seen) => seen.filter((offer) => offer.threadId === parentThreadId)),
   );
+
+it.effect("a task here holding on a command it left running completes when the hold runs out", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+
+      const delegated = yield* delegateHere(a);
+      const childThreadId = delegated.remoteChild.threadId;
+      const child = yield* a.orchestrator.getThreadProjection(childThreadId);
+      const startedAt = yield* DateTime.now;
+      yield* a.sink.write({
+        commandId: CommandId.make("command:seed:child-dev-server"),
+        events: [
+          {
+            id: EventId.make("event:seed:child-dev-server"),
+            type: "provider-thread.updated",
+            threadId: childThreadId,
+            driver,
+            providerInstanceId: instanceId,
+            occurredAt: startedAt,
+            payload: {
+              id: ProviderThreadId.make("provider-thread:child"),
+              driver,
+              providerInstanceId: instanceId,
+              providerSessionId: null,
+              appThreadId: childThreadId,
+              ownerNodeId: child.runs[0]!.rootNodeId!,
+              nativeThreadRef: { driver, nativeId: "native:child", strength: "strong" },
+              nativeConversationHeadRef: null,
+              status: "active",
+              firstRunOrdinal: 1,
+              lastRunOrdinal: 1,
+              handoffIds: [],
+              forkedFrom: null,
+              pendingBackgroundTasks: [
+                { taskId: "dev-server", kind: "command", description: "vp run dev" },
+              ],
+              createdAt: startedAt,
+              updatedAt: startedAt,
+            },
+          },
+        ],
+      });
+      const result = yield* taskResult(a, delegated.taskId).pipe(Effect.forkScoped);
+      yield* endChildRun(a, childThreadId, "completed", "The build is green.");
+      yield* TestClock.adjust(Duration.millis(DELEGATED_CHILD_COMMAND_HOLD_MS + 5_000));
+      // Past the follower's next wait timeout, so a wait that misses the bound ends later.
+      yield* TestClock.adjust("10 minutes");
+      const task = yield* Fiber.join(result);
+      expect(task).toMatchObject({
+        status: "completed",
+        result: [
+          "The build is green.",
+          "",
+          "Background commands still running, not awaited, when this result was sent:",
+          "- dev-server: vp run dev",
+        ].join("\n"),
+      });
+      expect(
+        Duration.toMillis(DateTime.distance(startedAt, task!.completedAt!)),
+      ).toBeLessThanOrEqual(DELEGATED_CHILD_COMMAND_HOLD_MS + 5_000);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
 
 it.effect("a task in another project here runs as its own thread that names its parent", () =>
   Effect.scoped(
