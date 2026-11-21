@@ -7,6 +7,8 @@ export const FAILED_SESSIONS_WINDOW_MS = 60 * 60 * 1_000;
 export interface FailedSessionsGroup {
   readonly environmentId: EnvironmentId;
   readonly count: number;
+  /** Set only when several environments have failures, so their rows can be told apart. */
+  readonly environmentLabel: string | null;
 }
 
 /** Resume all's `since`, taken when the user clicks so a long-open banner covers the same hour. */
@@ -22,6 +24,7 @@ export function failedSessionsGroups(
   shells: ReadonlyArray<EnvironmentThreadShell>,
   nowMs: number,
   resumedAt: ReadonlyMap<EnvironmentId, number>,
+  environmentLabels: ReadonlyMap<EnvironmentId, string>,
 ): {
   readonly groups: ReadonlyArray<FailedSessionsGroup>;
   /** When the oldest counted failure leaves the window. */
@@ -57,7 +60,11 @@ export function failedSessionsGroups(
     oldestMs = oldestMs === null ? failedMs : Math.min(oldestMs, failedMs);
   }
   return {
-    groups: [...counts].map(([environmentId, count]) => ({ environmentId, count })),
+    groups: [...counts].map(([environmentId, count]) => ({
+      environmentId,
+      count,
+      environmentLabel: counts.size > 1 ? (environmentLabels.get(environmentId) ?? null) : null,
+    })),
     expiresAtMs: oldestMs === null ? null : oldestMs + FAILED_SESSIONS_WINDOW_MS,
   };
 }
