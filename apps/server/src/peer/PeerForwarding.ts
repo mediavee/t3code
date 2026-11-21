@@ -215,8 +215,13 @@ const make = Effect.gen(function* () {
       input,
     );
 
-  const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>
-    forward<OrchestratorMcpThreadWaitResult>(
+  // The caller's messages arrive here, not where the waited thread runs.
+  const waitForThread: PeerForwarding["Service"]["waitForThread"] = (
+    scope,
+    environmentId,
+    input,
+  ) => {
+    const forwarded = forward<OrchestratorMcpThreadWaitResult>(
       scope,
       "t3_thread_wait",
       OrchestratorMcpThreadWaitInput,
@@ -230,6 +235,23 @@ const make = Effect.gen(function* () {
         ),
       },
     );
+    if (scope.thread === undefined) return forwarded;
+    const incoming = threads.awaitIncomingMessage(scope.thread.threadId).pipe(
+      Effect.mapError(
+        (error) =>
+          new OrchestratorMcpFailure({ code: "orchestration_error", message: error.message }),
+      ),
+      Effect.map((waitingMessages): OrchestratorMcpThreadWaitResult => ({
+        threadId: input.threadId,
+        runId: input.runId ?? null,
+        status: "running",
+        timedOut: false,
+        interruptedByIncomingMessage: true,
+        waitingMessages,
+      })),
+    );
+    return Effect.raceFirst(forwarded, incoming);
+  };
 
   // While the beta is off, agents start nothing over links. Tasks already running there keep
   // following through readThread, waitForThread and interruptThread, so they still finish.

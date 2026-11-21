@@ -317,8 +317,9 @@ Stops every task the child delegated, then the child thread with the internal
 `thread.stop` command, cancels the task's own queued turn, and disposes automatic
 parent delivery. Like a user Stop, `thread.stop` interrupts the running turn, holds
 queued turns, and ends pull request watches. The task's own queued turn is cancelled
-even if Stop already held it, so a task that is only queued can be cancelled; other
-queued turns in the child stay held for Resume. A nonterminal task is rejected when
+even if Stop already held it, so a task that is only queued can be cancelled.
+Queued turns that agents sent to the child are cancelled too; the user's stay held
+for Resume. A nonterminal task is rejected when
 it has no interruptible run, no queued turn of its own, and its finished turn no
 longer waits on background work or delegated tasks. Once a cancelled task's turn
 ends, a completed result settles as `interrupted` and a failed one stays `failed`. A
@@ -476,6 +477,11 @@ that asks for a result is queued instead of steered: the result belongs to one
 whole turn. A turn can end without submitting; the caller sees a finished run
 with no `output`.
 
+`expireOnTurnEnd` makes a send a correction to the running turn: it only steers.
+With no running turn it returns `delivery: "dropped"` and stores nothing. A steer
+the turn ends without reading is dropped with a notice on the target, instead of
+running as the next turn, so a correction cannot restart work that has finished.
+
 ### `t3_submit_output`
 
 Stores the calling thread's result on its running turn, once it fits the schema
@@ -491,7 +497,11 @@ Waits for a selected run to become `completed`, `failed`, `cancelled`,
 time; an idle thread returns immediately. A timeout reports the latest durable
 status and does not cancel work. `output` carries what the run submitted
 against its `outputSchema`; with `untilOutput`, a completed run that has not
-submitted yet is waited on until it has.
+submitted yet is waited on until it has. A message for the calling thread that
+arrives during the wait (from the user, another thread or a task wake) ends it
+early with `interruptedByIncomingMessage` and `waitingMessages`, because a
+provider delivers it only once the tool call returns. A wait on a linked
+environment's thread is ended the same way here.
 
 ### `t3_thread_interrupt`
 

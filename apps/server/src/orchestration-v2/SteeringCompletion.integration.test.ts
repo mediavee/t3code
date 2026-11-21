@@ -1431,6 +1431,81 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
   }),
 );
 
+it.effect("drops a steer sent to expire with its turn once that turn ends unread", () =>
+  Effect.gen(function* () {
+    const { events, started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
+      "steering-expire-on-turn-end",
+    );
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const threadId = yield* startFirstTurn;
+      const first = started[0]!;
+      const messageId = MessageId.make("message:expiring-steer");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("expiring-steer"),
+        threadId,
+        messageId,
+        text: "late correction",
+        attachments: [],
+        expireOnTurnEnd: true,
+        dispatchMode: { type: "steer_active", targetRunId: first.runId },
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      const settled = yield* orchestrator.streamDomainEvents.pipe(
+        Stream.filter(
+          (event) =>
+            event.type === "run.updated" &&
+            event.payload.id === first.runId &&
+            event.payload.status === "waiting",
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkScoped,
+      );
+      const turn = (yield* orchestrator.getThreadProjection(threadId)).providerTurns[0]!;
+      yield* Queue.offer(events, {
+        type: "provider_turn.updated",
+        driver,
+        providerTurn: { ...turn, status: "completed", completedAt: yield* DateTime.now },
+      });
+      yield* Queue.offer(events, {
+        type: "turn.terminal",
+        driver,
+        providerThreadId: turn.providerThreadId,
+        providerTurnId: turn.id,
+        runOrdinal: first.runOrdinal,
+        status: "completed",
+        failure: null,
+        threadDisposition: "reusable",
+      });
+      yield* Fiber.join(settled);
+      yield* worker.drain();
+      yield* orchestrator.resumeQueuedRuns;
+      yield* worker.drain();
+
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(started.length, 1);
+      assert.deepEqual(
+        projection.runs.map((run) => run.id),
+        [first.runId],
+      );
+      assert.deepEqual(
+        projection.turnItems.flatMap((item) =>
+          item.type === "user_message" && item.messageId === messageId
+            ? [item.status]
+            : item.type === "system_notice" && item.title === "Message dropped"
+              ? [item.type]
+              : [],
+        ),
+        ["cancelled", "system_notice"],
+      );
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
 const declinedSteerTimings = [
   "complete",
   "stop-before-decline",

@@ -6441,6 +6441,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ...(input.senderThreadId === undefined ? {} : { senderThreadId: input.senderThreadId }),
           ...(input.linkedSender === undefined ? {} : { linkedSender: input.linkedSender }),
           ...(input.idleCompaction === undefined ? {} : { idleCompaction: input.idleCompaction }),
+          ...(input.command.type === "message.dispatch" && input.command.expireOnTurnEnd === true
+            ? { expireOnTurnEnd: true as const }
+            : {}),
           id: input.messageId,
           threadId: input.command.threadId,
           runId: messageInput.runId,
@@ -7082,6 +7085,84 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     return thread;
   });
 
+  // A message that expires with its turn and was not read there is dropped, not sent again.
+  const dropExpiredMessage = Effect.fn("Orchestrator.dropExpiredMessage")(function* (
+    command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
+    projection: Pick<OrchestrationV2ThreadProjection, "thread">,
+    message: OrchestrationV2ConversationMessage | undefined,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const now = yield* DateTime.now;
+    const pending =
+      message?.runId == null
+        ? undefined
+        : yield* projectionStore
+            .getThreadRecords(command.threadId, ["runs", "turnItems"], {
+              turnItemTypes: ["user_message"],
+              turnItemRunIds: [message.runId],
+            })
+            .pipe(mapDispatchError(command));
+    const item = pending?.turnItems.find(
+      (candidate) => candidate.type === "user_message" && candidate.messageId === message?.id,
+    );
+    const run = pending?.runs.find((candidate) => candidate.id === message?.runId);
+    if (message === undefined || item === undefined || run === undefined) {
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        occurredAt: now,
+        payload: projection.thread,
+      });
+      return;
+    }
+    const itemEvent = {
+      threadId: command.threadId,
+      runId: run.id,
+      ...(item.nodeId === null ? {} : { nodeId: item.nodeId }),
+      providerInstanceId: run.providerInstanceId,
+      occurredAt: now,
+    };
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      ...itemEvent,
+      payload: { ...item, status: "cancelled" as const, completedAt: now, updatedAt: now },
+    });
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "turn-item.updated",
+      ...itemEvent,
+      payload: {
+        id: idAllocator.derive.runSignalTurnItem({
+          runId: run.id,
+          signal: `expired-message:${message.id}`,
+        }),
+        threadId: command.threadId,
+        runId: run.id,
+        nodeId: item.nodeId,
+        providerThreadId: item.providerThreadId ?? null,
+        providerTurnId: item.providerTurnId ?? null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: item.ordinal,
+        type: "system_notice" as const,
+        status: "completed" as const,
+        title: "Message dropped",
+        message: `The turn ended before the agent read this message, and it was sent to expire with that turn: "${message.text}"`,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      },
+    });
+  });
+
   const dispatchMessage = Effect.fn("Orchestrator.dispatchMessage")(function* (
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
@@ -7110,6 +7191,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           }
         : undefined,
     );
+    const expiredMessage = projection.messages.find(
+      (message) => message.id === command.messageId && message.expireOnTurnEnd === true,
+    );
+    if (expiredMessage !== undefined) {
+      yield* dropExpiredMessage(command, projection, expiredMessage, events);
+      return;
+    }
     if (command.steerFollowUpOfRunId !== undefined) {
       const source = projection.runs.find((run) => run.id === command.steerFollowUpOfRunId);
       if (
@@ -7840,6 +7928,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             payload: { ...sourcePlan, status: "completed" },
           });
 
+    if (command.expireOnTurnEnd === true) {
+      const resolvedMode = dispatchMode;
+      const steerTarget =
+        resolvedMode.type === "steer_active"
+          ? projection.runs.find((run) => run.id === resolvedMode.targetRunId)
+          : undefined;
+      const turnRunning =
+        (steerTarget?.status === "running" || steerTarget?.status === "waiting") &&
+        projection.providerTurns.some(
+          (turn) => turn.runAttemptId === steerTarget.activeAttemptId && turn.status === "running",
+        );
+      if (!turnRunning) {
+        yield* dropExpiredMessage(command, projection, undefined, events);
+        return;
+      }
+    }
     let steerWhenReadyRunId: RunId | undefined;
     if (dispatchMode.type === "steer_active") {
       const targetRunId = dispatchMode.targetRunId;

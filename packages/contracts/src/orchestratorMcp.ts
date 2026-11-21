@@ -620,6 +620,12 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
         "JSON Schema for a result the turn must return as data, read back as `output` from `t3_thread_wait`. Never steers.",
     }),
   ),
+  expireOnTurnEnd: Schema.optional(
+    Schema.Boolean.annotate({
+      description:
+        "For a correction to the running turn: steer only. If that turn ends before reading it, drop it (`delivery:'dropped'`) instead of starting a new turn.",
+    }),
+  ),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
@@ -631,7 +637,7 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
   runId: RunId,
   taskId: Schema.optional(NodeId),
   status: OrchestrationV2RunStatus,
-  delivery: Schema.Literals(["started", "queued", "steered", "restarted"]),
+  delivery: Schema.Literals(["started", "queued", "steered", "restarted", "dropped"]),
 });
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 
@@ -665,6 +671,9 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
   resultRun: Schema.optional(Schema.Struct({ runId: RunId, status: OrchestrationV2RunStatus })),
   /** What the run returned against the `outputSchema` it was sent with. Absent until submitted. */
   output: Schema.optional(Schema.Json),
+  /** A message for the caller arrived before the run finished; `waitingMessages` wait unread. */
+  interruptedByIncomingMessage: Schema.optional(Schema.Literal(true)),
+  waitingMessages: Schema.optional(NonNegativeInt),
 });
 export type OrchestratorMcpThreadWaitResult = typeof OrchestratorMcpThreadWaitResult.Type;
 

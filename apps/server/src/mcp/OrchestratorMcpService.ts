@@ -296,6 +296,8 @@ export function threadManagementFailure(error: unknown): OrchestratorMcpFailure 
     case "ThreadManagementThreadArchivedError":
     case "ThreadManagementWorktreeRestoreError":
       return failure("thread_not_sendable", error.message);
+    case "ThreadManagementMessageDroppedError":
+      return failure("thread_not_sendable", error.message);
     case "ThreadManagementNoSteerableRunError":
       return failure(
         "thread_not_sendable",
@@ -3356,14 +3358,27 @@ const make = Effect.gen(function* () {
         const stopped = yield* threadManagement
           .getThreadRecords(childThreadId, ["runs"])
           .pipe(Effect.mapError(threadManagementFailure));
-        for (const run of stopped.runs) {
+        const queuedRuns = stopped.runs.filter((run) => run.status === "queued");
+        const queuedMessages =
+          queuedRuns.length === 0
+            ? []
+            : (yield* threadManagement
+                .getThreadRecords(childThreadId, ["messages"], {
+                  messageIds: queuedRuns.map((run) => run.userMessageId),
+                })
+                .pipe(Effect.mapError(threadManagementFailure))).messages;
+        const agentSent = new Set(
+          queuedMessages.flatMap((message) => (message.createdBy === "agent" ? [message.id] : [])),
+        );
+        for (const run of queuedRuns) {
           if (
-            run.status !== "queued" ||
-            (run.delegatedTaskId !== input.taskId && run.id !== current.childRunId)
+            run.delegatedTaskId !== input.taskId &&
+            run.id !== current.childRunId &&
+            !agentSent.has(run.userMessageId)
           )
             continue;
-          // Stop preserves the queue for Resume. Cancelling a task must also
-          // remove that task's queued turn, including a previously held one.
+          // Stop preserves the queue for Resume. Cancelling a task must also remove that
+          // task's queued turns, held ones included, and what agents queued there; the user's stay.
           yield* threadManagement
             .dispatch({
               type: "queued-run.cancel",
@@ -4067,13 +4082,25 @@ const make = Effect.gen(function* () {
       yield* assertTargetWithinLimits(limits, target.thread);
 
       const mode = input.mode ?? "auto";
+      if (
+        input.expireOnTurnEnd === true &&
+        (mode === "queue" ||
+          mode === "restart" ||
+          input.freshContext === true ||
+          input.outputSchema !== undefined)
+      ) {
+        return yield* failure(
+          "invalid_request",
+          "`expireOnTurnEnd` only steers the running turn: use it with mode `auto` or `steer`, without `freshContext` or `outputSchema`.",
+        );
+      }
       const key = yield* requestKey(input.clientRequestId);
       const messageId = stableOperationMessageId({
         scope,
         requestKey: key,
         operation: "thread-send",
       });
-      const result = yield* threadManagement
+      const outcome = yield* threadManagement
         .sendToThread({
           projectId: target.thread.projectId,
           commandId: stableCommandId({
@@ -4093,10 +4120,18 @@ const make = Effect.gen(function* () {
           mode,
           ...(input.freshContext ? { freshContext: true } : {}),
           ...(input.outputSchema === undefined ? {} : { outputSchema: input.outputSchema }),
+          ...(input.expireOnTurnEnd === true ? { expireOnTurnEnd: true } : {}),
           createdBy: "agent",
           creationSource: "mcp",
         })
         .pipe(
+          Effect.map((sent) => ({ sent, droppedRun: undefined })),
+          Effect.catchTags({
+            ThreadManagementMessageDroppedError: (error) =>
+              error.run === null
+                ? Effect.fail(error)
+                : Effect.succeed({ sent: undefined, droppedRun: error.run }),
+          }),
           Effect.mapError((error) =>
             isThreadManagementError(error)
               ? threadManagementFailure(error)
@@ -4106,6 +4141,17 @@ const make = Effect.gen(function* () {
                 ),
           ),
         );
+      if (outcome.droppedRun !== undefined) {
+        return {
+          threadId: input.threadId,
+          link: threadLinkFor(scope, input.threadId, target.thread.title),
+          messageId,
+          runId: outcome.droppedRun.id,
+          status: outcome.droppedRun.status,
+          delivery: "dropped",
+        } satisfies OrchestratorMcpThreadSendResult;
+      }
+      const result = outcome.sent;
       const sent = {
         threadId: input.threadId,
         link: threadLinkFor(scope, input.threadId, target.thread.title),
@@ -4136,8 +4182,19 @@ const make = Effect.gen(function* () {
           ),
           ...(input.untilDelegatedWorkSettled === true ? { untilDelegatedWorkSettled: true } : {}),
           ...(input.untilOutput === true ? { untilOutput: true } : {}),
+          ...(scope.thread === undefined ? {} : { interruptOnMessageTo: scope.thread.threadId }),
         })
         .pipe(Effect.mapError(threadManagementFailure));
+      if (result.waitingMessages !== undefined) {
+        return {
+          threadId: input.threadId,
+          runId: result.run?.id ?? null,
+          status: result.run === null ? "idle" : runOutcome(result.run),
+          timedOut: false,
+          interruptedByIncomingMessage: true,
+          waitingMessages: result.waitingMessages,
+        } satisfies OrchestratorMcpThreadWaitResult;
+      }
       const status = result.run === null ? "idle" : runOutcome(result.run);
       const taskId = result.run?.delegatedTaskId;
       const ownedTask =

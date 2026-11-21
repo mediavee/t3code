@@ -1478,6 +1478,8 @@ export const OrchestrationV2ConversationMessage = Schema.Struct({
    * the workflow's opening instead and keep the script behind a disclosure.
    */
   workflowScript: Schema.optional(Schema.Boolean),
+  /** Steered into a running turn; dropped, not run as a new turn, if that turn ends unread. */
+  expireOnTurnEnd: Schema.optional(Schema.Literal(true)),
   id: MessageId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
@@ -3492,6 +3494,8 @@ export const OrchestrationV2Command = Schema.Union([
     freshContext: Schema.optional(Schema.Boolean),
     /** Asks the run for a result as data matching this JSON Schema. Never steers. */
     outputSchema: Schema.optional(Schema.Record(Schema.String, Schema.Json)),
+    /** Only steers a running turn: dropped instead of queued or started when none can take it. */
+    expireOnTurnEnd: Schema.optional(Schema.Literal(true)),
     commandId: CommandId,
     threadId: ThreadId,
     messageId: MessageId,
