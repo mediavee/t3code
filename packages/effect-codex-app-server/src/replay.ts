@@ -249,9 +249,15 @@ function recorderThreadConfigKeys(transcript: CodexAppServerReplayTranscript): R
   return new Set(Array.isArray(keys) ? keys.filter((key) => typeof key === "string") : []);
 }
 
+const MACHINE_LOCAL_SHELL_ENVIRONMENT_KEYS = new Set(
+  ["T3CODE_THREAD_ID", "TMPDIR", "TMP", "TEMP"].map(
+    (name) => `shell_environment_policy.set.${name}`,
+  ),
+);
+
 /**
  * `cwd`, `model`, host-supplied MCP servers (machine-local URLs, short-lived
- * authorization headers) and the T3 thread id vary per machine or run, and
+ * authorization headers), the T3 thread id and its temp directory vary per machine or run, and
  * recorder-only keys are not the client's. The config read before a thread
  * request carries the same `cwd`.
  */
@@ -282,7 +288,7 @@ function normalizeThreadRequest(frame: unknown, ignoredConfigKeys: ReadonlySet<s
       ([key]) =>
         key !== "mcp_servers" &&
         !key.startsWith("mcp_servers.") &&
-        key !== "shell_environment_policy.set.T3CODE_THREAD_ID",
+        !MACHINE_LOCAL_SHELL_ENVIRONMENT_KEYS.has(key),
     ),
   );
   for (const key of ignoredConfigKeys) delete owned[key];

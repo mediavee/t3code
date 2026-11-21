@@ -699,9 +699,18 @@ export const layer: Layer.Layer<
                 return dismissed;
               }
               const occurredAt = yield* DateTime.now;
-              const reported = (yield* agentScope.oomKilled(input.threadId))
-                ? { ...input.event.failure, message: "Killed: out of memory.", code: "oom_kill" }
-                : input.event.failure;
+              const oomKill = yield* agentScope.oomKilled(input.threadId);
+              const reported =
+                oomKill === false
+                  ? input.event.failure
+                  : {
+                      ...input.event.failure,
+                      message:
+                        oomKill.memoryMaxGiB === null
+                          ? "Killed: out of memory."
+                          : `Killed: out of memory under the ${oomKill.memoryMaxGiB} GiB per-agent memory ceiling.`,
+                      code: "oom_kill",
+                    };
               // A proxied CLI can drop the reset time; the hub still knows when its pool refills.
               const endpoint =
                 reported.class === "usage_limit" && reported.resetAt == null

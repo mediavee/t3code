@@ -54,6 +54,14 @@ t3 service protect
 
 It previews system changes, asks for confirmation and `sudo`, and optionally protects Tailscale and SSH too. Run `t3 service restart` for OOM-killer protection to take effect, or `t3 service protect --undo` to remove it.
 
+To stop one agent from taking the memory others need, set **Settings → Maintenance → Agent
+memory ceiling** (Linux with a systemd user session only). Each agent and the commands it runs
+then share that much memory, without swap; past it the agent is stopped and its turn fails with
+a message naming the ceiling. Each thread's agent also gets `TMPDIR` set to its own folder,
+`userdata/thread-tmp/<thread>` in the T3 home folder, on disk rather than in a RAM-backed `/tmp`.
+Archiving or deleting the thread deletes that folder. A `TMPDIR` set in a provider's environment
+variables takes precedence.
+
 ## Troubleshooting
 
 Run `t3 service status` on the host to see the log path and health checks:

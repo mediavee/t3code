@@ -10,6 +10,7 @@ import { parseAttachmentFileExtension, resolveAttachmentPathById } from "../atta
 import * as ServerConfig from "../config.ts";
 import * as DeviceService from "../device/DeviceService.ts";
 import * as PreviewManager from "../preview/Manager.ts";
+import { removeThreadTempEntry, threadTempDirectoryName } from "../process/agentScope.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 
@@ -25,6 +26,7 @@ export class ResourceCleanupError extends Schema.TaggedError<ResourceCleanupErro
 
 export class ResourceCleanupService extends Context.Reference<{
   readonly cleanupScheduledTasks: (threadId: ThreadId) => Effect.Effect<void, ResourceCleanupError>;
+  /** Archive and delete run this per-thread teardown; it also removes the thread's temp directory. */
   readonly cleanupTerminals: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
   readonly cleanupPreviews: (threadId: string) => Effect.Effect<void, ResourceCleanupError>;
   /** Releases the thread's device claims, as `device_close` does; the devices stay booted. */
@@ -67,13 +69,16 @@ export const layer = Layer.effect(
       cleanupTerminals: Effect.fn("ResourceCleanupService.cleanupTerminals")(function (
         threadId: string,
       ) {
-        return terminals
-          .close({ threadId, deleteHistory: true })
-          .pipe(
-            Effect.mapError(
-              (cause) => new ResourceCleanupError({ operation: "terminal", threadId, cause }),
+        return terminals.close({ threadId, deleteHistory: true }).pipe(
+          Effect.andThen(
+            removeThreadTempEntry(config.stateDir, threadTempDirectoryName(threadId)).pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
             ),
-          );
+          ),
+          Effect.mapError(
+            (cause) => new ResourceCleanupError({ operation: "terminal", threadId, cause }),
+          ),
+        );
       }),
       cleanupPreviews: Effect.fn("ResourceCleanupService.cleanupPreviews")(function (
         threadId: string,
