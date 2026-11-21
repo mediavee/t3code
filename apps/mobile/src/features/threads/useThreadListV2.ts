@@ -6,7 +6,7 @@ import { useMemo, useState, useSyncExternalStore } from "react";
 import { keepMarked } from "../../i18n/messages";
 import { scopedProjectKey } from "../../lib/scopedEntities";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../../state/olderSettledShelf";
-import { steadyDelegatedTaskGroupsAtom } from "../../state/threads";
+import { steadyDelegatedTaskGroupsAtom, steadyQuietThreadShellsAtom } from "../../state/threads";
 import type { PendingNewTask } from "../../state/use-pending-new-tasks";
 import {
   buildThreadListV2Items,
@@ -135,6 +135,8 @@ export function useThreadListV2(input: {
   });
   const { isListed, unloadedCount } = olderSettledShelf;
   const delegatedTaskGroups = useAtomValue(steadyDelegatedTaskGroupsAtom);
+  // The server counts tasks shown under a parent too, so every held row counts against it.
+  const heldThreads = useAtomValue(steadyQuietThreadShellsAtom);
   const [expandedDelegatedGroupKeys, setExpandedDelegatedGroupKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -169,15 +171,7 @@ export function useThreadListV2(input: {
         delegatedTaskGroups,
         expandedDelegatedGroupKeys,
         unloadedSettledCount: unloadedCount(
-          threads.filter(
-            (thread) =>
-              thread.archivedAt === null &&
-              scopes.some(
-                (scope) =>
-                  scope.environmentId === thread.environmentId &&
-                  (scope.projectIds === null || scope.projectIds.includes(thread.projectId)),
-              ),
-          ),
+          heldThreads.filter((thread) => thread.archivedAt === null),
         ),
       }),
     [
@@ -201,7 +195,7 @@ export function useThreadListV2(input: {
       input.selectedThreadKey,
       isListed,
       unloadedCount,
-      scopes,
+      heldThreads,
       delegatedTaskGroups,
       expandedDelegatedGroupKeys,
     ],
