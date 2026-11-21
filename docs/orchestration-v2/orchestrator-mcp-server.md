@@ -265,7 +265,9 @@ child would ask for approval on every command. `orchestrator_capabilities`
 lists `runtimeModes` only for a provider that offers some of the modes, and
 omits it for a provider that offers all of them. When the target lists
 `runtimeModes`, an explicit `runtimeMode` outside that list is refused, and an
-inherited mode steps down to the broadest mode the target offers.
+inherited mode steps down to the broadest mode the target offers, and the
+`delegate_task`, `create_threads` and `t3_thread_launch` results report it as
+`runtimeModeSteppedDown: { asked, applied }`.
 
 Each independent delegated review round uses a new `delegate_task` call with the
 original brief, prior findings, responses, and unresolved objections. Track each
@@ -289,10 +291,23 @@ left. A pending blocking question also ends the wait with `hasPendingQuestion: t
 `waitTimedOut: false`.
 If `hasPendingQuestion`, pass `threadId=childThreadId` to `t3_pending_request` with
 action `list`, `read` (with `requestId`), or `respond`, or ask the user; the task's completion still wakes this thread. A pending live approval for the
-task's own unfinished work also ends the wait. Its identity appears in `pendingApproval`;
-it grants no approval authority. Read the fresh full request in the child thread before
+task's own unfinished work also ends the wait. Its identity appears in `pendingApproval`.
+Read the fresh full request in the child thread before
 responding, since the durable record can outlive its provider callback. Async questions
 do not end the wait.
+
+Outside a blocking wait, a child's pending question or approval wakes its parent with a
+queued message; for an approval it carries the kind, the command or path, and the
+provider's reason. That holds for a task in this project, in another project here, and in a
+linked environment, whose follower learns of it through its `t3_thread_wait` there. The
+wake is cancelled when the request is answered first. Only the delegating thread may answer
+a child's approval with `t3_pending_request` (`decision`: `accept`, `acceptForSession` where
+the provider offers it, or `decline`), and only within what its own modes would allow it to
+do: below full access it may accept file reads and edits from `auto-accept-edits` up, and
+nothing in plan mode. An approval raised despite full access (`fullAccessOverride`: the user's
+ask rule or a provider check) only the user can accept. Over a link, the child must also have
+been started by that link's session, since the sender thread header is the caller's own claim.
+The user can still answer in the child thread; the first answer wins.
 
 ### `task_status`
 

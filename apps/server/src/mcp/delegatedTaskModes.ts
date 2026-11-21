@@ -74,6 +74,16 @@ export function resolveRuntimeMode(
   );
 }
 
+/** The mode `resolveRuntimeMode` applied and the one asked for or inherited, when its provider stepped it down. */
+export function runtimeModeSteppedDown(
+  parentMode: RuntimeMode,
+  requested: OrchestratorMcpRuntimeMode | undefined,
+  applied: RuntimeMode,
+): { readonly runtimeModeSteppedDown?: { asked: RuntimeMode; applied: RuntimeMode } } {
+  const asked = requested === undefined || requested === "inherit" ? parentMode : requested;
+  return asked === applied ? {} : { runtimeModeSteppedDown: { asked, applied } };
+}
+
 /** The same, for interaction modes. */
 export function resolveInteractionMode(
   parentMode: ProviderInteractionMode,

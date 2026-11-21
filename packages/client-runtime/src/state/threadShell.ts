@@ -168,6 +168,7 @@ const asksParent = (thread: OrchestrationV2ThreadShell) =>
  * own subagents, asks.
  */
 function pendingSubagentRequestsByThread(
+  environmentId: EnvironmentId,
   threads: ReadonlyArray<OrchestrationV2ThreadShell>,
   delegated: ReadonlyArray<{
     readonly parentThreadId: ThreadId;
@@ -186,11 +187,16 @@ function pendingSubagentRequestsByThread(
       if (requests.get(parentId) !== "approval") requests.set(parentId, request);
       const parent = byId.get(parentId);
       parentId =
-        parent?.lineage.relationshipToParent === "subagent" || parent?.lineage.sideChat === true
-          ? parent.lineage.parentThreadId
-          : null;
+        parent === undefined
+          ? null
+          : parent.lineage.relationshipToParent === "subagent" || parent.lineage.sideChat === true
+            ? parent.lineage.parentThreadId
+            : localDelegator(parent);
     }
   };
+  // A task delegated to another project here has no lineage parent, only `delegatedFrom`.
+  const localDelegator = (thread: OrchestrationV2ThreadShell) =>
+    thread.delegatedFrom?.environmentId === environmentId ? thread.delegatedFrom.threadId : null;
   for (const child of threads) {
     const parentId = child.lineage.parentThreadId;
     if (child.lineage.sideChat === true) {
@@ -200,9 +206,11 @@ function pendingSubagentRequestsByThread(
       }
       continue;
     }
-    if (child.lineage.relationshipToParent !== "subagent") continue;
+    const delegatorId =
+      child.lineage.relationshipToParent === "subagent" ? parentId : localDelegator(child);
+    if (delegatorId === null) continue;
     const request = rolledUpRequest(child, subagentRequest(child));
-    if (request !== null) flag(parentId, request, new Set([child.id]));
+    if (request !== null) flag(delegatorId, request, new Set([child.id]));
   }
   for (const task of delegated) flag(task.parentThreadId, task.request, new Set());
   return requests.size === 0 ? EMPTY_SUBAGENT_REQUESTS : requests;
@@ -351,7 +359,10 @@ export function createEnvironmentThreadShellAtoms(input: {
   const localSubagentRequestsAtom = Atom.family((environmentId: EnvironmentId) => {
     let previous: ReadonlyMap<ThreadId, RolledUpRequest> = EMPTY_SUBAGENT_REQUESTS;
     return Atom.make((get) => {
-      const next = pendingSubagentRequestsByThread(get(environmentThreadsAtom(environmentId)));
+      const next = pendingSubagentRequestsByThread(
+        environmentId,
+        get(environmentThreadsAtom(environmentId)),
+      );
       if (sameRequests(previous, next)) return previous;
       previous = next;
       return next;
@@ -395,6 +406,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         });
         if (delegated.length === 0) continue;
         const requests = pendingSubagentRequestsByThread(
+          environmentId,
           get(environmentThreadsAtom(environmentId)),
           delegated,
         );

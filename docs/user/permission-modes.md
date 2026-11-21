@@ -11,7 +11,7 @@ Configure the default for new threads in **Settings → Threads → New threads 
 | **Auto**              | Uses the provider's automatic review to approve routine actions and ask about risky ones. |
 | **Full access**       | Runs commands and edits without approval prompts.                                         |
 
-Permission modes never stop an agent from asking clarifying questions. Subagent approval requests appear in the parent conversation with the subagent's name so you can approve without switching threads.
+Permission modes never stop an agent from asking clarifying questions. Subagent approval requests appear in the parent conversation with the subagent's name so you can approve without switching threads. A delegated task's approval request also reaches the agent that delegated it, which can approve it only if its own permission mode would allow the action, or decline it. A request your own ask rules raised despite full access waits for you. Whichever answer comes first applies.
 
 ## Git push hooks below Full access
 
