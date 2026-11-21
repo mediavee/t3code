@@ -823,20 +823,31 @@ const isAgentDrivenTurn = (input: {
   (input.appThread !== undefined &&
     (input.appThread.createdBy === "agent" || isDelegatedAppThread(input.appThread)));
 
-/**
- * Whether the thread's Codex session runs a plugin's MCP server or a callable app, whose access
- * prompts `never` would decline. Codex servers the user configured outside plugins are not counted.
- */
-export const codexSessionHasPromptingTools = (
-  servers: CodexSchema.V2ListMcpServerStatusResponse,
-  apps: CodexSchema.V2AppsInstalledResponse,
-) =>
+/** An enabled, callable app in the thread's Codex session, whose access prompts `never` declines. */
+export const codexHasPromptingApp = (apps: CodexSchema.V2AppsInstalledResponse) =>
+  apps.apps.some((app) => app.enabled && app.callable);
+
+// A disabled, cancelled, failed or unauthenticated server asks nothing, so it must not bring back
+// the command prompts `granular` adds.
+const runningServerStatuses: ReadonlySet<string | null | undefined> = new Set([
+  undefined,
+  null,
+  "notStarted",
+  "starting",
+  "connected",
+]);
+
+/** A running plugin MCP server in the session; servers configured outside plugins do not count. */
+export const codexHasPromptingPluginServer = (servers: CodexSchema.V2ListMcpServerStatusResponse) =>
   servers.data.some(
     (server) =>
       server.pluginId !== undefined &&
       server.pluginId !== null &&
-      server.runtimeStatus !== "failed",
-  ) || apps.apps.some((app) => app.enabled && app.callable);
+      runningServerStatuses.has(server.runtimeStatus),
+  );
+
+/** `mcpServerStatus/list` handshakes with every server not yet connected, up to 30 s each. */
+const CODEX_TOOL_LISTING_TIMEOUT = "2 seconds";
 
 export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
   function* (input: {
@@ -849,7 +860,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     readonly scheduled?: boolean;
     readonly hasT3Mcp?: boolean;
     readonly browserToolsAvailable?: boolean;
-    /** The Codex session's own plugins or apps that ask the user, see `codexSessionHasPromptingTools`. */
+    /** The Codex session's own apps or plugin servers that ask the user, see `codexHasPromptingApp`. */
     readonly codexPromptingTools?: boolean;
     readonly deviceToolsAvailable?: boolean;
     /** ChatGPT token sharing does not accept service tiers. */
@@ -7806,28 +7817,37 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             const scheduled = turnInput.message.scheduledTaskId !== undefined;
             const browserToolsAvailable = mcpSession?.browserToolsAvailable ?? true;
             // Only a watched full-access turn without T3's browser can lose a prompt to `never`.
+            // Each listing is bounded and falls back alone, so one failing never hides the other.
+            const listed = <A, E>(method: string, request: Effect.Effect<A, E>) =>
+              request.pipe(
+                Effect.timeoutOption(CODEX_TOOL_LISTING_TIMEOUT),
+                Effect.orElseSucceed(() => Option.none<A>()),
+                Effect.tap((result) =>
+                  Option.isNone(result)
+                    ? Effect.logDebug(`Codex ${method} failed or timed out.`)
+                    : Effect.void,
+                ),
+              );
+            // Only a watched full-access turn without T3's browser can lose a prompt to `never`.
             const codexPromptingTools =
               turnInput.runtimePolicy.runtimeMode === "full-access" &&
               turnInput.runtimePolicy.approvalPolicy === undefined &&
               !browserToolsAvailable &&
               !isAgentDrivenTurn({ appThread: turnInput.appThread, scheduled })
-                ? yield* client
-                    .request("mcpServerStatus/list", {
-                      threadId,
-                      detail: "toolsAndAuthOnly",
-                    })
-                    .pipe(
-                      Effect.flatMap((servers) =>
-                        client
-                          .request("app/installed", { threadId })
-                          .pipe(Effect.map((apps) => codexSessionHasPromptingTools(servers, apps))),
-                      ),
-                      Effect.catch(() =>
-                        Effect.logDebug("Codex plugin and app listing failed.").pipe(
-                          Effect.as(false),
-                        ),
-                      ),
-                    )
+                ? Option.exists(
+                    yield* listed("app/installed", client.request("app/installed", { threadId })),
+                    codexHasPromptingApp,
+                  ) ||
+                  Option.exists(
+                    yield* listed(
+                      "mcpServerStatus/list",
+                      client.request("mcpServerStatus/list", {
+                        threadId,
+                        detail: "toolsAndAuthOnly",
+                      }),
+                    ),
+                    codexHasPromptingPluginServer,
+                  )
                 : false;
             const models = adapterOptions.models === undefined ? [] : yield* adapterOptions.models;
             const configuredReasoningSummary = yield* client
