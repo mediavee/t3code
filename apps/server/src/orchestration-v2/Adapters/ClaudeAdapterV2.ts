@@ -1543,11 +1543,20 @@ export const layerQueryRunner: Layer.Layer<
             : messages.findIndex((message) => message.uuid === resumeSessionAt) + 1;
         resumeSessionAt = claudeResumeSessionAt(messages.slice(0, boundary)) ?? resumeSessionAt;
       }
+      const baseEnv = sdkOptions.env ?? hostEnvironment;
+      // Set here rather than by the scope wrapper, so script entries get it and the task output tail finds it.
+      const tempDirectory = yield* agentScope.threadTemp({
+        threadId: input.threadId,
+        env: baseEnv,
+      });
       const queryOptions = {
         ...sdkOptions,
         ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
         env: {
-          ...(sdkOptions.env ?? hostEnvironment),
+          ...baseEnv,
+          ...(tempDirectory === undefined
+            ? {}
+            : { TMPDIR: tempDirectory, TMP: tempDirectory, TEMP: tempDirectory }),
           ...(input.resume
             ? {
                 CLAUDE_CODE_RESUME_INTERRUPTED_TURN: "1",
@@ -13178,6 +13187,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             status: "active",
           });
           const closed = yield* Deferred.make<void, never>();
+          // The query runner points the CLI's TMPDIR at the same thread directory.
+          const threadTempDirectory = yield* (yield* AgentScope).threadTemp({
+            threadId: turnInput.threadId,
+            env: adapterOptions.environment,
+          });
+          const taskOutputEnvironment =
+            threadTempDirectory === undefined
+              ? adapterOptions.environment
+              : { ...adapterOptions.environment, TMPDIR: threadTempDirectory };
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
             nativeThreadId,
@@ -13204,7 +13222,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ),
             modelLedger: new Map(),
             taskOutputRoot: claudeTaskOutputRoot(
-              adapterOptions.environment,
+              taskOutputEnvironment,
               path,
               resolvedTurnCwd,
               hostPlatform,

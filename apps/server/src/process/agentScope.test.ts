@@ -596,6 +596,32 @@ describe("AgentScope service", () => {
     ),
   );
 
+  it.effect("leaves shared processes, missing commands and odd paths to the caller", () =>
+    withFakeSystemd(
+      ({ scope, stateDir, bin }) =>
+        Effect.gen(function* () {
+          const codex = yield* launchCodex(scope, "a");
+          expect(codex.args.join(" ")).not.toMatch(/TMPDIR=|MemoryMax/);
+
+          const missing = yield* scope.wrap({
+            command: "absent",
+            args: ["x"],
+            name: "t",
+            threadId: "b",
+          });
+          expect(missing).toEqual({ command: "absent", args: ["x"] });
+          expect(NodeFS.existsSync(threadTempDirectory(stateDir, "b"))).toBe(false);
+
+          const odd = NodePath.join(bin, "a=b");
+          NodeFS.writeFileSync(odd, "", { mode: 0o755 });
+          const launch = yield* scope.wrap({ command: odd, args: [], name: "t", threadId: "c" });
+          const command = launch.args.slice(launch.args.indexOf("--") + 1);
+          expect(command.slice(4)).toEqual(["/bin/sh", "-c", 'exec "$@"', "t3-agent", odd]);
+        }),
+      { memoryMaxGiB: 4 },
+    ),
+  );
+
   it.effect("launches without a memory ceiling by default", () =>
     withFakeSystemd(({ scope }) =>
       Effect.gen(function* () {

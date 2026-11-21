@@ -8,6 +8,7 @@ import { useSearchableSetting } from "./settingsSearch";
 import {
   useScopedSettings,
   useScopedSettingsMixed,
+  useScopedSettingsWriteAllowed,
   useUpdateScopedSettings,
 } from "./useScopedSettings";
 
@@ -20,6 +21,7 @@ export function AgentMemorySection() {
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const mixed = useScopedSettingsMixed(["agentMemoryMaxGiB"]);
+  const canWriteSettings = useScopedSettingsWriteAllowed();
   // Only Linux servers run agents in systemd scopes, where the ceiling applies.
   const supported =
     connectedEnvironments.length > 0 &&
@@ -48,7 +50,9 @@ export function AgentMemorySection() {
             : gt("Available on Linux servers, where agents run in systemd scopes.")
         }
         resetAction={
-          supported && value !== DEFAULT_SERVER_SETTINGS.agentMemoryMaxGiB ? (
+          supported &&
+          canWriteSettings &&
+          (mixed || value !== DEFAULT_SERVER_SETTINGS.agentMemoryMaxGiB) ? (
             <SettingResetButton
               ariaLabel={gt("Reset agent memory ceiling to default")}
               onClick={() =>
@@ -59,7 +63,7 @@ export function AgentMemorySection() {
         }
         control={
           <Select
-            disabled={!supported}
+            disabled={!supported || !canWriteSettings}
             value={mixed ? null : value === null ? "off" : String(value)}
             onValueChange={(next) => {
               if (next === null) return;

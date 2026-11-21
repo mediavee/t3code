@@ -3769,19 +3769,32 @@ describe("storage cleanup reports and local file policies", () => {
         const { service, fs, config, setThreads } = yield* cleanupFixture();
         const live = shell({ id: ThreadId.make("thread-live") });
         setThreads([live, shell({ id: ThreadId.make("thread-archived"), archivedAt: at(0) })]);
-        const directories = ["thread-live", "thread-archived", "thread-deleted", "thread-new"].map(
-          (id) => threadTempDirectory(config.stateDir, id),
-        );
+        const directories = [
+          "thread-live",
+          "thread-archived",
+          "thread-deleted",
+          "thread-new",
+          "thread-a-stuck",
+          ...Array.from({ length: 8 }, (_, index) => `thread-gone-${index}`),
+        ].map((id) => threadTempDirectory(config.stateDir, id));
+        // A read-only folder a tool left cannot be emptied; the sweep goes on past it.
+        const locked = `${directories[4]}/locked`;
+        yield* fs.makeDirectory(locked, { recursive: true });
+        yield* fs.writeFileString(`${locked}/file`, "x");
+        yield* fs.chmod(locked, 0o500);
         for (const directory of directories) {
           yield* fs.makeDirectory(directory, { recursive: true });
           if (!directory.endsWith("thread-new")) yield* fs.utimes(directory, 1, 1);
         }
         yield* service.runNow;
+        yield* fs.chmod(locked, 0o700);
         expect(yield* Effect.forEach(directories, (directory) => fs.exists(directory))).toEqual([
           true,
           false,
           false,
           true,
+          true,
+          ...Array.from({ length: 8 }, () => false),
         ]);
       }),
     ),

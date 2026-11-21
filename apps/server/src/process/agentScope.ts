@@ -12,6 +12,7 @@ import {
 } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { resolveCommandPath } from "@t3tools/shared/shell";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -66,7 +67,7 @@ export const removeThreadTempEntry = Effect.fn("agentScope.removeThreadTempEntry
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const root = threadTempRoot(stateDir);
-  if (name.length === 0 || name.includes("/") || name === "." || name === "..") return;
+  if (name.length === 0 || /[/\\]/.test(name) || name === "." || name === "..") return;
   if (!(yield* fileSystem.exists(root))) return;
   const realRoot = yield* fileSystem.realPath(root);
   const realParent = yield* fileSystem.realPath(stateDir);
@@ -152,57 +153,80 @@ export const make = Effect.gen(function* () {
   const { stateDir } = yield* ServerConfig.ServerConfig;
   const settings = yield* ServerSettings.ServerSettingsService;
 
-  // Agents on a shared host otherwise fill one TMPDIR, often a RAM tmpfs, and clean up each other's files.
-  const threadTempAssignments = Effect.fn("agentScope.threadTempAssignments")(function* (
-    threadId: string | undefined,
-    env: NodeJS.ProcessEnv | undefined,
-  ) {
-    if (threadId === undefined || setsOwnTempDirectory(env, hostEnvironment)) return [];
-    const directory = threadTempDirectory(stateDir, threadId);
-    const created = yield* fileSystem
-      .makeDirectory(directory, { recursive: true, mode: 0o700 })
-      .pipe(
-        Effect.as(true),
-        Effect.catch((cause) =>
-          Effect.logWarning("Could not create a thread temp directory", { threadId, cause }).pipe(
-            Effect.as(false),
-          ),
-        ),
-      );
-    return created ? TEMP_VARIABLES.map((name) => `${name}=${directory}`) : [];
-  });
-  // `env` applies the variables whatever environment the caller spawns with.
-  const withAssignments = (
-    command: string,
-    args: ReadonlyArray<string>,
-    assignments: ReadonlyArray<string>,
-  ): AgentScopeCommand =>
-    assignments.length === 0
-      ? { command, args }
-      : { command: "/usr/bin/env", args: [...assignments, command, ...args] };
-
-  if (platform === "win32") return AgentScope.defaultValue();
-  if (platform !== "linux") {
-    return {
-      ...AgentScope.defaultValue(),
-      wrap: Effect.fn("AgentScope.wrap")(function* ({ command, args, threadId, env }) {
-        return withAssignments(command, args, yield* threadTempAssignments(threadId, env));
-      }),
-    } satisfies AgentScopeShape;
-  }
-
-  const runner = yield* ProcessRunner.ProcessRunner;
   const path = yield* Path.Path;
-  const { hasOtherLiveOwner } = yield* ProviderProcesses.ProviderProcesses;
-  const ownedSlice = ownedAgentSlice(stateDir);
-  const layerScope = yield* Effect.scope;
-
   const resolve = (command: string, env: NodeJS.ProcessEnv) =>
     resolveCommandPath(command, { env }).pipe(
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
       Effect.provideService(HostProcess.Platform, platform),
     );
+
+  // Agents on a shared host otherwise fill one TMPDIR, often a RAM tmpfs, and clean up each other's files.
+  const threadTemp: AgentScopeShape["threadTemp"] = Effect.fn("AgentScope.threadTemp")(function* ({
+    threadId,
+    env,
+  }) {
+    if (setsOwnTempDirectory(env, hostEnvironment)) return undefined;
+    const directory = threadTempDirectory(stateDir, threadId);
+    // Node reads numeric times as seconds.
+    const now = (yield* Clock.currentTimeMillis) / 1000;
+    // A fresh mtime keeps the storage sweep's grace period from removing a reused directory.
+    return yield* fileSystem.makeDirectory(directory, { recursive: true, mode: 0o700 }).pipe(
+      Effect.andThen(fileSystem.utimes(directory, now, now)),
+      Effect.as(directory),
+      Effect.catch((cause) =>
+        Effect.logWarning("Could not create a thread temp directory", { threadId, cause }).pipe(
+          Effect.as(undefined),
+        ),
+      ),
+    );
+  });
+  const envCommand = (yield* fileSystem
+    .exists("/usr/bin/env")
+    .pipe(Effect.orElseSucceed(() => false)))
+    ? "/usr/bin/env"
+    : yield* resolve("env", hostEnvironment);
+  // A process serving several threads outlives any one of them; it gets each thread's
+  // directory through its own per-thread configuration instead.
+  const withThreadTemp = Effect.fn("agentScope.withThreadTemp")(function* (input: {
+    readonly command: string;
+    readonly args: ReadonlyArray<string>;
+    readonly threadId: string | undefined;
+    readonly env: NodeJS.ProcessEnv | undefined;
+    readonly shared: boolean | undefined;
+  }): Effect.fn.Return<AgentScopeCommand> {
+    const { command, args } = input;
+    if (input.threadId === undefined || input.shared === true || envCommand === null) {
+      return { command, args };
+    }
+    const directory = yield* threadTemp({ threadId: input.threadId, env: input.env });
+    if (directory === undefined) return { command, args };
+    // `env` would read a command path containing "=" as one more assignment.
+    const target = command.includes("=")
+      ? ["/bin/sh", "-c", 'exec "$@"', "t3-agent", command]
+      : [command];
+    return {
+      command: envCommand,
+      args: [...TEMP_VARIABLES.map((name) => `${name}=${directory}`), ...target, ...args],
+    };
+  });
+
+  if (platform === "win32") return AgentScope.defaultValue();
+  if (platform !== "linux") {
+    return {
+      ...AgentScope.defaultValue(),
+      threadTemp,
+      wrap: Effect.fn("AgentScope.wrap")(function* ({ command, args, threadId, env, shared }) {
+        if ((yield* resolve(command, env ?? hostEnvironment)) === null) return { command, args };
+        return yield* withThreadTemp({ command, args, threadId, env, shared });
+      }),
+    } satisfies AgentScopeShape;
+  }
+
+  const runner = yield* ProcessRunner.ProcessRunner;
+  const { hasOtherLiveOwner } = yield* ProviderProcesses.ProviderProcesses;
+  const ownedSlice = ownedAgentSlice(stateDir);
+  const layerScope = yield* Effect.scope;
 
   const run = (command: string, args: ReadonlyArray<string>) =>
     runner.run({ command, args, timeout: "5 seconds" }).pipe(Effect.option);
@@ -525,15 +549,14 @@ export const make = Effect.gen(function* () {
       shared,
     }) {
       const resolved = yield* resolve(command, env ?? hostEnvironment);
-      const assignments = yield* threadTempAssignments(threadId, env);
-      if (resolved === null) return withAssignments(command, args, assignments);
-      const launch = withAssignments(resolved, args, assignments);
+      if (resolved === null) return { command, args };
+      const launch = yield* withThreadTemp({ command: resolved, args, threadId, env, shared });
       const scope = yield* systemd;
       if (scope === undefined) return agentScopeCommand(launch);
       yield* scope.applyMemoryLimits;
-      // Terminals and thread-less shared servers stay unbounded; the slice still caps them.
+      // Terminals and shared servers stay unbounded; the slice still caps them.
       const memoryMaxGiB =
-        threadId === undefined
+        threadId === undefined || shared === true
           ? null
           : yield* settings.getSettings.pipe(
               Effect.map((current) => current.agentMemoryMaxGiB),
@@ -572,6 +595,7 @@ export const make = Effect.gen(function* () {
       };
       return { ...agentScopeCommand({ ...launch, scope: systemdScope }), unit };
     }),
+    threadTemp,
     oomKilled,
     stop,
     kill,

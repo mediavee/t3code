@@ -49,9 +49,8 @@ import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as AgentScopeLive from "../process/agentScope.ts";
 import * as ProviderProcesses from "../process/providerProcesses.ts";
-import { makeCodexAppServerSpawnCommand } from "./Adapters/CodexAdapterV2.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { ChildProcessSpawner } from "effect/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   CodexProviderCapabilitiesV2,
   normalizeCodexThreadLoadModelSelection,
@@ -1374,13 +1373,17 @@ it.live("ProviderSessionManagerV2 starts a thread's provider in that thread's te
     );
     const seen = yield* Deferred.make<string>();
     const spawnProvider = Effect.gen(function* () {
-      const command = yield* makeCodexAppServerSpawnCommand({
+      const launch = yield* agentScope.wrap({
         command: "sh",
         args: ["-c", 'printf %s "$TMPDIR"'],
+        name: "claude",
         threadId,
         env: sharedTempHostEnvironment,
       });
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const command = ChildProcess.make(launch.command, [...launch.args], {
+        env: sharedTempHostEnvironment,
+      });
       yield* Deferred.succeed(seen, yield* spawner.string(command));
     }).pipe(
       Effect.provideService(HostProcess.Platform, "linux"),

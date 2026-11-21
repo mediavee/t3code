@@ -1724,13 +1724,18 @@ const make = Effect.gen(function* () {
     );
     for (const name of yield* fs.readDirectory(root)) {
       if (active.has(name)) continue;
-      // A thread created after that read may already be using its new directory.
+      // Starting or resuming a thread after that read refreshes its directory's mtime.
       const modified = yield* fs.stat(path.join(root, name)).pipe(
         Effect.map((stat) => Option.getOrNull(stat.mtime)?.getTime() ?? 0),
         Effect.orElseSucceed(() => 0),
       );
       if (modified > now - THREAD_TEMP_GRACE_MS) continue;
-      yield* removeThreadTempEntry(config.stateDir, name);
+      // One unremovable entry, such as a read-only folder a tool left, must not stop the others.
+      yield* removeThreadTempEntry(config.stateDir, name).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("thread temp directory cleanup failed", { name, cause }),
+        ),
+      );
     }
   });
 
