@@ -376,6 +376,98 @@ it.effect("keeps one queued occurrence of a recurring task while its bound threa
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
 );
 
+it.effect("a fresh-session task queued behind its thread's run records the skip", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-07-01T09:00:00.000Z"));
+    const busy = { id: RunId.make("run:busy"), status: "running" } as OrchestrationV2Run;
+    const thread = yield* Ref.make<{
+      readonly runs: ReadonlyArray<OrchestrationV2Run>;
+      readonly messages: ReadonlyArray<OrchestrationV2ConversationMessage>;
+    }>({ runs: [busy], messages: [] });
+    const runDueWork = yield* Ref.make<Effect.Effect<void>>(Effect.void);
+    const layerDependencies = Layer.mergeAll(
+      NodeCrypto.layer,
+      ManagedPolicy.layerTest(),
+      Layer.mock(Scheduler.Scheduler)({
+        register: (name, work) =>
+          name !== "scheduled-tasks"
+            ? Effect.void
+            : Effect.context<Effect.Services<typeof work>>().pipe(
+                Effect.flatMap((context) =>
+                  Ref.set(runDueWork, work.pipe(Effect.provideContext(context), Effect.ignore)),
+                ),
+              ),
+      }),
+      Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
+      Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+        namedProjectsRoot: "/projects",
+        isScratchProject: () => Effect.succeed(false),
+      }),
+      Layer.mock(ThreadManagementService.ThreadManagementService)({
+        sendToThread: (input) =>
+          Ref.modify(thread, (current) => {
+            const run = {
+              id: RunId.make(`run:${input.messageId}`),
+              status: "queued",
+              userMessageId: input.messageId,
+            } as OrchestrationV2Run;
+            const message = {
+              id: input.messageId,
+              runId: run.id,
+              scheduledTaskId: input.scheduledTaskId,
+            } as OrchestrationV2ConversationMessage;
+            return [
+              {
+                delivery: "queued",
+                run,
+                message,
+              } as ThreadManagementService.ThreadManagementSendResult,
+              { runs: [...current.runs, run], messages: [...current.messages, message] },
+            ];
+          }),
+        getThreadRecords: () => Ref.get(thread) as never,
+        // No run matches the dispatched message, so the outcome follower stops there.
+        getProjectThreadRecords: () => Effect.succeed({ runs: [] } as never),
+        getThreadShell: () =>
+          Effect.succeed({
+            projectId: "project-busy-thread",
+            deletedAt: null,
+            archivedAt: null,
+          } as never),
+      }),
+      Layer.mock(SecretRequests.SecretRequests)({}),
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* ScheduledTaskService.ScheduledTaskService;
+      const { task } = yield* service.upsert(
+        yield* decodeUpsertInput({
+          id: "scheduled-task:fresh-busy",
+          title: "Triage",
+          prompt: "Triage",
+          enabled: true,
+          schedule: { type: "interval", everyMs: 60_000 },
+          projectId: "project-busy-thread",
+          threadId: "thread:busy",
+          threadMode: "fresh_session",
+          workspaceStrategy: { type: "root" },
+          modelSelection: { instanceId: "codex", model: "gpt-5.4" },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        }),
+      );
+      yield* service.runNow({ id: task.id });
+      yield* TestClock.adjust("61 seconds");
+      yield* Effect.flatten(Ref.get(runDueWork));
+      const [skipped] = (yield* service.list()).tasks;
+      expect(skipped?.lastRunStatus).toBe("failed");
+      expect(skipped?.lastRunError).toMatch(/^Skipped: the previous run is still active/);
+      expect((yield* Ref.get(thread)).runs.filter((run) => run.status === "queued")).toHaveLength(
+        1,
+      );
+    }).pipe(Effect.provide(ScheduledTaskService.layer.pipe(Layer.provide(layerDependencies))));
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
 it.effect(
   "idle polls still wake for tasks saved later, recorded due times, and beside far-future tasks",
   () =>

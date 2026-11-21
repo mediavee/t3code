@@ -128,6 +128,7 @@ import * as ThreadManagementService from "../orchestration-v2/ThreadManagementSe
 import { placeholderThreadTitle } from "../orchestration-v2/placeholderThreadTitle.ts";
 import * as ThreadLaunchService from "../orchestration-v2/ThreadLaunchService.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
+import { projectWorktreePath } from "./projectWorktree.ts";
 import { isSnoozed } from "../orchestration-v2/ThreadSettlementService.ts";
 import { userFacingDispatchErrorMessage } from "../orchestration-v2/UserFacingErrors.ts";
 import * as ProjectService from "../project/ProjectService.ts";
@@ -2448,6 +2449,44 @@ const make = Effect.gen(function* () {
     };
   });
 
+  // As t3_thread_launch checks a named model, except an unknown provider instance is refused here:
+  // nothing would report it until the first run fails.
+  const requireScheduledModel = Effect.fn("OrchestratorMcpService.requireScheduledModel")(
+    function* (selection: ModelSelection, cwd: string) {
+      const provider = withWorkspaceModels(yield* loadProviders, cwd).find(
+        (candidate) => candidate.instanceId === selection.instanceId,
+      );
+      if (provider === undefined)
+        return yield* failure(
+          "invalid_request",
+          `Provider instance ${selection.instanceId} is not configured here. orchestrator_capabilities lists providers and models.`,
+        );
+      yield* requireAdvertisedModel(provider, selection.model);
+      const options = yield* validateModelOptions(provider, selection.model, selection.options);
+      return options === undefined || options === selection.options
+        ? selection
+        : { ...selection, options };
+    },
+  );
+
+  // Runs launch in this checkout with no further check, so it must be one of the project's own,
+  // stored as the path Git registered.
+  const requireScheduledWorkspace = (
+    strategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined,
+    workspaceRoot: string,
+  ) =>
+    strategy?.type === "existing_worktree"
+      ? projectWorktreePath(workspaceRoot, strategy.worktreePath).pipe(
+          Effect.provideService(GitVcsDriver.GitVcsDriver, gitDriver),
+          Effect.map((worktreePath) => ({ ...strategy, worktreePath })),
+        )
+      : Effect.succeed(strategy);
+
+  const scheduledModelCwd = (
+    strategy: OrchestrationV2ThreadLaunchWorkspaceStrategy | undefined,
+    workspaceRoot: string,
+  ) => (strategy?.type === "existing_worktree" ? strategy.worktreePath : workspaceRoot);
+
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
       const modes = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
@@ -2558,8 +2597,22 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
+      const requestedStrategy = yield* requireScheduledWorkspace(
+        input.workspaceStrategy,
+        project.workspaceRoot,
+      );
+      const requestedModel =
+        input.modelSelection === undefined
+          ? undefined
+          : yield* requireScheduledModel(
+              input.modelSelection,
+              scheduledModelCwd(requestedStrategy, project.workspaceRoot),
+            );
       const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+        requestedModel ??
+        parent?.thread.modelSelection ??
+        (yield* projectDefaultModelSelection(project));
+      const runtimeMode = yield* resolveRuntimeMode(limits.runtimeMode, input.runtimeMode);
       // Never end on a lone high surrogate, which renders as a broken character.
       const derivedTitle = (input.prompt.split("\n")[0]?.trim() ?? "")
         .slice(0, 80)
@@ -2587,9 +2640,11 @@ const make = Effect.gen(function* () {
           : bindToCurrentThread
             ? "continue"
             : "new_thread",
-        workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
+        workspaceStrategy:
+          requestedStrategy ??
+          (yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId)),
         modelSelection,
-        runtimeMode: limits.runtimeMode,
+        runtimeMode,
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
@@ -2674,11 +2729,30 @@ const make = Effect.gen(function* () {
             : input.bindToCurrentThread && parent !== undefined
               ? parent.thread.id
               : null;
+        let requestedStrategy = input.workspaceStrategy;
+        let requestedModel: ModelSelection | undefined;
+        if (input.modelSelection !== undefined || input.workspaceStrategy !== undefined) {
+          const { workspaceRoot } = yield* requireProject(existing.projectId);
+          requestedStrategy = yield* requireScheduledWorkspace(
+            input.workspaceStrategy,
+            workspaceRoot,
+          );
+          if (input.modelSelection !== undefined)
+            requestedModel = yield* requireScheduledModel(
+              input.modelSelection,
+              scheduledModelCwd(requestedStrategy, workspaceRoot),
+            );
+        }
         // Reset the workspace only when the binding flips, so unbinding cannot leave runs in the shared checkout.
         const workspaceStrategy =
-          (threadId === null) === (existing.threadId === null)
+          requestedStrategy ??
+          ((threadId === null) === (existing.threadId === null)
             ? existing.workspaceStrategy
-            : yield* scheduledTaskWorkspaceStrategy(threadId !== null, existing.projectId);
+            : yield* scheduledTaskWorkspaceStrategy(threadId !== null, existing.projectId));
+        const runtimeMode =
+          input.runtimeMode === undefined
+            ? existing.runtimeMode
+            : yield* resolveRuntimeMode(limits.runtimeMode, input.runtimeMode);
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           requireExisting: true,
@@ -2701,8 +2775,8 @@ const make = Effect.gen(function* () {
                   ? "new_thread"
                   : "continue",
           workspaceStrategy,
-          modelSelection: existing.modelSelection,
-          runtimeMode: existing.runtimeMode,
+          modelSelection: requestedModel ?? existing.modelSelection,
+          runtimeMode,
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,
