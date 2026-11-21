@@ -110,6 +110,19 @@ describe("rollUpThreadFleet", () => {
           },
         }),
       },
+      // A secret card only the user can fill.
+      {
+        environmentId: here,
+        thread: subagent("secret", {
+          status: "running",
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("request-secret"),
+            kind: "user_input",
+            createdAt: DateTime.makeUnsafe("2026-06-20T00:09:00.000Z"),
+            userOnly: true,
+          },
+        }),
+      },
       { environmentId: here, thread: subagent("failed", { status: "failed" }) },
       { environmentId: here, thread: subagent("interrupted", { status: "interrupted" }) },
       {
@@ -127,7 +140,7 @@ describe("rollUpThreadFleet", () => {
     ]);
     expect(rollup).toEqual({
       running: 2,
-      blocked: 2,
+      blocked: 3,
       failed: 2,
       done: 3,
       openPullRequests: 1,
@@ -171,6 +184,12 @@ describe("isFleetChildOf", () => {
       false,
     ],
     ["an archived task", there, delegated("child", { archivedAt: v2Now }), false],
+    [
+      "its provider-native subagent, whose shell never runs",
+      here,
+      subagent("child", { creationSource: "provider" }),
+      false,
+    ],
   ] as const)("%s: %s", (_, environmentId, thread, expected) => {
     expect(isFleetChildOf(parent, environmentId, thread)).toBe(expected);
   });

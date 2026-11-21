@@ -332,9 +332,11 @@ optional cancellation reason.
 
 Reads every child the calling thread started, from its task records, in one bounded
 call. A child here is read from its shell, with its pending questions and approvals
-counted from the runtime request records. A child in a linked environment is read from
-what its task record here knows, with no call there, so its counts are `null`. A child
-followed up with `t3_thread_send` appears once. The read acknowledges nothing, unlike
+counted from the runtime request records plus a waiting secret or link card, and its
+progress from its latest run's last reply; an archived or deleted one is left out. A
+provider-native subagent runs no run of its own, so its task record gives its state. A
+child in a linked environment is read from what its task record here knows, with no call
+there, so its counts are `null`. A child followed up with `t3_thread_send` appears once. The read acknowledges nothing, unlike
 `task_status`. `t3_thread_launch` threads record no task, so they are not listed.
 
 ### `create_threads`

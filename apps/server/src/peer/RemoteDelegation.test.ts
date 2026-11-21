@@ -3836,10 +3836,77 @@ it.effect("t3_fleet reads every child of the parent, here and there, in one call
         branch: null,
         worktreePath: null,
       });
+      // A provider-native subagent: its thread runs nothing, its record carries its state.
+      const nativeThreadId = ThreadId.make("thread:laptop-native");
+      yield* a.orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "agent",
+        creationSource: "mcp",
+        commandId: CommandId.make("command:create:laptop-native"),
+        threadId: nativeThreadId,
+        projectId: ProjectId.make("project:laptop"),
+        title: "Scan the repo",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      const hereRun = (yield* a.orchestrator.getThreadProjection(hereId)).runs[0]!;
       const now = yield* DateTime.now;
       yield* a.sink.write({
         commandId: CommandId.make("command:seed:fleet"),
         events: [
+          {
+            id: EventId.make("event:fleet:native"),
+            type: "subagent.updated",
+            threadId: parentThreadId,
+            runId: parentRunId,
+            occurredAt: now,
+            payload: {
+              id: NodeId.make("node:laptop-native"),
+              threadId: parentThreadId,
+              runId: parentRunId,
+              parentNodeId: parentRootNode,
+              origin: "provider_native",
+              createdBy: "agent",
+              driver,
+              providerInstanceId: instanceId,
+              providerThreadId: null,
+              childThreadId: nativeThreadId,
+              nativeTaskRef: null,
+              prompt: "Scan the repo.",
+              progress: "Scanning src/",
+              title: "Scan the repo",
+              model: "gpt-5.4",
+              status: "running",
+              result: null,
+              startedAt: now,
+              completedAt: null,
+              updatedAt: now,
+            },
+          },
+          {
+            id: EventId.make("event:fleet:here-reply"),
+            type: "message.updated",
+            threadId: hereId,
+            runId: hereRun.id,
+            occurredAt: now,
+            payload: {
+              id: MessageId.make("message:fleet:here-reply"),
+              threadId: hereId,
+              runId: hereRun.id,
+              nodeId: null,
+              role: "assistant",
+              text: "Building the other project before its tests.",
+              attachments: [],
+              streaming: false,
+              createdBy: "agent",
+              creationSource: "mcp",
+              createdAt: now,
+              updatedAt: now,
+            },
+          },
           {
             id: EventId.make("event:fleet:subagent"),
             type: "subagent.updated",
@@ -3902,9 +3969,9 @@ it.effect("t3_fleet reads every child of the parent, here and there, in one call
       const result = yield* a.call("t3_fleet", {});
       expect(result.isError, JSON.stringify(result.content)).toBe(false);
       expect(result.structuredContent).toMatchObject({
-        counts: { working: 1, waitingForChildren: 0, needsAnswer: 1, failed: 0, done: 1 },
+        counts: { working: 2, waitingForChildren: 0, needsAnswer: 1, failed: 0, done: 1 },
         openPullRequestCount: 1,
-        total: 3,
+        total: 4,
         children: [
           {
             taskId: here.taskId,
@@ -3913,6 +3980,7 @@ it.effect("t3_fleet reads every child of the parent, here and there, in one call
             workState: "needs_answer",
             pendingQuestions: 0,
             pendingApprovals: 1,
+            lastProgress: "Building the other project before its tests.",
             pullRequests: [{ url: "https://github.com/acme/other/pull/7", number: 7, state: null }],
           },
           {
@@ -3926,18 +3994,24 @@ it.effect("t3_fleet reads every child of the parent, here and there, in one call
             pullRequests: [],
           },
           {
+            threadId: nativeThreadId,
+            workState: "working",
+            lastProgress: "Scanning src/",
+          },
+          {
             threadId: subagentThreadId,
             title: "Read the logs",
             environmentLabel: null,
             workState: "done",
             pendingApprovals: 0,
+            lastProgress: "The logs are clean.",
           },
         ],
       });
       // A limit keeps the children that need the parent first.
       const limited = yield* a.call("t3_fleet", { limit: 1 });
       expect(limited.structuredContent).toMatchObject({
-        total: 3,
+        total: 4,
         children: [{ taskId: here.taskId }],
       });
     }),

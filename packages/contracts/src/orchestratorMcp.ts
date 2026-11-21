@@ -723,10 +723,12 @@ export function fleetWorkState(
   backgroundWorkHolds: boolean,
 ): OrchestratorMcpFleetWorkState {
   if (needsAnswer) return "needs_answer";
+  // Only a running turn waits on its children, so this comes before the running check.
+  if (child.blockedOnThreadWait === true) return "waiting_for_children";
   if ((child.activityRunStatus ?? null) !== null || LIVE_FLEET_STATUSES.has(child.status)) {
     return "working";
   }
-  if (child.blockedOnThreadWait === true || backgroundWorkHolds) return "waiting_for_children";
+  if (backgroundWorkHolds) return "waiting_for_children";
   return child.status === "failed" || child.status === "interrupted" ? "failed" : "done";
 }
 

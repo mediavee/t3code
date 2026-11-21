@@ -1,6 +1,7 @@
 import {
   type EnvironmentId,
   fleetWorkState,
+  isProviderNativeSubagentThread,
   type OrchestrationV2ThreadShell,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
@@ -41,7 +42,14 @@ export function isFleetChildOf(
   environmentId: EnvironmentId,
   thread: OrchestrationV2ThreadShell,
 ): boolean {
-  if (thread.archivedAt !== null || thread.lineage.sideChat === true) return false;
+  // A provider-native subagent's shell never runs, so it cannot say whether it works or failed.
+  if (
+    thread.archivedAt !== null ||
+    thread.lineage.sideChat === true ||
+    isProviderNativeSubagentThread(thread)
+  ) {
+    return false;
+  }
   if (thread.lineage.relationshipToParent === "subagent") {
     return (
       environmentId === parent.environmentId && thread.lineage.parentThreadId === parent.threadId
