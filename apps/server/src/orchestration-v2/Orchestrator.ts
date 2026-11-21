@@ -7928,18 +7928,36 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             payload: { ...sourcePlan, status: "completed" },
           });
 
+    // An expiring message only joins a turn that reads it live: it never restarts or interrupts one.
     if (command.expireOnTurnEnd === true) {
       const resolvedMode = dispatchMode;
       const steerTarget =
         resolvedMode.type === "steer_active"
           ? projection.runs.find((run) => run.id === resolvedMode.targetRunId)
           : undefined;
-      const turnRunning =
-        (steerTarget?.status === "running" || steerTarget?.status === "waiting") &&
+      const providerSessionId =
+        steerTarget === undefined
+          ? null
+          : (projection.providerThreads.find((row) => row.id === steerTarget.providerThreadId)
+              ?.providerSessionId ?? null);
+      const session =
+        providerSessionId === null
+          ? Option.none()
+          : yield* providerSessions
+              .get(providerSessionId)
+              .pipe(Effect.orElseSucceed(() => Option.none()));
+      const steerable =
+        steerTarget?.status === "running" &&
         projection.providerTurns.some(
           (turn) => turn.runAttemptId === steerTarget.activeAttemptId && turn.status === "running",
-        );
-      if (!turnRunning) {
+        ) &&
+        Option.isSome(session) &&
+        session.value.providerSession.capabilities.turns.supportsActiveSteering &&
+        (command.attachments.length === 0 ||
+          session.value.providerSession.capabilities.turns.activeSteeringAcceptsAttachments !==
+            false) &&
+        !(yield* stopReachedRun(command, command.threadId, steerTarget.id));
+      if (!steerable) {
         yield* dropExpiredMessage(command, projection, undefined, events);
         return;
       }
@@ -7981,8 +7999,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         events,
         effects,
         projection,
+        // A selection change would restart the turn, which an expiring message must not.
         modelSelection:
-          delegatedCompletion === undefined && notification === undefined
+          delegatedCompletion === undefined &&
+          notification === undefined &&
+          command.expireOnTurnEnd !== true
             ? modelSelection
             : (projection.runs.find((run) => run.id === dispatchMode.targetRunId)?.modelSelection ??
               modelSelection),
@@ -13444,6 +13465,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     readonly projection: Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "subagents">;
     readonly cohortRunIds: ReadonlyArray<RunId>;
     readonly now: DateTime.Utc;
+    /** Cancels the turns agents queued instead of holding them, as cancelling a task does. */
+    readonly cancelAgentMessages?: boolean;
   }) {
     const emitEvent = emit(input.events, input.command);
     const { runs, subagents } = input.projection;
@@ -13502,8 +13525,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 (cause) => new OrchestratorProjectionError({ threadId: thread.id, cause }),
               ),
             )).messages;
-    const bufferedMessageIds = new Set(
-      queuedMessages.filter(isBufferedProviderNotification).map((message) => message.id),
+    const cancelledMessageIds = new Set(
+      queuedMessages
+        .filter(
+          (message) =>
+            isBufferedProviderNotification(message) ||
+            (input.cancelAgentMessages === true && message.createdBy === "agent"),
+        )
+        .map((message) => message.id),
     );
     for (const run of runs) {
       // A resumed queue can have a lower ordinal than a pending continuation source.
@@ -13516,7 +13545,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         yield* markStoppedRun({ ...input, thread, run });
       }
       if (run.status !== "queued") continue;
-      if (bufferedMessageIds.has(run.userMessageId)) {
+      if (cancelledMessageIds.has(run.userMessageId)) {
         yield* dispatchQueuedRunCancel(
           {
             type: "queued-run.cancel",
@@ -13896,6 +13925,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "run.interrupt" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    cancelAgentMessages = false,
   ) {
     const projection = yield* loadProjectionForCommand(
       command,
@@ -13976,6 +14006,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             projection,
             cohortRunIds: [completionCohortRunId],
             now,
+            cancelAgentMessages,
           })
         : Effect.gen(function* () {
             for (const parentRunId of new Set([completionCohortRunId, run.id])) {
@@ -14566,6 +14597,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           },
           interruptEvents,
           interruptEffects,
+          command.cancelAgentMessages === true,
         ),
       );
       // A failed interrupt may have written part of its events, so they are kept apart.
@@ -14624,7 +14656,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         now,
       });
     }
-    yield* holdStoppedThread({ command, events, projection, cohortRunIds: [], now });
+    yield* holdStoppedThread({
+      command,
+      events,
+      projection,
+      cohortRunIds: [],
+      now,
+      cancelAgentMessages: command.cancelAgentMessages === true,
+    });
     yield* cancelIdleOrphans({ command, events, projection });
     yield* stopDelegatedTasks;
     return undefined;

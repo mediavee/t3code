@@ -3191,6 +3191,8 @@ export const OrchestrationV2Command = Schema.Union([
      * do under their caller's dispatch limit. Otherwise Stop also stops every task under the thread.
      */
     stopDelegatedTasks: Schema.optional(Schema.Boolean),
+    /** Cancels the turns agents queued instead of holding them; the user's stay held. */
+    cancelAgentMessages: Schema.optional(Schema.Boolean),
   }),
   Schema.Struct({
     type: Schema.Literal("thread.create"),

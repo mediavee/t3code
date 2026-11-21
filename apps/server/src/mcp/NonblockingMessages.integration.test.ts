@@ -48,7 +48,10 @@ const instanceId = ProviderInstanceId.make("claudeAgent");
 const modelSelection = { instanceId, model: "claude-test" };
 const projectId = ProjectId.make("project:nonblocking-messages");
 
-const harness = Effect.fn("nonblockingMessagesHarness")(function* (name: string) {
+const harness = Effect.fn("nonblockingMessagesHarness")(function* (
+  name: string,
+  runContinuationWorker = false,
+) {
   const cwd = yield* checkpointWorkspace(name);
   const turns: Array<{
     readonly turn: ProviderAdapter.ProviderAdapterV2TurnInput;
@@ -131,6 +134,7 @@ const harness = Effect.fn("nonblockingMessagesHarness")(function* (name: string)
   const layerAdapters = ProviderAdapterRegistry.layerSingle(adapter);
   const layerOrchestrator = ProviderReplayHarness.layerWithRegistry({ name }, layerAdapters, {
     runEffectWorker: false,
+    runContinuationWorker,
   });
   // The real orchestrator; only signals when a wait starts listening for the caller's messages.
   const listening = yield* Deferred.make<void>();
@@ -316,9 +320,97 @@ it.effect("a wait on a slow thread returns once another thread messages the call
   }),
 );
 
+it.effect("a wait returns when a task's result joins a wake already queued for the caller", () =>
+  Effect.gen(function* () {
+    const { layer, listening, scopeOf, startThread, completeTurn, watch } = yield* harness(
+      "nonblocking-coalesced",
+      true,
+    );
+    yield* Effect.gen(function* () {
+      const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const lead = yield* startThread("coalesced-lead");
+      const slow = yield* startThread("coalesced-slow");
+      const firstRun = (yield* orchestrator.getThreadProjection(lead)).runs[0]!;
+      const childrenRunning = yield* watch(
+        (event) =>
+          event.type === "provider-turn.updated" &&
+          event.threadId !== lead &&
+          event.threadId !== slow &&
+          event.payload.status === "running",
+      );
+      for (const id of ["a", "b"]) {
+        yield* orchestrator.dispatch({
+          type: "delegated_task.request",
+          commandId: CommandId.make(`delegate-${id}`),
+          parentThreadId: lead,
+          parentRunId: firstRun.id,
+          parentNodeId: firstRun.rootNodeId!,
+          task: `Review part ${id}`,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "agent",
+          creationSource: "mcp",
+        });
+      }
+      yield* worker.drain();
+      yield* Fiber.join(childrenRunning);
+      // The turn that delegated ends; the user's next one runs while both tasks still work.
+      yield* completeTurn(lead);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("lead-next-turn"),
+        threadId: lead,
+        messageId: MessageId.make("message:lead-next-turn"),
+        text: "Next",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* worker.drain();
+      const [taskA, taskB] = (yield* orchestrator.getThreadProjection(lead)).subagents;
+      const wakeQueued = yield* watch(
+        (event) =>
+          event.type === "message.updated" &&
+          event.threadId === lead &&
+          event.payload.delegatedCompletion !== undefined,
+      );
+      yield* completeTurn(taskA!.childThreadId!);
+      yield* Fiber.join(wakeQueued);
+      yield* worker.drain();
+      const queuedWake = (yield* orchestrator.getThreadProjection(lead)).messages.find(
+        (message) => message.delegatedCompletion !== undefined,
+      );
+      assert.deepEqual(queuedWake?.delegatedCompletion?.taskIds, [taskA!.id]);
+      // The queued wake is older than the wait that it must still end.
+      yield* TestClock.adjust("1 second");
+
+      const waiting = yield* service
+        .waitForThread(scopeOf(lead), { threadId: slow, timeoutMs: 10 * 60 * 1_000 })
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(listening);
+      yield* completeTurn(taskB!.childThreadId!);
+      const joined = (yield* orchestrator.getThreadProjection(lead)).messages.find(
+        (message) => message.id === queuedWake?.id,
+      );
+      assert.deepEqual(joined?.delegatedCompletion?.taskIds, [taskA!.id, taskB!.id]);
+      yield* TestClock.adjust("10 minutes");
+      assert.deepInclude(yield* Fiber.join(waiting), {
+        threadId: slow,
+        timedOut: false,
+        interruptedByIncomingMessage: true,
+        waitingMessages: 1,
+      });
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
 it.effect("an expiring send to a thread whose turn ended is dropped, not started", () =>
   Effect.gen(function* () {
-    const { layer, scopeOf, startThread, completeTurn, turns } =
+    const { layer, scopeOf, startThread, completeTurn, turns, watch } =
       yield* harness("nonblocking-expire");
     yield* Effect.gen(function* () {
       const service = yield* OrchestratorMcpService.OrchestratorMcpService;
@@ -345,6 +437,39 @@ it.effect("an expiring send to a thread whose turn ended is dropped, not started
       );
       assert.isUndefined(after.messages.find((message) => message.id === sent.messageId));
       assert.equal(turns.filter((entry) => entry.turn.threadId === target).length, 1);
+
+      // A retry of that send, once another turn runs there, is still the dropped one.
+      const nextTurn = yield* watch(
+        (event) =>
+          event.type === "provider-turn.updated" &&
+          event.threadId === target &&
+          event.payload.status === "running",
+      );
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("expire-target-next"),
+        threadId: target,
+        messageId: MessageId.make("message:expire-target-next"),
+        text: "Next task",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+        createdBy: "user",
+        creationSource: "web",
+      });
+      yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
+      yield* Fiber.join(nextTurn);
+      const retried = yield* service.sendToThread(scopeOf(lead), {
+        threadId: target,
+        message: "Use the other flag",
+        expireOnTurnEnd: true,
+        clientRequestId: "late-correction",
+      });
+      assert.equal(retried.delivery, "dropped");
+      assert.isUndefined(
+        (yield* orchestrator.getThreadProjection(target)).messages.find(
+          (message) => message.id === sent.messageId,
+        ),
+      );
     }).pipe(Effect.provide(layer));
   }),
 );

@@ -215,13 +215,8 @@ const make = Effect.gen(function* () {
       input,
     );
 
-  // The caller's messages arrive here, not where the waited thread runs.
-  const waitForThread: PeerForwarding["Service"]["waitForThread"] = (
-    scope,
-    environmentId,
-    input,
-  ) => {
-    const forwarded = forward<OrchestratorMcpThreadWaitResult>(
+  const waitForThread: PeerForwarding["Service"]["waitForThread"] = (scope, environmentId, input) =>
+    forward<OrchestratorMcpThreadWaitResult>(
       scope,
       "t3_thread_wait",
       OrchestratorMcpThreadWaitInput,
@@ -235,6 +230,15 @@ const make = Effect.gen(function* () {
         ),
       },
     );
+
+  // An agent's wait ends when a message reaches it, and its messages arrive here, not where the
+  // waited thread runs. Followers of delegated tasks call waitForThread and never race this.
+  const agentWait = (
+    scope: Scope,
+    environmentId: EnvironmentId,
+    input: OrchestratorMcpThreadWaitInput,
+  ) => {
+    const forwarded = waitForThread(scope, environmentId, input);
     if (scope.thread === undefined) return forwarded;
     const incoming = threads.awaitIncomingMessage(scope.thread.threadId).pipe(
       Effect.mapError(
@@ -264,11 +268,10 @@ const make = Effect.gen(function* () {
       Tool.Success<typeof tool>,
       OrchestratorMcpFailure
     > = tool.name === "t3_thread_wait"
-      ? (waitForThread(
-          scope,
-          environmentId,
-          params as OrchestratorMcpThreadWaitInput,
-        ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
+      ? (agentWait(scope, environmentId, params as OrchestratorMcpThreadWaitInput) as Effect.Effect<
+          Tool.Success<typeof tool>,
+          OrchestratorMcpFailure
+        >)
       : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
     return Effect.andThen(requireEnabled, forwarded);
   };

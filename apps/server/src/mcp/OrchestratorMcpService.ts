@@ -3332,6 +3332,7 @@ const make = Effect.gen(function* () {
           commandId,
           threadId: childThreadId,
           stopDelegatedTasks: false,
+          cancelAgentMessages: true,
           reason,
         };
         yield* threadManagement
@@ -3358,27 +3359,14 @@ const make = Effect.gen(function* () {
         const stopped = yield* threadManagement
           .getThreadRecords(childThreadId, ["runs"])
           .pipe(Effect.mapError(threadManagementFailure));
-        const queuedRuns = stopped.runs.filter((run) => run.status === "queued");
-        const queuedMessages =
-          queuedRuns.length === 0
-            ? []
-            : (yield* threadManagement
-                .getThreadRecords(childThreadId, ["messages"], {
-                  messageIds: queuedRuns.map((run) => run.userMessageId),
-                })
-                .pipe(Effect.mapError(threadManagementFailure))).messages;
-        const agentSent = new Set(
-          queuedMessages.flatMap((message) => (message.createdBy === "agent" ? [message.id] : [])),
-        );
-        for (const run of queuedRuns) {
+        for (const run of stopped.runs) {
           if (
-            run.delegatedTaskId !== input.taskId &&
-            run.id !== current.childRunId &&
-            !agentSent.has(run.userMessageId)
+            run.status !== "queued" ||
+            (run.delegatedTaskId !== input.taskId && run.id !== current.childRunId)
           )
             continue;
-          // Stop preserves the queue for Resume. Cancelling a task must also remove that
-          // task's queued turns, held ones included, and what agents queued there; the user's stay.
+          // Stop preserves the queue for Resume. Cancelling a task must also
+          // remove that task's queued turn, including a previously held one.
           yield* threadManagement
             .dispatch({
               type: "queued-run.cancel",

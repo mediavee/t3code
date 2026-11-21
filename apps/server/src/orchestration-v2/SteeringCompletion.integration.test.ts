@@ -1431,6 +1431,43 @@ it.effect("starts a steer that missed the turn on the saved next-turn selection"
   }),
 );
 
+it.effect("drops an expiring steer instead of restarting a turn that cannot take it live", () =>
+  Effect.gen(function* () {
+    const { started, steered, interrupted, layer, startFirstTurn } =
+      yield* nextTurnSelectionHarness("steering-expire-restart-only", true, false);
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const threadId = yield* startFirstTurn;
+      const first = started[0]!;
+      const messageId = MessageId.make("message:expiring-restart-only");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make("expiring-restart-only"),
+        threadId,
+        messageId,
+        text: "late correction",
+        attachments: [],
+        expireOnTurnEnd: true,
+        dispatchMode: { type: "steer_active", targetRunId: first.runId },
+        createdBy: "agent",
+        creationSource: "mcp",
+      });
+      yield* worker.drain();
+
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      assert.deepEqual(interrupted, []);
+      assert.deepEqual(steered, []);
+      assert.equal(started.length, 1);
+      assert.deepEqual(
+        projection.runs.map((run) => [run.id, run.status]),
+        [[first.runId, "running"]],
+      );
+      assert.isUndefined(projection.messages.find((message) => message.id === messageId));
+    }).pipe(Effect.provide(layer));
+  }),
+);
+
 it.effect("drops a steer sent to expire with its turn once that turn ends unread", () =>
   Effect.gen(function* () {
     const { events, started, layer, startFirstTurn } = yield* nextTurnSelectionHarness(
