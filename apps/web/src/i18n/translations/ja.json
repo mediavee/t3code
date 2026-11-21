@@ -12944,5 +12944,9 @@
   "f77cd905c392b357": "エージェントが systemd スコープで動作する Linux サーバーで利用できます。",
   "633d27014d678cbf": "エージェントのメモリ上限をデフォルトにリセット",
   "70957383caba7e76": "エージェントのメモリ上限",
-  "b3be8f59fe52c268": "メモリ 上限 RAM OOM メモリ不足 cgroup systemd memorymax tmpdir 一時"
+  "b3be8f59fe52c268": "メモリ 上限 RAM OOM メモリ不足 cgroup systemd memorymax tmpdir 一時",
+  "67d4a779cd49a863": "{count, plural, other {完了 {count}}}",
+  "5c412fd3159e13f3": "{count, plural, other {オープンな PR {count}}}",
+  "5c73b69a42cb7616": "子スレッド",
+  "fa97f7ae0f746034": "{count, plural, other {回答待ち {count}}}"
 }

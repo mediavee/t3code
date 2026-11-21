@@ -451,6 +451,10 @@
       "types": "./src/state/pendingUserInput.ts",
       "default": "./src/state/pendingUserInput.ts"
     },
+    "./state/thread-fleet": {
+      "types": "./src/state/threadFleet.ts",
+      "default": "./src/state/threadFleet.ts"
+    },
     "./state/thread-requests": {
       "types": "./src/state/threadRequests.ts",
       "default": "./src/state/threadRequests.ts"

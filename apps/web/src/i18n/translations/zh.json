@@ -13022,5 +13022,9 @@
   "f77cd905c392b357": "在 Linux 服务器上可用，智能体在其中运行于 systemd 作用域。",
   "633d27014d678cbf": "将智能体内存上限重置为默认值",
   "70957383caba7e76": "智能体内存上限",
-  "b3be8f59fe52c268": "内存 上限 RAM OOM 内存不足 cgroup systemd memorymax tmpdir 临时"
+  "b3be8f59fe52c268": "内存 上限 RAM OOM 内存不足 cgroup systemd memorymax tmpdir 临时",
+  "67d4a779cd49a863": "{count, plural, other {{count} 个已完成}}",
+  "5c412fd3159e13f3": "{count, plural, other {{count} 个打开的 PR}}",
+  "5c73b69a42cb7616": "子线程",
+  "fa97f7ae0f746034": "{count, plural, other {{count} 个等待回答}}"
 }
