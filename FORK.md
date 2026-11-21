@@ -31,15 +31,21 @@ Reports to the owner are in French. Use the `chantier` skill's worker and review
      is upstream's and does not block;
    - migrates a copy of dev2's database (`sqlite3 -readonly … ".backup"` to a non-tmpfs directory) with the
      merged build: the ledger must equal upstream's numbered migrations and both fork indexes must exist;
-   - opens the PR on mediavee/t3code listing the conflicted files and the files both sides changed that
+   - pushes with `git push fork sync/<T>` (never `origin`, which may be upstream) and opens the PR on
+     mediavee/t3code listing the conflicted files and the files both sides changed that
      merged without conflict.
 3. **Review.** Cross-family review (Gemini 4 Neon, thought level high) of the conflicted files and of the
    auto-merged overlap in core paths (`apps/server/src/orchestration-v2/`, `apps/server/src/peer/`,
    `apps/server/src/persistence/`, `packages/contracts/`, `packages/provider-*`). One fix round; the lead
-   checks the interdiff, comments `Review of record: <head> mergeable`, then `ship mediavee/t3code#<n>`.
+   checks the interdiff, comments `Review of record: <head> mergeable`, then lands it **as a merge commit**:
+   `gh pr merge <n> -R mediavee/t3code --merge --match-head-commit <head>`. Never `ship` (it squashes), never
+   squash or rebase: `<T>` must stay an ancestor of fork/main, or every later sync conflicts again.
    A P1 left after the fix round, a red gate or a conflict the worker cannot resolve: run
    `t3-fork-sync abort <T>`, merge nothing, and ask the owner.
-4. **Build.** Darwin arm64 archive and desktop DMG on the mini (a worker in this project; `RUSTC_WRAPPER=`
+   From here on `<T>` is merged: a failure in steps 4-5 is reported in this thread and fixed there, never
+   with `abort` (step 1 would then skip `<T>` without a release).
+4. **Build.** Give both build workers the merged fork/main SHA and check both archives carry the same
+   `<version>`. Darwin arm64 archive and desktop DMG on the mini (a worker in this project; `RUSTC_WRAPPER=`
    for cargo), linux-x64 archive on dev2, each smoke-tested in a sandbox `HOME`. Publish a prerelease
    `v<version>` on mediavee/t3code (`--prerelease --latest=false`) with the three files and one `SHA256SUMS`.
 5. **Prepare the deploy.** A mediavee/infra PR moving `T3_VERSION` and `T3_SERVER_VERSION` in
@@ -47,7 +53,7 @@ Reports to the owner are in French. Use the `chantier` skill's worker and review
    do not merge it.
 6. **Free the trigger and ask.** `t3-fork-sync done <T>`, then ask the owner in this thread: version, what
    upstream brought, conflicts and how they were resolved, the review's residual risks, and "go ?". A newer
-   sync that reaches this step supersedes this one: say so and close this thread's infra PR.
+   sync that reaches this step supersedes earlier ones: the newer thread closes their infra PRs and says so.
 7. **Deploy on "go".** In order dev2, ci1, then the infra PR (boats take it at their 03:40 maintenance), the
    mini, the MacBook. Each host switches only when its T3 has no active turn: `t3-deploy-when-idle <version>`
    (`~/.local/bin` on dev2 and ci1; a one-shot LaunchAgent on the mini; on the MacBook a worker installs the
