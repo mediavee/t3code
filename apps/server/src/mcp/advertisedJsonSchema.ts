@@ -7,6 +7,8 @@ type JsonObject = { [key: string]: Json };
 const isNullSchema = (value: Json) =>
   Predicate.isObject(value) && value.type === "null" && Object.keys(value).length === 1;
 
+const isEmptyObject = (value: Json) => Predicate.isObject(value) && Object.keys(value).length === 0;
+
 const isBareAnyOf = (value: Json): value is { anyOf: Array<Json> } =>
   Predicate.isObject(value) && Array.isArray(value.anyOf) && Object.keys(value).length === 1;
 
@@ -77,7 +79,8 @@ const compact = (schema: Json, optional: boolean): Json => {
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   let result: JsonObject = {};
   for (const [key, value] of Object.entries(schema)) {
-    if (key === "additionalProperties" && value === true) continue;
+    // `{}` permits any value, as `true` does; a rest record renders it, and Gemini rejects both.
+    if (key === "additionalProperties" && (value === true || isEmptyObject(value))) continue;
     if (SAFE_INTEGER_BOUNDS[key] === value) continue;
     if (isNonStringEnum(key, value)) continue;
     result[key] =
@@ -89,6 +92,15 @@ const compact = (schema: Json, optional: boolean): Json => {
             ]),
           )
         : compact(value, false);
+  }
+  if (Array.isArray(result.allOf)) {
+    // A rest record adds `{type:"object"}` once its open `additionalProperties` is gone.
+    const allOf = result.allOf.filter(
+      (entry) =>
+        !(Predicate.isObject(entry) && entry.type === "object" && Object.keys(entry).length === 1),
+    );
+    if (allOf.length === 0) delete result.allOf;
+    else result.allOf = allOf;
   }
   if (Array.isArray(result.anyOf)) {
     const branches = result.anyOf
@@ -103,7 +115,7 @@ const compact = (schema: Json, optional: boolean): Json => {
 
 /**
  * The input schema T3 advertises for a tool. Drops JSON noise that every thread pays for:
- * `additionalProperties: true`, safe-integer bounds, nested `anyOf`, JSON-string fallbacks, and
+ * open `additionalProperties` and the `allOf` it leaves empty, safe-integer bounds, nested `anyOf`, JSON-string fallbacks, and
  * the `null` branch of optional properties. A tagged union of objects becomes one object.
  * Decoding still uses the full schema, so each tag's own required fields still apply.
  */
