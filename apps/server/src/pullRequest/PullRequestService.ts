@@ -1,5 +1,6 @@
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
+import { removeAgentCreditFooter } from "@t3tools/source-control-core/server/mergeMessage";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -292,6 +293,17 @@ export class PullRequestService extends Context.Service<
       input: PullRequestRef & { readonly check?: string },
     ) => Effect.Effect<ReadonlyArray<ProviderCheckRerun>, PullRequestError>;
     readonly update: (input: PullRequestUpdateInput) => Effect.Effect<void, PullRequestError>;
+    /** An agent's `body` without its credit footer when the project removes agent credits. */
+    readonly withoutAgentCredits: (input: {
+      readonly projectId: ProjectId;
+      readonly body: string;
+    }) => Effect.Effect<string>;
+    /**
+     * Once per server run, edits the credit footer out of a change request the forge account T3
+     * acts as opened, when its project removes agent credits. True when it edited; a read or
+     * edit the host refuses is logged, not failed.
+     */
+    readonly removeAgentCreditsFromBody: (input: PullRequestRef) => Effect.Effect<boolean>;
     readonly comment: (input: PullRequestCommentInput) => Effect.Effect<void, PullRequestError>;
     readonly updateComment: (
       input: PullRequestCommentUpdateInput,
@@ -2462,6 +2474,71 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const removesAgentCredits = (projectId: ProjectId) =>
+    serverSettings.getSettings.pipe(
+      Effect.map(
+        (settings) =>
+          resolveProjectSettings(settings, projectId).settings.removeAgentCreditsOnMerge,
+      ),
+      Effect.orElseSucceed(() => false),
+    );
+
+  const withoutAgentCredits: PullRequestService["Service"]["withoutAgentCredits"] = (input) =>
+    removesAgentCredits(input.projectId).pipe(
+      Effect.map((removes) => (removes ? removeAgentCreditFooter(input.body) : input.body)),
+    );
+
+  // A cleaned body stays clean, so one look per change request and server run is enough.
+  const creditCleanupsAttempted = new Set<string>();
+
+  const removeAgentCreditsFromBody = Effect.fn("PullRequestService.removeAgentCreditsFromBody")(
+    function* (input: PullRequestRef) {
+      const project = yield* requireProject(input);
+      if (!(yield* removesAgentCredits(project.project.id))) return false;
+      const rewrite = project.api.updateChangeRequest;
+      if (project.api.capabilities.edit?.changeRequest !== true || rewrite === undefined) {
+        return false;
+      }
+      const key = `${project.project.id}\0${project.host}\0${project.repository.toLowerCase()}\0${input.number}`;
+      if (creditCleanupsAttempted.has(key)) return false;
+      creditCleanupsAttempted.add(key);
+      const ref = {
+        cwd: project.project.workspaceRoot,
+        repository: project.repository,
+        host: project.host,
+        number: input.number,
+      };
+      const [changeRequest, viewer] = yield* Effect.all(
+        [
+          project.api.getChangeRequest(ref).pipe(Effect.mapError(toPullRequestError("detail"))),
+          viewerOf(project),
+        ],
+        { concurrency: 2 },
+      );
+      // Only T3's own account's PRs: a teammate's or contributor's description is theirs.
+      if (viewer === null || changeRequest.author?.login.toLowerCase() !== viewer.toLowerCase()) {
+        return false;
+      }
+      const cleaned = removeAgentCreditFooter(changeRequest.body);
+      if (cleaned === changeRequest.body) return false;
+      yield* invalidatedByMutation((_: PullRequestRef) =>
+        rewrite({ ...ref, body: cleaned }).pipe(Effect.mapError(toPullRequestError("update"))),
+      )(input);
+      return true;
+    },
+    (effect, input) =>
+      effect.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("pull request agent credits not removed", {
+            projectId: input.projectId,
+            repository: input.repository,
+            number: input.number,
+            error,
+          }).pipe(Effect.as(false)),
+        ),
+      ),
+  );
+
   // Hosts let authors edit without reporting that permission; checking it would wrongly deny access.
   const update: PullRequestService["Service"]["update"] = (input) =>
     requireProject(input).pipe(
@@ -4252,6 +4329,8 @@ export const make = Effect.gen(function* () {
     checkLogs,
     rerunChecks,
     update: invalidatedByMutation(update),
+    withoutAgentCredits,
+    removeAgentCreditsFromBody,
     comment: invalidatedByMutation(comment),
     updateComment: invalidatedByMutation(updateComment),
     submitReview: invalidatedByMutation(submitReview),
