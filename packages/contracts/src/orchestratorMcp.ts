@@ -94,15 +94,29 @@ const rejectingUnknownKeys = <Fields extends Schema.Struct.Fields>(
   );
 };
 
+/**
+ * The record form's entries the shared options coercion would drop (a blank id, or a value that is
+ * not a non-empty string or a boolean), refused so an agent never runs settings it did not ask for.
+ */
+const droppedOptionsRefusal = (options: unknown) => {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) return undefined;
+  const dropped = Object.entries(options).filter(
+    ([id, value]) =>
+      id.trim().length === 0 ||
+      !(typeof value === "boolean" || (typeof value === "string" && value.trim().length > 0)),
+  );
+  if (dropped.length === 0) return undefined;
+  const named = dropped.map(([id]) => JSON.stringify(id.slice(0, 64))).join(", ");
+  return `Option${dropped.length === 1 ? "" : "s"} ${named} in modelSelection.options need${dropped.length === 1 ? "s" : ""} a non-empty id and a non-empty string or boolean value.`;
+};
+
+/** `ModelSelection`, refusing what its lenient decoding would drop. */
 export const OrchestratorMcpLaunchModelSelection = rejectingUnknownKeys(
   "modelSelection",
-  Schema.Struct({
-    provider: Schema.optional(Schema.Unknown),
-    instanceId: Schema.optional(Schema.Unknown),
-    model: Schema.Unknown,
-    options: Schema.optional(Schema.Unknown),
-  }),
-).pipe(Schema.decodeTo(ModelSelection));
+  ModelSelection.from,
+)
+  .check(Schema.makeFilter((value) => droppedOptionsRefusal(value.options)))
+  .pipe(Schema.decodeTo(ModelSelection));
 
 // OpenCode 1.15 serializes nested MCP union objects as JSON strings; decode that form at the boundary.
 const OrchestratorMcpScheduleFromJsonString = Schema.fromJsonString(

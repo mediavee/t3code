@@ -796,3 +796,48 @@ it.layer(Layer.provideMerge(layerTools, layerOrchestration))(
     );
   },
 );
+
+it.layer(Layer.provideMerge(layerTools, layerOrchestration))("t3_thread_configure", (it) => {
+  it.effect("refuses a setting it would drop and applies a valid one as before", () =>
+    Effect.gen(function* () {
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = yield* runningThread("configured", "full-access");
+      const configure = (selection: object) =>
+        McpServer.McpServer.pipe(
+          Effect.flatMap((server) =>
+            server.callTool({
+              name: "t3_thread_configure",
+              arguments: { modelSelection: selection },
+            }),
+          ),
+          Effect.provideService(InvocationContext, threadScope(threadId)),
+          Effect.provideService(McpSchema.McpServerClient, mcpClient),
+        );
+      const selection = () =>
+        projections
+          .getThreadRecords(threadId, ["runs"])
+          .pipe(Effect.map(({ thread }) => thread.modelSelection));
+
+      for (const [refused, named] of [
+        [
+          { ...modelSelection, effort: "max" },
+          'Unknown key "effort" in modelSelection. Accepted keys: provider, instanceId, model, options.',
+        ],
+        [
+          { ...modelSelection, options: { effort: 3 } },
+          'Option "effort" in modelSelection.options needs a non-empty id and a non-empty string or boolean value.',
+        ],
+      ] as const) {
+        assert.include(String(yield* Effect.flip(configure(refused))), named);
+        assert.deepEqual(yield* selection(), modelSelection);
+      }
+
+      const applied = yield* configure({ ...modelSelection, options: { reasoningEffort: "high" } });
+      assert.equal(applied.isError, false, JSON.stringify(applied.content));
+      assert.deepEqual(yield* selection(), {
+        ...modelSelection,
+        options: [{ id: "reasoningEffort", value: "high" }],
+      });
+    }),
+  );
+});

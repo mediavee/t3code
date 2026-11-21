@@ -109,6 +109,26 @@ describe("orchestrator MCP contracts", () => {
       instanceId: "codex",
       model: "gpt-5.4",
     });
+    // The record form's coercion would drop these values; the agent hears which option instead.
+    for (const options of [{ effort: 3 }, { effort: "" }, { effort: " " }, { " ": "max" }]) {
+      expect(() => decodeSelection({ instanceId: "codex", model: "gpt-5.4", options })).toThrow(
+        `Option ${JSON.stringify(Object.keys(options)[0])} in modelSelection.options needs a non-empty id and a non-empty string or boolean value.`,
+      );
+    }
+    expect(
+      decodeSelection({
+        instanceId: "codex",
+        model: "gpt-5.4",
+        options: { effort: " max ", fastMode: false },
+      }),
+    ).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.4",
+      options: [
+        { id: "effort", value: "max" },
+        { id: "fastMode", value: false },
+      ],
+    });
   });
 
   it("names the placeholder or file substitution a prompt still holds", () => {

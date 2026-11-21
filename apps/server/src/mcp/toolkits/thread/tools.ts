@@ -1,6 +1,7 @@
 import {
   ProviderApprovalFullAccessOverride,
   OrchestratorMcpEnvironmentTarget,
+  OrchestratorMcpLaunchModelSelection,
   ScheduledTaskId,
   ScheduledTask,
   OrchestrationSearchThreadsInput,
@@ -177,7 +178,7 @@ const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
-    modelSelection: Schema.optional(ModelSelection),
+    modelSelection: Schema.optional(OrchestratorMcpLaunchModelSelection),
   }),
   success: Schema.Union([threadConfiguration, OrchestrationV2DispatchCommandResult]),
   dependencies: [...commandTool.dependencies, ProviderRegistry.ProviderRegistry],
