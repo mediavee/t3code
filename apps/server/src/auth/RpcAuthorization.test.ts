@@ -55,24 +55,22 @@ describe("RPC authorization scopes", () => {
     }
   });
 
-  it("requires terminal operate to set a scheduled task gate, which runs a shell command", () => {
+  it("requires terminal operate to set or remove a scheduled task gate, which runs a shell command", () => {
     const task = {
       projectId: "p",
       name: "Nightly",
       prompt: "Check",
       schedule: { kind: "interval" },
     };
-    for (const withoutGate of [task, { ...task, gate: null }]) {
-      expect(clientRpcRequiredScopes(WS_METHODS.scheduledTasksUpsert, withoutGate)).toEqual([
+    expect(clientRpcRequiredScopes(WS_METHODS.scheduledTasksUpsert, task)).toEqual([
+      AuthOrchestrationOperateScope,
+    ]);
+    for (const gate of [{ command: "true" }, null]) {
+      expect(clientRpcRequiredScopes(WS_METHODS.scheduledTasksUpsert, { ...task, gate })).toEqual([
         AuthOrchestrationOperateScope,
+        AuthTerminalOperateScope,
       ]);
     }
-    expect(
-      clientRpcRequiredScopes(WS_METHODS.scheduledTasksUpsert, {
-        ...task,
-        gate: { command: "true" },
-      }),
-    ).toEqual([AuthOrchestrationOperateScope, AuthTerminalOperateScope]);
   });
 
   it("keeps triage, which seeds an agent that reads logs and the database, behind operate scope", () => {

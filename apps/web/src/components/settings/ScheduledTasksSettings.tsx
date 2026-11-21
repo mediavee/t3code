@@ -1709,12 +1709,13 @@ function ScheduledTaskEditorForm({
       );
       return;
     }
-    const gateErrors = gateDraftErrors(draft);
+    // Without terminal access the gate is read-only, so the save leaves it to the server.
+    const gateErrors = canGate ? gateDraftErrors(draft) : [];
     if (gateErrors.length > 0) {
       for (const error of gateErrors) reportFailure(error.title, error.description);
       return;
     }
-    const gate = gateFromDraft(draft);
+    const gate = canGate ? gateFromDraft(draft) : undefined;
     if (draft.workspaceMode === "existing_worktree" && !draft.existingWorktreePath.trim()) {
       reportFailure(
         gt("Checkout path is required"),

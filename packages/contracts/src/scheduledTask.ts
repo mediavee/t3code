@@ -342,7 +342,7 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
-  /** Omitted: keep the stored gate. Null removes it. Setting one needs `terminal:operate`. */
+  /** Omitted: keep the stored gate. Null removes it. Setting or removing one needs `terminal:operate`. */
   gate: Schema.optional(Schema.NullOr(ScheduledTaskGate)),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;

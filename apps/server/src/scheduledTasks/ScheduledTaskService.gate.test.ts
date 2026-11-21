@@ -6,8 +6,10 @@ import {
   ScheduledTaskUpsertInput,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
@@ -51,6 +53,10 @@ const harness = Effect.fn(function* (policy?: ManagedPolicyDocument) {
   const gateRuns = yield* Ref.make<ReadonlyArray<GateRunner.GateRunInput>>([]);
   const gateStarted = yield* Queue.unbounded<void>();
   const gateInterrupted = yield* Deferred.make<void>();
+  // How long each gate takes, in test-clock time.
+  const gateDuration = yield* Ref.make<Duration.Input>(0);
+  // Runs when a due occurrence checks its last thread, just before its gate starts.
+  const beforeGate = yield* Ref.make<Effect.Effect<void>>(Effect.void);
   const launched = yield* Queue.unbounded<string>();
   const launches = yield* Ref.make(0);
   const layer = ScheduledTaskService.layer.pipe(
@@ -63,6 +69,8 @@ const harness = Effect.fn(function* (policy?: ManagedPolicyDocument) {
           run: (gateInput) =>
             Ref.update(gateRuns, (all) => [...all, gateInput]).pipe(
               Effect.andThen(Queue.offer(gateStarted, undefined)),
+              Effect.andThen(Ref.get(gateDuration)),
+              Effect.flatMap((duration) => TestClock.adjust(duration)),
               Effect.andThen(Queue.take(results)),
               Effect.onInterrupt(() => Deferred.succeed(gateInterrupted, undefined)),
             ),
@@ -82,7 +90,8 @@ const harness = Effect.fn(function* (policy?: ManagedPolicyDocument) {
         Layer.mock(ThreadManagementService.ThreadManagementService)({
           // The run outcome follower stops at an unknown thread; no run stays active.
           getThreadShell: () => Effect.succeed(null),
-          getThreadRecords: () => Effect.succeed({ runs: [] } as never),
+          getThreadRecords: () =>
+            Ref.get(beforeGate).pipe(Effect.flatten, Effect.as({ runs: [] } as never)),
         }),
         Layer.mock(SecretRequests.SecretRequests)({}),
       ),
@@ -97,7 +106,17 @@ const harness = Effect.fn(function* (policy?: ManagedPolicyDocument) {
         ),
       ),
     );
-  return { results, gateRuns, gateStarted, gateInterrupted, launched, launches, withService };
+  return {
+    results,
+    gateRuns,
+    gateStarted,
+    gateInterrupted,
+    gateDuration,
+    beforeGate,
+    launched,
+    launches,
+    withService,
+  };
 });
 
 const until = (service: Service, predicate: (task: ScheduledTask | undefined) => boolean) =>
@@ -295,6 +314,16 @@ it.effect("a policy without task gates runs no gate command and records why", ()
         expect(settled?.gateResult).toMatchObject({ outcome: "blocked", detail: blocked });
         expect(yield* Ref.get(gateRuns)).toEqual([]);
         expect(yield* Ref.get(launches)).toBe(0);
+
+        // Like a blocked webhook task: editable while off, but it cannot be turned back on.
+        const id = settled!.id;
+        yield* service.setEnabled({ id, enabled: false });
+        const edited = yield* service.upsert(
+          yield* decodeInput({ ...input, id, enabled: false, title: "Edited while off" }),
+        );
+        expect(edited.task.title).toBe("Edited while off");
+        const reenabled = yield* service.setEnabled({ id, enabled: true }).pipe(Effect.flip);
+        expect(reenabled.message).toBe(blocked);
       }),
     );
     expect((yield* sql`SELECT COUNT(*) AS n FROM scheduled_tasks`)[0]).toEqual({ n: 1 });
@@ -316,6 +345,100 @@ it.effect("deleting a task stops its running gate", () =>
         yield* Deferred.await(gateInterrupted);
         expect((yield* service.list()).tasks).toEqual([]);
         expect(yield* Ref.get(launches)).toBe(0);
+      }),
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("pausing a task stops its running gate and starts no run", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-01T07:00:00.000Z"));
+    const { gateStarted, gateInterrupted, launches, withService } = yield* harness();
+    yield* withService((service) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(
+          yield* decodeInput({ ...input, gate: { command: "sleep 600", cwd: "/srv" } }),
+        );
+        yield* TestClock.adjust("65 seconds");
+        yield* Queue.take(gateStarted);
+        yield* service.setEnabled({ id: task.id, enabled: false });
+        yield* Deferred.await(gateInterrupted);
+        const [paused] = (yield* service.list()).tasks;
+        expect(paused?.enabled).toBe(false);
+        expect(paused?.lastRunStatus).toBe("never");
+        expect(yield* Ref.get(launches)).toBe(0);
+      }),
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a deletion just before the gate registers still stops it", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-01T07:00:00.000Z"));
+    const sql = yield* SqlClient.SqlClient;
+    const { results, gateStarted, gateInterrupted, beforeGate, launched, launches, withService } =
+      yield* harness();
+    yield* withService((service) =>
+      Effect.gen(function* () {
+        const { task } = yield* service.upsert(
+          yield* decodeInput({ ...input, gate: { command: "./check.sh", cwd: "/srv" } }),
+        );
+        // The first run records its thread, so the next occurrence checks it before the gate.
+        yield* Queue.offer(results, { _tag: "Exited", code: 0, stdout: "v1", stderr: "" });
+        yield* nextOccurrence(service);
+        yield* Queue.take(launched);
+        yield* Queue.take(gateStarted);
+
+        // Deleted with no gate fiber yet to stop; this gate gets no result, so only the
+        // check after registering can end it.
+        yield* Ref.set(
+          beforeGate,
+          sql`DELETE FROM scheduled_tasks WHERE task_id = ${task.id}`.pipe(Effect.orDie),
+        );
+        yield* TestClock.adjust("65 seconds");
+        yield* Queue.take(gateStarted);
+        yield* Deferred.await(gateInterrupted);
+        expect((yield* service.list()).tasks).toEqual([]);
+        expect(yield* Ref.get(launches)).toBe(1);
+      }),
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a gate that outlasts the interval schedules the next run from when it ended", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-01T07:00:00.000Z"));
+    const { results, gateRuns, gateDuration, withService } = yield* harness();
+    yield* withService((service) =>
+      Effect.gen(function* () {
+        yield* service.upsert(yield* decodeInput({ ...input, gate: { command: "x", cwd: "/" } }));
+        yield* Ref.set(gateDuration, "90 seconds");
+        yield* Queue.offer(results, { _tag: "Exited", code: 78, stdout: "", stderr: "" });
+        const skipped = yield* nextOccurrence(service);
+        const now = yield* Clock.currentTimeMillis;
+        expect(Date.parse(skipped?.nextRunAt ?? "")).toBeGreaterThan(now);
+        expect(yield* Ref.get(gateRuns)).toHaveLength(1);
+      }),
+    );
+  }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+);
+
+it.effect("a gate that prints nothing starts every run it passes", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse("2026-11-01T07:00:00.000Z"));
+    const { results, launched, launches, withService } = yield* harness();
+    yield* withService((service) =>
+      Effect.gen(function* () {
+        yield* service.upsert(
+          yield* decodeInput({ ...input, gate: { command: "true", cwd: "/" } }),
+        );
+        for (const _ of [1, 2]) {
+          yield* Queue.offer(results, { _tag: "Exited", code: 0, stdout: "\n", stderr: "" });
+          const passed = yield* nextOccurrence(service);
+          expect(passed?.gateResult?.outcome).toBe("passed");
+          expect(yield* Queue.take(launched)).toBe(input.prompt);
+        }
+        expect(yield* Ref.get(launches)).toBe(2);
       }),
     );
   }).pipe(Effect.provide(SqlitePersistence.layerMemory)),

@@ -2418,7 +2418,13 @@ const make = Effect.gen(function* () {
 
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
-      const modes = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
+      const modes: Array<{
+        readonly runtimeMode: RuntimeMode;
+        readonly interactionMode: ProviderInteractionMode;
+      }> = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
+      // A gate runs its command as the server user, so only a full-access caller may steer it.
+      if (task.gate !== undefined)
+        modes.push({ runtimeMode: "full-access", interactionMode: "default" });
       if (task.threadId === null) return modes;
       const bound = yield* threadManagement
         .getThreadShell(task.threadId)
