@@ -1,3 +1,4 @@
+import { createThreadFleetAtom } from "@t3tools/client-runtime/state/thread-fleet";
 import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
@@ -43,6 +44,10 @@ export const environmentThreadShells = createEnvironmentThreadShellAtoms({
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   snapshotAtom: threadEnvironment.snapshotAtom,
   hiddenThreadTagsAtom: serverEnvironment.hiddenThreadTagsAtom,
+});
+export const threadFleetAtom = createThreadFleetAtom({
+  catalogValueAtom: environmentCatalog.catalogValueAtom,
+  environmentThreadsAtom: environmentThreadShells.environmentThreadsAtom,
 });
 export const childThreadApprovalsAtom = createChildThreadApprovalsAtom({
   childThreadInputsAtom: environmentThreadShells.childThreadInputsAtom,

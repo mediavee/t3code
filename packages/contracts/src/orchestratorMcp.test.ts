@@ -6,6 +6,7 @@ import {
   OrchestratorMcpDelegateTaskResult,
   OrchestratorMcpLaunchModelSelection,
   OrchestratorMcpThreadWaitResult,
+  fleetWorkState,
   literalTemplateRefusal,
 } from "./orchestratorMcp.ts";
 
@@ -125,5 +126,34 @@ describe("orchestrator MCP contracts", () => {
     ]) {
       expect(literalTemplateRefusal("task", text)).toBeUndefined();
     }
+  });
+
+  it.each([
+    [
+      "a question first",
+      { status: "running", activityRunStatus: "running" },
+      true,
+      false,
+      "needs_answer",
+    ],
+    [
+      "a turn blocked on its children",
+      { status: "running", activityRunStatus: "running", blockedOnThreadWait: true },
+      false,
+      false,
+      "waiting_for_children",
+    ],
+    [
+      "a running turn",
+      { status: "running", activityRunStatus: "running" },
+      false,
+      false,
+      "working",
+    ],
+    ["an ended turn holding work", { status: "completed" }, false, true, "waiting_for_children"],
+    ["an interrupted turn", { status: "interrupted" }, false, false, "failed"],
+    ["a cancelled turn", { status: "cancelled" }, false, false, "done"],
+  ] as const)("reads %s as a fleet state", (_, child, needsAnswer, holds, expected) => {
+    expect(fleetWorkState(child, needsAnswer, holds)).toBe(expected);
   });
 });

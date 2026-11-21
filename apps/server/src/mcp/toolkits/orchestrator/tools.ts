@@ -17,6 +17,8 @@ import {
   OrchestratorMcpRequestSecretInput,
   OrchestratorMcpRequestSecretResult,
   OrchestratorMcpFailure,
+  OrchestratorMcpFleetInput,
+  OrchestratorMcpFleetResult,
   OrchestratorMcpListScheduledTasksInput,
   OrchestratorMcpListScheduledTasksResult,
   OrchestratorMcpSaveScheduledTaskInput,
@@ -111,6 +113,21 @@ const TaskStatusTool = Tool.make("task_status", {
 })
   .annotate(Tool.Title, "Get delegated task status")
   .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
+
+const FleetTool = Tool.make("t3_fleet", {
+  description:
+    "Every child this thread started (delegated tasks here or on linked environments, subagents), in one call: work state, pending questions and approvals, PRs, last progress line. Needing you first. Reads mark nothing delivered.",
+  parameters: OrchestratorMcpFleetInput,
+  success: OrchestratorMcpFleetResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Read this thread's children")
+  .annotate(Tool.Readonly, true)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromOutsideClients);
@@ -365,6 +382,7 @@ export const OrchestratorToolkit = Toolkit.make(
   OrchestratorCapabilitiesTool,
   DelegateTaskTool,
   TaskStatusTool,
+  FleetTool,
   TaskCancelTool,
   WorkflowStopTool,
   BackgroundWaitTool,
