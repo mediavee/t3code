@@ -32,6 +32,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "./SecretRequests.ts";
+import * as KnownSecrets from "./KnownSecrets.ts";
 
 const threadId = ThreadId.make("thread-orchestrator");
 const turnItemId = TurnItemId.make("turn-item:secret-request:1");
@@ -73,11 +74,16 @@ const withService = <A, E>(
     readonly service: SecretRequests.SecretRequests["Service"];
     readonly stored: Map<string, Uint8Array>;
     readonly dispatched: Array<OrchestrationV2ServerCommand>;
+    readonly known: KnownSecrets.KnownSecrets["Service"];
   }) => Effect.Effect<A, E>,
   options: {
     readonly threadId?: ThreadId;
     readonly delivery?: "file";
-    readonly fields?: ReadonlyArray<{ readonly name: string; readonly label: string }>;
+    readonly fields?: ReadonlyArray<{
+      readonly name: string;
+      readonly label: string;
+      readonly secret?: boolean;
+    }>;
     readonly directory?: string;
     readonly runStatus?: string;
     readonly removeFails?: boolean;
@@ -96,6 +102,7 @@ const withService = <A, E>(
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
       NodeServices.layer,
+      KnownSecrets.layerTest(),
       options.resolver ?? fakeVault().layer,
       Layer.succeed(
         ServerSecretStore.ServerSecretStore,
@@ -182,8 +189,9 @@ const withService = <A, E>(
     );
     return yield* Effect.gen(function* () {
       const service = yield* SecretRequests.SecretRequests;
-      return yield* body({ service, stored, dispatched });
-    }).pipe(Effect.provide(SecretRequests.layer.pipe(Layer.provide(layerDependencies))));
+      const known = yield* KnownSecrets.KnownSecrets;
+      return yield* body({ service, stored, dispatched, known });
+    }).pipe(Effect.provide(SecretRequests.layer.pipe(Layer.provideMerge(layerDependencies))));
   });
 
 const singleFile = (saved: { readonly file: string } | { readonly files: unknown }) =>
@@ -195,13 +203,15 @@ const valuesOf = (stored: Map<string, Uint8Array>) =>
     .map(([, bytes]) => new TextDecoder().decode(bytes));
 
 it.effect("a saved answer becomes a one-use ref, and the thread only learns it was saved", () =>
-  withService(({ service, stored, dispatched }) =>
+  withService(({ service, stored, dispatched, known }) =>
     Effect.gen(function* () {
       yield* service.answer({
         threadId,
         turnItemId,
         answer: { type: "save", secret: "ghp_secret" },
       });
+      // Tool output that prints it from now on is masked.
+      assert.include((yield* known.current) ?? [], "ghp_secret");
       assert.equal(dispatched.length, 1);
       assert.include(dispatched[0] as object, {
         type: "secret_request.record",
@@ -516,12 +526,12 @@ it.effect("a file request moves its value to an owner-only file, once", () =>
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("a fields request keeps each value apart and delivers one file per field", () =>
+it.effect("a fields request keeps values apart, one file per field, masking only secret ones", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "secret-files-test-" });
     yield* withService(
-      ({ service, stored, dispatched }) =>
+      ({ service, stored, dispatched, known }) =>
         Effect.gen(function* () {
           const answer = (values: Record<string, string>) =>
             service.answer({ threadId, turnItemId, answer: { type: "save", values } });
@@ -539,27 +549,29 @@ it.effect("a fields request keeps each value apart and delivers one file per fie
           assert.equal(failed.reason, "record_failed");
           assert.deepEqual(valuesOf(stored), []);
 
-          yield* answer({ email: "qa@acme.dev", password: "hunter2" });
+          yield* answer({ email: "qa@acme.dev", password: "fake-pass-4444" });
           assert.include(dispatched[0] as object, { secretStatus: "saved", delivery: "file" });
           assert.deepEqual((dispatched[0] as { fields?: unknown }).fields, [
-            { name: "email", label: "Email" },
+            { name: "email", label: "Email", secret: false },
             { name: "password", label: "Password" },
           ]);
-          assert.notInclude(JSON.stringify(dispatched), "hunter2");
+          assert.notInclude(JSON.stringify(dispatched), "fake-pass-4444");
           const saved = yield* service.saveToFile({ threadId, turnItemId });
           assert.isTrue("files" in saved);
           const files = "files" in saved ? saved.files : {};
           assert.deepEqual(Object.keys(files), ["email", "password"]);
           assert.equal(yield* fs.readFileString(files.email ?? ""), "qa@acme.dev");
-          assert.equal(yield* fs.readFileString(files.password ?? ""), "hunter2");
+          assert.equal(yield* fs.readFileString(files.password ?? ""), "fake-pass-4444");
           assert.deepEqual(valuesOf(stored), []);
+          // The email is shown in clear on the card, so tool output keeps it.
+          assert.deepEqual((yield* known.current) ?? [], ["fake-pass-4444"]);
         }),
       {
         delivery: "file",
         directory,
         failedRecords: 1,
         fields: [
-          { name: "email", label: "Email" },
+          { name: "email", label: "Email", secret: false },
           { name: "password", label: "Password" },
         ],
       },
