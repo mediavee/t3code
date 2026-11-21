@@ -12827,5 +12827,9 @@
   "f77cd905c392b357": "Tillgängligt på Linux-servrar, där agenter körs i systemd-scopes.",
   "633d27014d678cbf": "Återställ agenternas minnesgräns till standard",
   "70957383caba7e76": "Agenternas minnesgräns",
-  "b3be8f59fe52c268": "minne gräns ram oom slut på minne cgroup systemd memorymax tmpdir temporär"
+  "b3be8f59fe52c268": "minne gräns ram oom slut på minne cgroup systemd memorymax tmpdir temporär",
+  "67d4a779cd49a863": "{count, plural, one {{count} klar} other {{count} klara}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} öppen PR} other {{count} öppna PR}}",
+  "5c73b69a42cb7616": "Undertrådar",
+  "fa97f7ae0f746034": "{count, plural, one {{count} väntar på svar} other {{count} väntar på svar}}"
 }

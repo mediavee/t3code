@@ -12820,5 +12820,9 @@
   "f77cd905c392b357": "Disponible sur les serveurs Linux, où les agents tournent dans des scopes systemd.",
   "633d27014d678cbf": "Réinitialiser le plafond mémoire des agents à la valeur par défaut",
   "70957383caba7e76": "Plafond mémoire des agents",
-  "b3be8f59fe52c268": "mémoire limite ram oom manque de mémoire cgroup systemd memorymax tmpdir temporaire"
+  "b3be8f59fe52c268": "mémoire limite ram oom manque de mémoire cgroup systemd memorymax tmpdir temporaire",
+  "67d4a779cd49a863": "{count, plural, one {{count} terminé} other {{count} terminés}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} PR ouverte} other {{count} PR ouvertes}}",
+  "5c73b69a42cb7616": "Fils enfants",
+  "fa97f7ae0f746034": "{count, plural, one {{count} attend une réponse} other {{count} attendent une réponse}}"
 }
