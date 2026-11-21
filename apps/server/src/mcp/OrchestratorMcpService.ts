@@ -2278,9 +2278,13 @@ const make = Effect.gen(function* () {
     waitTimedOut: boolean,
     acknowledgeTerminal: boolean,
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
+    // A task with its result needs nothing more from there.
+    const there = task.result === null ? yield* remoteDelegation.readThere(scope, task) : null;
+    // A task with its result keeps the checkout its result was read from.
+    const worktree = there?.worktree ?? task.remoteChild?.worktree;
     const status: OrchestratorMcpDelegateTaskResult["status"] =
       task.result === null
-        ? (yield* remoteDelegation.runStatus(scope, task)) === "starting"
+        ? there?.status === "starting"
           ? "starting"
           : "running"
         : task.status === "completed" ||
@@ -2332,6 +2336,7 @@ const make = Effect.gen(function* () {
             remoteChild: task.remoteChild,
             link: formatThreadLink(task.remoteChild, task.remoteChild.title),
           }),
+      ...(worktree == null ? {} : { worktree }),
       childRunId: null,
       childNodeId: task.id,
       status,
@@ -2409,39 +2414,8 @@ const make = Effect.gen(function* () {
       effect.pipe(Effect.timeoutOption(Duration.millis(timeoutMs)), Effect.map(Option.flatten)),
   );
 
-  const refExists = (cwd: string, revision: string) =>
-    gitDriver.resolveCommit({ cwd, revision }).pipe(
-      Effect.as(true),
-      Effect.orElseSucceed(() => false),
-    );
-
-  const resolveScheduledTaskBaseRef = Effect.fn(
-    "OrchestratorMcpService.resolveScheduledTaskBaseRef",
-  )(function* (cwd: string) {
-    const remoteName = yield* gitDriver
-      .resolvePrimaryRemoteName(cwd)
-      .pipe(Effect.orElseSucceed(() => null));
-    const conventional = ["main", "master"];
-    if (remoteName !== null) {
-      const remoteDefault = yield* gitDriver
-        .resolveDefaultBranchName(cwd, remoteName)
-        .pipe(Effect.orElseSucceed(() => null));
-      // Fetch does not update a recorded HEAD, so it can outlive the branch it names.
-      for (const branch of remoteDefault === null
-        ? conventional
-        : [remoteDefault, ...conventional]) {
-        // Launch resolves a bare name through a local branch's upstream, or else assumes `origin`.
-        if (yield* refExists(cwd, `refs/remotes/${remoteName}/${branch}`)) {
-          return `${remoteName}/${branch}`;
-        }
-      }
-    }
-    // Local-only repositories, or a remote with neither a usable HEAD nor a conventional branch.
-    for (const branch of conventional) {
-      if (yield* refExists(cwd, `refs/heads/${branch}`)) return branch;
-    }
-    return "main";
-  });
+  const resolveScheduledTaskBaseRef = (cwd: string) =>
+    GitVcsDriver.defaultWorktreeBaseRef(gitDriver, cwd);
 
   const scheduledTaskWorkspaceStrategy = Effect.fn(
     "OrchestratorMcpService.scheduledTaskWorkspaceStrategy",
@@ -3031,6 +3005,12 @@ const make = Effect.gen(function* () {
         return runtimeModeSteppedDown === undefined
           ? result
           : { ...result, runtimeModeSteppedDown };
+      }
+      if (input.baseRef !== undefined) {
+        return yield* failure(
+          "invalid_request",
+          'baseRef is for a task in another environment (target.environmentId). Here, isolation "worktree" starts from this checkout\'s commit.',
+        );
       }
       const { scope, parent } = yield* loadThreadCaller(callerScope, "delegate_task");
       // Another project here gets its own thread, recorded and followed as a task there would be.

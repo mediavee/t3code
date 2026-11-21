@@ -523,7 +523,9 @@ machine and does not carry on through that machine's own links.
 An agent can also hand a task to a linked machine with `delegate_task`: it runs
 there as an ordinary thread, in the project with the same repository (or the
 one `target.projectId` names), and this thread wakes with its result when it
-ends, as for any delegated task. It keeps following the task across restarts.
+ends, as for any delegated task. With worktree isolation, the task gets its own
+checkout there, from that project's default branch or from a base the agent
+names. Commits that exist only on this machine have to be pushed first. It keeps following the task across restarts.
 If the other machine revokes the link, or the link is removed here, the task
 fails with that reason.
 
