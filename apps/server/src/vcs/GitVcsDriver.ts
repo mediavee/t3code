@@ -511,6 +511,39 @@ export class GitVcsDriver extends Context.Service<
   }
 >()("t3/vcs/GitVcsDriver") {}
 
+/** The default branch a new worktree in `cwd` starts from, as `remote/branch` when it has a remote. */
+export const defaultWorktreeBaseRef = Effect.fn("GitVcsDriver.defaultWorktreeBaseRef")(function* (
+  git: GitVcsDriver["Service"],
+  cwd: string,
+) {
+  const refExists = (revision: string) =>
+    git.resolveCommit({ cwd, revision }).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+  const remoteName = yield* git
+    .resolvePrimaryRemoteName(cwd)
+    .pipe(Effect.orElseSucceed(() => null));
+  const conventional = ["main", "master"];
+  if (remoteName !== null) {
+    const remoteDefault = yield* git
+      .resolveDefaultBranchName(cwd, remoteName)
+      .pipe(Effect.orElseSucceed(() => null));
+    // Fetch does not update a recorded HEAD, so it can outlive the branch it names.
+    for (const branch of remoteDefault === null ? conventional : [remoteDefault, ...conventional]) {
+      // Launch resolves a bare name through a local branch's upstream, or else assumes `origin`.
+      if (yield* refExists(`refs/remotes/${remoteName}/${branch}`)) {
+        return `${remoteName}/${branch}`;
+      }
+    }
+  }
+  // Local-only repositories, or a remote with neither a usable HEAD nor a conventional branch.
+  for (const branch of conventional) {
+    if (yield* refExists(`refs/heads/${branch}`)) return branch;
+  }
+  return "main";
+});
+
 const WORKSPACE_FILES_MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const FLAGGED_INDEX_ENTRIES_MAX_BYTES = 1024 * 1024;
 const CHECKPOINT_RECOVERY_MAX_CANDIDATES = 64;
