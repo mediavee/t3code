@@ -450,11 +450,11 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                 <SettingsSection title={gt("Pull requests")}>
                   <SettingsSwitchRow
                     icon={PullRequestGlyph.merged}
-                    label={gt("Remove agent credits when merging")}
+                    label={gt("Remove agent credits from pull requests")}
                     subtitle={managedSubtitle(
                       "removeAgentCreditsOnMerge",
                       gt(
-                        "Remove recognized agent credits from merge and squash messages on hosts that support it, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits.",
+                        "Remove recognized agent credit lines, keeping human co-authors, from pull request descriptions T3 writes or links and from merge and squash messages on hosts that support it. Includes auto-merge. Excludes merge queues, stack merges, and existing commits.",
                       ),
                     )}
                     value={uniform("removeAgentCreditsOnMerge")}
