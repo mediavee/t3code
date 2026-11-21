@@ -2930,22 +2930,20 @@ const make = Effect.gen(function* () {
       const roleModel = targetNamesNoModel(input.target)
         ? yield* projectRoleModel(parent.thread.projectId, input.role)
         : undefined;
+      const roleRoutingFailure = (error: OrchestratorMcpFailure) =>
+        roleModel === undefined || error.code === "orchestration_error"
+          ? error
+          : failure(
+              error.code,
+              `Project settings route role "${input.role}" to ${roleModel.instanceId} model ${roleModel.model}, which cannot run: ${error.message} Fix that row in the project's settings, or pass target.model.`,
+            );
       const target = yield* resolveTargetRechecking({
         parent,
         target: roleModel === undefined ? input.target : roleRoutedTarget(input.target, roleModel),
         providers,
         cwd: yield* parentWorkspaceCwd(parent),
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
-      }).pipe(
-        Effect.mapError((error) =>
-          roleModel === undefined || error.code === "orchestration_error"
-            ? error
-            : failure(
-                error.code,
-                `Project settings route role "${input.role}" to ${roleModel.instanceId} model ${roleModel.model}, which cannot run: ${error.message} Fix that row in the project's settings, or pass target.model.`,
-              ),
-        ),
-      );
+      }).pipe(Effect.mapError(roleRoutingFailure));
       const runtimeMode = yield* resolveRuntimeMode(
         parent.thread.runtimeMode,
         input.runtimeMode,
@@ -3016,7 +3014,7 @@ const make = Effect.gen(function* () {
             .pipe(
               Effect.mapError((error) =>
                 error._tag === "ThreadManagementProviderInstanceDisabledError"
-                  ? threadManagementFailure(error)
+                  ? roleRoutingFailure(threadManagementFailure(error))
                   : failure(
                       "orchestration_error",
                       `Unable to create delegated task: ${userFacingDispatchErrorMessage(error) ?? errorMessage(error)}`,
