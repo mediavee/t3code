@@ -313,13 +313,12 @@ const make = Effect.gen(function* () {
     const text = subagentResultForRun({ ...records, runs: resultRuns }, run).text;
     return {
       // A hold that ran out leaves these running, as a result read there names them.
-      text:
-        failed || text === undefined
-          ? text
-          : withDelegatedChildCommandsLeftRunning(
-              text,
-              providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []),
-            ),
+      text: failed
+        ? text
+        : withDelegatedChildCommandsLeftRunning(
+            text,
+            providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []),
+          ),
       executedModel: latestProviderTurnForAttempt(records.providerTurns, run.activeAttemptId)
         ?.model,
     };
