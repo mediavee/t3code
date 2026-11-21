@@ -13000,5 +13000,13 @@
   "185aca00f0cc4446": "Usar um modelo para o papel {role}",
   "afefb672d4c5c274": "agente política regras permissões autonomia prompt cada thread subagentes",
   "8a3aabfbbfb30487": "Modelos por papel",
-  "69bad5ed2f17955e": "delegar tarefa roteamento revisão pesquisa design teste implementação modelo"
+  "69bad5ed2f17955e": "delegar tarefa roteamento revisão pesquisa design teste implementação modelo",
+  "8fab0f72ffbbf3e8": "Sem limite",
+  "c8b895e219d6fc93": "{gib} GiB",
+  "7f2c29b2312bd297": "Recursos dos agentes",
+  "faf853c484b2b6fc": "Memória que cada agente e os comandos que ele executa podem usar, sem swap, antes que o sistema o pare.",
+  "f77cd905c392b357": "Disponível em servidores Linux, onde os agentes rodam em scopes do systemd.",
+  "633d27014d678cbf": "Redefinir o limite de memória dos agentes para o padrão",
+  "70957383caba7e76": "Limite de memória dos agentes",
+  "b3be8f59fe52c268": "memória limite ram oom sem memória cgroup systemd memorymax tmpdir temporário"
 }

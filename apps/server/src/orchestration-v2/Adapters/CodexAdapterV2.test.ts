@@ -67,6 +67,12 @@ import { TestClock } from "effect/testing";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as Scope from "effect/Scope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as ServerConfig from "../../config.ts";
+import * as ProcessRunner from "../../processRunner.ts";
+import * as AgentScopeLive from "../../process/agentScope.ts";
+import * as ProviderProcesses from "../../process/providerProcesses.ts";
+import * as ServerSettings from "../../serverSettings.ts";
 
 import packageJson from "../../../package.json" with { type: "json" };
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -5126,6 +5132,111 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "gives each Codex thread on one app-server its own temp directory, recreated on resume",
+    () =>
+      Effect.gen(function* () {
+        const scenario = "codex-thread-temp";
+        const { stateDir } = yield* ServerConfig.ServerConfig;
+        const scope = yield* AgentScopeLive.make.pipe(
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HostProcess.Environment, { PATH: "/usr/bin:/bin" }),
+          Effect.provideService(ProviderProcesses.ProviderProcesses, { hasOtherLiveOwner: false }),
+          Effect.provide(ProcessRunner.layer),
+        );
+        const startOf = (nativeThreadId: string, id: number) =>
+          codexReplayPreamble({ nativeThreadId, nativeTurnId: "unused", prompt: "unused" })
+            .slice(3, 5)
+            .map((entry) => withReplayRequestId(entry, id));
+        const nativeThreadId = `native-${scenario}-a`;
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused",
+              prompt: "unused",
+            }).slice(0, 5),
+            ...startOf(`native-${scenario}-b`, 3),
+            {
+              type: "expect_outbound",
+              label: "thread/resume",
+              frame: {
+                id: 4,
+                method: "thread/resume",
+                params: {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/resume",
+              frame: { id: 4, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+            },
+          ],
+        });
+        const tempDirectories: Array<unknown> = [];
+        const harness = yield* makeCodexReplayHarness(
+          transcript,
+          () => Effect.void,
+          (method, params) =>
+            Effect.sync(() => {
+              if (method === "thread/start" || method === "thread/resume") {
+                tempDirectories.push(
+                  Predicate.hasProperty(params, "config") &&
+                    Predicate.hasProperty(params.config, "shell_environment_policy.set.TMPDIR")
+                    ? params.config["shell_environment_policy.set.TMPDIR"]
+                    : undefined,
+                );
+              }
+            }),
+        ).pipe(Effect.provideService(AgentScope, scope));
+        const fileSystem = yield* FileSystem.FileSystem;
+        const threadB = ThreadId.make(`thread-${scenario}-b`);
+        yield* harness.runtime
+          .ensureThread({
+            threadId: threadB,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          })
+          .pipe(Effect.provideService(AgentScope, scope));
+        const directoryA = AgentScopeLive.threadTempDirectory(stateDir, harness.threadId);
+        const directoryB = AgentScopeLive.threadTempDirectory(stateDir, threadB);
+        assert.deepEqual(tempDirectories, [directoryA, directoryB]);
+
+        // Archiving thread A removes its directory while the app-server keeps serving B.
+        yield* AgentScopeLive.removeThreadTempEntry(
+          stateDir,
+          AgentScopeLive.threadTempDirectoryName(harness.threadId),
+        );
+        assert.isFalse(yield* fileSystem.exists(directoryA));
+        assert.isTrue(yield* fileSystem.exists(directoryB));
+
+        yield* harness.runtime
+          .resumeThread({
+            providerThread: harness.providerThread,
+            modelSelection: CODEX_TEST_MODEL_SELECTION,
+            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          })
+          .pipe(Effect.provideService(AgentScope, scope));
+        assert.deepEqual(tempDirectories, [directoryA, directoryB, directoryA]);
+        assert.isTrue(yield* fileSystem.exists(directoryA));
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-codex-thread-temp-" }),
+            ServerSettings.ServerSettingsService.layerTest(),
+          ).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+        ),
+      ),
   );
 
   // regression: #15389 archived native Codex sessions resume via thread/unarchive

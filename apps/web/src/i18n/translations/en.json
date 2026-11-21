@@ -13009,5 +13009,13 @@
   "185aca00f0cc4446": "Use a model for the {role} role",
   "afefb672d4c5c274": "agent policy rules permissions autonomy prompt every thread subagents",
   "8a3aabfbbfb30487": "Models by role",
-  "69bad5ed2f17955e": "delegate task routing review research design test implementation model"
+  "69bad5ed2f17955e": "delegate task routing review research design test implementation model",
+  "8fab0f72ffbbf3e8": "No ceiling",
+  "c8b895e219d6fc93": "{gib} GiB",
+  "7f2c29b2312bd297": "Agent resources",
+  "faf853c484b2b6fc": "Memory each agent and the commands it runs can use, without swap, before the system stops it.",
+  "f77cd905c392b357": "Available on Linux servers, where agents run in systemd scopes.",
+  "633d27014d678cbf": "Reset agent memory ceiling to default",
+  "70957383caba7e76": "Agent memory ceiling",
+  "b3be8f59fe52c268": "memory limit ram oom out of memory cgroup systemd memorymax tmpdir temp"
 }
