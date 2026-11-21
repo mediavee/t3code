@@ -948,6 +948,7 @@ const make = Effect.gen(function* () {
     let tailProbed = false;
     let backgroundTasks: ReadonlyArray<OrchestratorMcpThreadBackgroundTask> = [];
     let worktree: OrchestrationV2RemoteTaskWorktree | undefined;
+    let firstPage = true;
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -960,7 +961,8 @@ const make = Effect.gen(function* () {
         afterPosition,
       });
       run ??= read.recentRuns.find((candidate) => candidate.runId === runId);
-      if (afterPosition === undefined) {
+      if (firstPage) {
+        firstPage = false;
         backgroundTasks = read.thread.pendingBackgroundTasks ?? [];
         worktree =
           read.thread.worktreePath === null

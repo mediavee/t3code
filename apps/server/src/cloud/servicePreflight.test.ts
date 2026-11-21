@@ -60,19 +60,21 @@ it.layer(NodeServices.layer)("service preflight database", (it) => {
       const db = new NodeSqlite.DatabaseSync(databasePath);
       db.exec("CREATE TABLE effect_sql_migrations (migration_id INTEGER PRIMARY KEY, name TEXT)");
       const insert = db.prepare("INSERT INTO effect_sql_migrations VALUES (?, ?)");
-      for (const [id, name] of migrationManifest) insert.run(id, name);
       const preflight = () =>
         runServicePreflight({ databasePath, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL });
 
-      expect(preflight().status).toBe("ready");
-      expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
-
-      // Startup removes the ledger rows earlier fork builds wrote for their unnumbered indexes.
+      // Earlier fork builds stopped at upstream 102 and numbered their unnumbered indexes after it;
+      // startup removes those rows before upstream's own 103 and up run.
+      for (const [id, name] of migrationManifest.filter(([id]) => id <= 102)) insert.run(id, name);
       insert.run(103, "RemoteParentDoneIndex");
       insert.run(104, "TransientFailureIndex");
       expect(preflight().status).toBe("ready");
       expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
       db.exec("DELETE FROM effect_sql_migrations WHERE migration_id IN (103, 104)");
+
+      for (const [id, name] of migrationManifest.filter(([id]) => id > 102)) insert.run(id, name);
+      expect(preflight().status).toBe("ready");
+      expect(databaseMigrationHead(databasePath)).toBe(BUILD_MIGRATION_HEAD);
 
       db.prepare("UPDATE effect_sql_migrations SET name = ? WHERE migration_id = ?").run(
         "ForkMigration",
