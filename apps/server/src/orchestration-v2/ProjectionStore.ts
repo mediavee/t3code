@@ -105,7 +105,10 @@ import { MCP_APP_OUTPUT_KEY } from "@t3tools/shared/mcpApp";
 import { normalizeProjectPathForComparison } from "@t3tools/shared/path";
 import { threadHtmlRenderAttachmentIds } from "../attachmentStore.ts";
 import { DELEGATED_TASK_MESSAGE_CONDITION } from "./delegatedTaskMessage.ts";
-import { REMOTE_TASK_OWED_PARENT_DONE_CONDITION } from "./remoteParentDone.ts";
+import {
+  OPEN_REMOTE_TASK_CONDITION,
+  REMOTE_TASK_OWED_PARENT_DONE_CONDITION,
+} from "./remoteParentDone.ts";
 import {
   DEFERRED_COMMAND_MESSAGE_CONDITION,
   JAVASCRIPT_TRIM_WHITESPACE,
@@ -9088,17 +9091,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       readonly subagent_id: string;
     }>`
       SELECT thread_id, subagent_id FROM orchestration_v2_projection_subagents
-      WHERE origin = 'app_owned'
-        AND child_thread_id IS NULL
-        AND json_type(payload_json, '$.remoteChild') = 'object'
-        AND (
-          json_type(payload_json, '$.result') = 'null'
-          OR (
-            json_extract(payload_json, '$.status') IN ('cancelled', 'interrupted')
-            AND json_type(payload_json, '$.remoteChild.stoppedThere') IS NOT 'true'
-          )
-          OR json_type(payload_json, '$.remoteChild.stoppedThere') = 'false'
-        )
+      WHERE ${sql.literal(OPEN_REMOTE_TASK_CONDITION)}
     `.pipe(
       Effect.map((rows) =>
         rows.map((row) => ({

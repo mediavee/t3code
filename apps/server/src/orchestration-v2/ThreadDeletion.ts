@@ -3,6 +3,7 @@ import type {
   OrchestrationV2DomainEvent,
   OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
+import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 import type * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 
@@ -234,6 +235,23 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
       commandId: command.commandId,
       threadId: command.threadId,
       request: { type: "attachment.cleanup", attachmentIds },
+    });
+  }
+  // After the cleanup, since a thread's effects run in order and a stop may wait on another
+  // machine; before the purge, which deletes the tasks the stop reads.
+  if (
+    projection.subagents.some(
+      (task) =>
+        task.origin === "app_owned" &&
+        (task.childThreadId !== null || task.remoteChild !== undefined) &&
+        isOrchestrationV2WorkActive(task.status),
+    )
+  ) {
+    effects.push({
+      id: `effect:${command.commandId}:delegated-tasks.stop`,
+      commandId: command.commandId,
+      threadId: command.threadId,
+      request: { type: "delegated-tasks.stop", reason: "Thread deleted." },
     });
   }
   effects.push({
