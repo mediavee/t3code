@@ -5694,5 +5694,11 @@
   "201490988858b511": "已由 {by} 撤回",
   "3d4448e3c061f894": "其他机器",
   "349587beaf00ce5e": "{title}，由 {machine} 委派，{count, plural, other {{count} 个任务}}",
-  "88bcb7d812dfb32a": "{machine} · {count, plural, other {{count} 个任务}}"
+  "88bcb7d812dfb32a": "{machine} · {count, plural, other {{count} 个任务}}",
+  "948185631ef288e6": "{count, plural, other {{count} 个运行中}}",
+  "425e4a3d6c5c2867": "{count, plural, other {{count} 个失败}}",
+  "67d4a779cd49a863": "{count, plural, other {{count} 个已完成}}",
+  "5c412fd3159e13f3": "{count, plural, other {{count} 个打开的 PR}}",
+  "5c73b69a42cb7616": "子线程",
+  "fa97f7ae0f746034": "{count, plural, other {{count} 个等待回答}}"
 }
