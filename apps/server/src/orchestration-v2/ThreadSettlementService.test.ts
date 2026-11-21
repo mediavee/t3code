@@ -858,6 +858,11 @@ const appThread = (
     deletedAt: null,
   };
 };
+const delegatedFrom = {
+  environmentId: EnvironmentId.make("environment:laptop"),
+  threadId: ThreadId.make("thread:parent-there"),
+  title: "Parent there",
+};
 const settledEvent = (thread: OrchestrationV2AppThread): OrchestrationV2DomainEvent => ({
   type: "thread.settled",
   id: EventId.make(`event:settled:${thread.id}`),
@@ -1109,6 +1114,15 @@ describe("ThreadSettlementServiceV2 worker", () => {
         const recent = child("recent");
         const busy = child("busy");
         const marker = appThread("marker", "settled");
+        // Delegated here by a linked environment, whose parent there is done.
+        const delegated = (id: string, overrides: Partial<OrchestrationV2AppThread> = {}) => ({
+          ...appThread(id, null),
+          branch: "feature",
+          delegatedFrom: { ...delegatedFrom, parentDoneAt: NOW },
+          ...overrides,
+        });
+        const delegatedIdle = delegated("delegated-idle");
+        const delegatedBusy = delegated("delegated-busy");
         for (const thread of [
           parent,
           empty,
@@ -1117,6 +1131,12 @@ describe("ThreadSettlementServiceV2 worker", () => {
           marker,
           child("pinned", { pinnedAt: DateTime.makeUnsafe(NOW) }),
           child("opted-out", { autoSettleDisabledAt: DateTime.makeUnsafe(NOW) }),
+          delegatedIdle,
+          delegatedBusy,
+          delegated("delegated-pinned", { pinnedAt: DateTime.makeUnsafe(NOW) }),
+          delegated("delegated-opted-out", { autoSettleDisabledAt: DateTime.makeUnsafe(NOW) }),
+          // Its parent there is not done: it settles as any thread here does, not yet.
+          { ...appThread("delegated-unmarked", null), delegatedFrom },
         ]) {
           yield* store.apply({
             type: "thread.created",
@@ -1143,7 +1163,11 @@ describe("ThreadSettlementServiceV2 worker", () => {
           checkpointId: null,
           contextHandoffId: null,
         });
-        for (const payload of [run(recent.id, "completed"), run(busy.id, "running")]) {
+        for (const payload of [
+          run(recent.id, "completed"),
+          run(busy.id, "running"),
+          run(delegatedBusy.id, "running"),
+        ]) {
           yield* store.apply({
             type: "run.created",
             id: EventId.make(`created:${payload.id}`),
@@ -1175,6 +1199,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* startHarness(service, fixture.activation, fixture.snapshotReads);
           const commands = yield* Ref.get(fixture.commands);
           expect(commands.map((command) => command.threadId).toSorted()).toEqual([
+            delegatedIdle.id,
             empty.id,
             recent.id,
           ]);
@@ -1182,24 +1207,24 @@ describe("ThreadSettlementServiceV2 worker", () => {
             expect(command.snapshotAt).toEqual(DateTime.makeUnsafe(NOW));
             expect(command.settledAt).toBeUndefined();
           }
-          const finished: OrchestrationV2DomainEvent = {
-            type: "run.updated",
-            id: EventId.make("busy:completed"),
-            threadId: busy.id,
-            occurredAt: DateTime.makeUnsafe(NOW),
-            payload: run(busy.id, "completed"),
-          };
-          yield* store.apply(finished);
-          yield* fixture.publishEvent(finished);
+          for (const threadId of [busy.id, delegatedBusy.id]) {
+            const finished: OrchestrationV2DomainEvent = {
+              type: "run.updated",
+              id: EventId.make(`${threadId}:completed`),
+              threadId,
+              occurredAt: DateTime.makeUnsafe(NOW),
+              payload: run(threadId, "completed"),
+            };
+            yield* store.apply(finished);
+            yield* fixture.publishEvent(finished);
+          }
           // Cleanup of the following event marks delivery of the run event before draining.
           yield* fixture.publishEvent(settledEvent(marker));
           expect(yield* Queue.take(fixture.closedIdle)).toEqual({ threadId: marker.id });
           yield* service.drain;
-          expect((yield* Ref.get(fixture.commands)).map((command) => command.threadId)).toEqual([
-            empty.id,
-            recent.id,
-            busy.id,
-          ]);
+          expect(
+            (yield* Ref.get(fixture.commands)).map((command) => command.threadId).toSorted(),
+          ).toEqual([busy.id, delegatedBusy.id, delegatedIdle.id, empty.id, recent.id]);
           expect(yield* Ref.get(fixture.branchCalls)).toEqual([]);
           expect(yield* Ref.get(fixture.summaryCalls)).toEqual([]);
         }).pipe(Effect.provide(fixture.layer));
@@ -1285,7 +1310,8 @@ describe("ThreadSettlementServiceV2 worker", () => {
           },
         };
         const marker = appThread("marker", "settled");
-        for (const thread of [parent, child, marker]) {
+        const delegated = { ...appThread("manual-delegated", null), delegatedFrom };
+        for (const thread of [parent, child, marker, delegated]) {
           yield* store.apply({
             type: "thread.created",
             id: EventId.make(`created:${thread.id}`),
@@ -1330,15 +1356,34 @@ describe("ThreadSettlementServiceV2 worker", () => {
           });
           yield* store.apply(event);
           yield* fixture.publishEvent(event);
+          // Its parent in a linked environment is done too, which settles it the same way.
+          const parentDone: OrchestrationV2DomainEvent = {
+            type: "thread.metadata-updated",
+            id: EventId.make("event:parent-done:manual-delegated"),
+            threadId: delegated.id,
+            occurredAt: DateTime.makeUnsafe(NOW),
+            payload: { ...delegated, delegatedFrom: { ...delegatedFrom, parentDoneAt: NOW } },
+          };
+          yield* store.apply(parentDone);
+          yield* fixture.publishEvent(parentDone);
           yield* fixture.publishEvent(settledEvent(marker));
           expect(yield* Queue.take(fixture.closedIdle)).toEqual({ threadId: parent.id });
           expect(yield* Queue.take(fixture.closedIdle)).toEqual({ threadId: marker.id });
           yield* service.drain;
-          expect(yield* Ref.get(fixture.commands)).toEqual([
+          expect(
+            (yield* Ref.get(fixture.commands)).toSorted((left, right) =>
+              left.threadId.localeCompare(right.threadId),
+            ),
+          ).toEqual([
             expect.objectContaining({
               type: "thread.auto-settle",
               threadId: child.id,
               snapshotAt: child.updatedAt,
+            }),
+            expect.objectContaining({
+              type: "thread.auto-settle",
+              threadId: delegated.id,
+              snapshotAt: delegated.updatedAt,
             }),
           ]);
           expect(yield* Ref.get(fixture.branchCalls)).toEqual([]);
@@ -1348,7 +1393,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
   );
 
   it.effect(
-    "settles a finished task delegated from a linked environment, which has no parent here",
+    "settles a finished task delegated from a linked environment once its parent there is done",
     () =>
       Effect.gen(function* () {
         yield* TestClock.setTime(Date.parse(NOW));
@@ -1360,6 +1405,7 @@ describe("ThreadSettlementServiceV2 worker", () => {
             environmentId: EnvironmentId.make("environment-elsewhere"),
             threadId: ThreadId.make("parent-elsewhere"),
             title: "Parent",
+            parentDoneAt: NOW,
           },
         };
         const ordinary = { ...appThread("ordinary", null), branch: "feature" };

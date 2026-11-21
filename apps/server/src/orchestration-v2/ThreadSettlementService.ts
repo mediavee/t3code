@@ -8,7 +8,6 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
-  isDelegatedAppThread,
   isOrchestrationV2WorkActive,
   type ThreadId,
   type OrchestrationV2DomainEvent,
@@ -301,6 +300,15 @@ function autoSettlementConfigured(settings: import("@t3tools/contracts").ServerS
   );
 }
 
+/**
+ * A subagent (the store returns it once its parent is done or holds its result), or a task a
+ * linked environment's done parent delegated here: it settles with that parent.
+ */
+const settlesWithParent = (
+  thread: Pick<ProjectionStore.ProjectionSettlementCandidate, "lineage" | "delegatedFrom">,
+) =>
+  thread.lineage.relationshipToParent === "subagent" || thread.delegatedFrom?.parentDoneAt != null;
+
 /** @internal Exported for tests. */
 export function autoSettlementSettingsKey(
   settings: import("@t3tools/contracts").ServerSettings,
@@ -382,18 +390,18 @@ export const make = Effect.gen(function* () {
     // Merge events resweep all candidates because unlinked threads settle through branch lookup.
     const candidates = threads.filter(
       (thread) =>
-        (automaticSettlementEnabled || isDelegatedAppThread(thread)) &&
+        (automaticSettlementEnabled || settlesWithParent(thread)) &&
         isAutoSettlementCandidate(thread, nowMs),
     );
 
     // Runs per candidate thread, thousands per sweep on busy servers; the sweep owns the span.
     const settleThread = Effect.fnUntraced(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {
-        if (isDelegatedAppThread(thread)) {
+        if (settlesWithParent(thread)) {
           if (yield* terminals.hasActiveSubprocess({ threadId: thread.id })) return null;
           // The store returns a subagent once its parent is done, or once its own run ended and
-          // the parent holds its result. A task delegated from a linked environment has no parent
-          // here, so it settles once its own work is done. Neither runs its own lookup.
+          // the parent holds its result. A delegated task is marked once its parent is, so it
+          // settles with it. Neither runs its own lookup.
           const uuid = yield* random.uuidV4();
           yield* orchestrator.dispatch({
             type: "thread.auto-settle",
@@ -447,7 +455,7 @@ export const make = Effect.gen(function* () {
     const lookupCandidates = (yield* Effect.forEach(
       candidates,
       (thread) => {
-        if (isDelegatedAppThread(thread)) return settleThread(thread, null);
+        if (settlesWithParent(thread)) return settleThread(thread, null);
         const projectSettings = resolveProjectSettings(settings, thread.projectId).settings;
         // Skip no-op decisions; actual settlement still reads fresh settings before dispatch.
         const settledAt = resolveAutoSettlementAt({
@@ -863,6 +871,10 @@ export const make = Effect.gen(function* () {
       case "thread.archived":
       case "thread.deleted":
         return enqueueFullSweep();
+      case "thread.metadata-updated":
+        return event.payload.delegatedFrom?.parentDoneAt == null
+          ? Effect.void
+          : enqueueThread(event.threadId);
       case "thread.pull-request-link-updated":
       case "thread.pull-request-synced":
       case "thread.issue-synced":
