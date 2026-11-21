@@ -30,6 +30,7 @@ import {
   parseWslRuntimeArchiveMembers,
   readWorkspaceConfig,
   createBuildConfig,
+  ForkUpstreamUpdateFeedError,
   DESKTOP_FILE_EXCLUSIONS,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
@@ -554,6 +555,31 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
+  );
+
+  it.effect("refuses an upstream update feed in a fork build", () =>
+    Effect.gen(function* () {
+      const forkVersion = "0.1.11-mediavee.3a9e8a6392";
+      const build = (env: Record<string, string>) =>
+        createBuildConfig("mac", "dmg", forkVersion, false, false, undefined, undefined).pipe(
+          Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env }))),
+        );
+
+      for (const env of [
+        { GITHUB_REPOSITORY: "pingdotgg/t3code" },
+        {
+          GITHUB_REPOSITORY: "mediavee/t3code",
+          T3CODE_DESKTOP_UPDATE_REPOSITORY: "PingDotGG/t3code",
+        },
+      ]) {
+        const failure = yield* Effect.flip(build(env));
+        assert.instanceOf(failure, ForkUpstreamUpdateFeedError);
+      }
+      assert.isNull((yield* build({})).publish);
+      assert.deepStrictEqual((yield* build({ GITHUB_REPOSITORY: "mediavee/t3code" })).publish, [
+        { provider: "github", owner: "mediavee", repo: "t3code", releaseType: "release" },
+      ]);
+    }),
   );
 
   it.effect("names the Electron window class in the Linux desktop entry", () =>
