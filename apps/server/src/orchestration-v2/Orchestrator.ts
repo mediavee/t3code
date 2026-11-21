@@ -7373,10 +7373,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     // The parent that delegated this thread is working with it again, so it no longer settles
     // as that parent's done task.
     const delegatedFrom = projection.thread.delegatedFrom;
+    // A parent here sends as its own thread; one in a linked environment through the link.
     if (
       delegatedFrom?.parentDoneAt !== undefined &&
-      command.linkedSender?.environmentId === delegatedFrom.environmentId &&
-      command.linkedSender.threadId === delegatedFrom.threadId
+      (command.linkedSender === undefined
+        ? command.senderThreadId === delegatedFrom.threadId
+        : command.linkedSender.environmentId === delegatedFrom.environmentId &&
+          command.linkedSender.threadId === delegatedFrom.threadId)
     ) {
       const event = yield* emit(
         events,

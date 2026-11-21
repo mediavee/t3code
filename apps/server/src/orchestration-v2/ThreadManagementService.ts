@@ -93,6 +93,7 @@ export function withCreationProvenance(
       const {
         linkOrigin: _linkOrigin,
         delegatedFrom: _delegatedFrom,
+        localDelegation: _localDelegation,
         initialMessage: _initialMessage,
         ...rest
       } = command;

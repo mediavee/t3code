@@ -1707,6 +1707,8 @@ const make = Effect.gen(function* () {
     readonly parent: Pick<OrchestrationV2ThreadProjection, "thread">;
     readonly target: OrchestratorMcpTarget | undefined;
     readonly providers: ReadonlyArray<ServerProvider>;
+    /** The project the task runs in, when it is not the parent's. */
+    readonly projectId?: ProjectId;
     /** Receipt replays bypass current settings because they start no work. Dispatch must reuse the checked command ID. */
     readonly skipProjectEnablementFilter?: boolean;
   }): Effect.fn.Return<ResolvedTarget, OrchestratorMcpFailure> {
@@ -1741,7 +1743,7 @@ const make = Effect.gen(function* () {
         const enabledForProject =
           input.skipProjectEnablementFilter === true ||
           (yield* threadManagement.isProviderInstanceEnabledForProject({
-            projectId: input.parent.thread.projectId,
+            projectId: input.projectId ?? input.parent.thread.projectId,
             instanceId: candidate.instanceId,
           }));
         if (enabledForProject) {
@@ -2916,6 +2918,16 @@ const make = Effect.gen(function* () {
           "Delegated tasks require an active run owned by this MCP provider session.",
         );
       }
+      // A task recorded like one there needs a live parent run, which a background subagent outlives.
+      if (
+        targetProject !== undefined &&
+        parentRun !== ThreadManagementService.latestActiveRun(parent)
+      ) {
+        return yield* failure(
+          "parent_not_active",
+          "A task in another project needs this thread's own active run; a background subagent cannot start one.",
+        );
+      }
       const providers = yield* loadProviders;
       const key = yield* requestKey(input.clientRequestId);
       const commandId = stableCommandId({
@@ -2942,6 +2954,7 @@ const make = Effect.gen(function* () {
           targetProject === undefined
             ? yield* parentWorkspaceCwd(parent)
             : targetProject.workspaceRoot,
+        ...(targetProject === undefined ? {} : { projectId: targetProject.id }),
         skipProjectEnablementFilter: isRetryOfAcceptedDelegation,
       }).pipe(Effect.mapError(roleRoutingFailure));
       const runtimeMode = yield* resolveRuntimeMode(
@@ -2955,61 +2968,75 @@ const make = Effect.gen(function* () {
       );
       if (targetProject !== undefined) {
         const parentNodeId = parentRun.rootNodeId;
-        // As t3_thread_launch's worktree strategy: a new checkout of that project's HEAD.
-        const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
-          input.isolation === "worktree"
-            ? {
-                type: "worktree",
-                baseRef: (yield* gitDriver
-                  .resolveCommit({ cwd: targetProject.workspaceRoot, revision: "HEAD" })
-                  .pipe(
-                    Effect.mapError(() =>
-                      failure(
-                        "invalid_request",
-                        `Isolation "worktree" needs a commit in project "${targetProject.title}" (${targetProject.workspaceRoot}). Use isolation "shared" there.`,
-                      ),
-                    ),
-                  )).commitSha,
-                startFromOrigin: false,
-              }
-            : { type: "root" };
         const title = input.title ?? parent.thread.title;
         const messageId = MessageId.make(commandId);
-        const launched = yield* threadLaunch
-          .launch({
-            commandId,
-            threadId: ThreadId.make(commandId),
-            projectId: targetProject.id,
-            title,
-            modelSelection: target.modelSelection,
-            runtimeMode,
-            interactionMode,
-            workspaceStrategy,
-            initialMessage: {
-              messageId,
-              senderThreadId: parent.thread.id,
-              text: taskPrompt(input),
-              attachments: [],
-            },
-            createdBy: "agent",
-            creationSource: "mcp",
-            delegatedFrom: {
-              environmentId: scope.environmentId,
-              threadId: parent.thread.id,
-              title: parent.thread.title,
-            },
-            localDelegation: true,
-          })
-          .pipe(
-            Effect.mapError((error) =>
-              error._tag === "ThreadManagementProviderInstanceDisabledError"
-                ? threadManagementFailure(error)
-                : failure(
-                    "orchestration_error",
-                    `Unable to start the task in project "${targetProject.title}": ${error.message}`,
-                  ),
-            ),
-          );
+        const launchTask = Effect.gen(function* () {
+          // As a scheduled task's checkout: that project's default branch, honouring its origin setting.
+          const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
+            input.isolation === "worktree"
+              ? {
+                  type: "worktree",
+                  baseRef: yield* resolveScheduledTaskBaseRef(targetProject.workspaceRoot),
+                  startFromOrigin: resolveProjectSettings(
+                    yield* serverSettings.getSettings.pipe(
+                      Effect.mapError(() =>
+                        failure("orchestration_error", "Unable to read server settings."),
+                      ),
+                    ),
+                    targetProject.id,
+                    targetProject,
+                  ).settings.newWorktreesStartFromOrigin,
+                }
+              : { type: "root" };
+          return yield* threadLaunch
+            .launch({
+              commandId,
+              threadId: ThreadId.make(commandId),
+              projectId: targetProject.id,
+              title,
+              modelSelection: target.modelSelection,
+              runtimeMode,
+              interactionMode,
+              workspaceStrategy,
+              initialMessage: {
+                messageId,
+                senderThreadId: parent.thread.id,
+                text: taskPrompt(input),
+                attachments: [],
+              },
+              createdBy: "agent",
+              creationSource: "mcp",
+              // A linked environment's fence follows its work into every thread it starts.
+              ...(parent.thread.linkOrigin === undefined
+                ? {}
+                : { linkOrigin: parent.thread.linkOrigin }),
+              delegatedFrom: {
+                environmentId: scope.environmentId,
+                threadId: parent.thread.id,
+                title: parent.thread.title,
+              },
+              localDelegation: true,
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                error._tag === "ThreadManagementProviderInstanceDisabledError"
+                  ? threadManagementFailure(error)
+                  : failure(
+                      "orchestration_error",
+                      `Unable to start the task in project "${targetProject.title}": ${error.message}`,
+                    ),
+              ),
+            );
+        });
+        // A retry of an accepted launch only records it, without resolving its checkout again.
+        const launched = isRetryOfAcceptedDelegation
+          ? {
+              threadId: ThreadId.make(commandId),
+              projection: yield* threadManagement
+                .getThreadRecords(ThreadId.make(commandId), ["runs"])
+                .pipe(Effect.mapError(threadManagementFailure)),
+            }
+          : yield* launchTask;
         const { taskId } = yield* remoteDelegation.adoptLocal(scope, {
           parentRunId: parentRun.id,
           parentNodeId,

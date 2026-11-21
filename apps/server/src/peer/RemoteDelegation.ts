@@ -1,6 +1,7 @@
 import {
   CommandId,
   type EnvironmentId,
+  latestProviderTurnForAttempt,
   type ModelSelection,
   NodeId,
   OrchestratorMcpCapabilitiesInput,
@@ -35,6 +36,7 @@ import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as Tool from "effect/ai/Tool";
 import {
+  delegatedTaskReportRuns,
   subagentResultForRun,
   withExecutedModelNote,
 } from "@t3tools/provider-core/server/subagentProjection";
@@ -47,6 +49,7 @@ import {
   taskPrompt,
 } from "../mcp/delegatedTaskModes.ts";
 import { followUpOwnerRun } from "../orchestration-v2/CommandPolicy.ts";
+import { DispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
@@ -265,32 +268,50 @@ const make = Effect.gen(function* () {
     remote: OrchestrationV2RemoteTaskChild,
     runId: RunId | null,
   ) {
-    const projection = yield* threads
-      .getThreadRecords(remote.threadId, ["messages", "turnItems", "providerTurns", "runs"])
-      .pipe(Effect.mapError(localFailure));
+    const { runs } = yield* threads.getThreadRecords(remote.threadId, ["runs"]);
     const run =
       runId === null
-        ? projection.runs.toSorted((left, right) => right.ordinal - left.ordinal)[0]
-        : projection.runs.find((candidate) => candidate.id === runId);
+        ? runs.toSorted((left, right) => right.ordinal - left.ordinal)[0]
+        : runs.find((candidate) => candidate.id === runId);
     if (run === undefined) return { text: undefined, executedModel: undefined };
-    const { text } = subagentResultForRun(projection, run);
-    return { text: text.trim().length === 0 ? undefined : text, executedModel: undefined };
-  });
+    // A completed run that said nothing takes its report from the earlier runs of its task.
+    const resultRuns = [run, ...delegatedTaskReportRuns({ runs, messages: [] }, run)];
+    const resultRunIds = resultRuns.map((candidate) => candidate.id);
+    const records = yield* threads.getThreadRecords(
+      remote.threadId,
+      ["messages", "turnItems", "providerTurns"],
+      {
+        messageRunIds: resultRunIds,
+        turnItemRunIds: resultRunIds,
+        turnItemTypes: ["assistant_message", "error", "system_notice"],
+        providerTurnAttemptIds: resultRuns.flatMap((candidate) =>
+          candidate.activeAttemptId === null ? [] : [candidate.activeAttemptId],
+        ),
+      },
+    );
+    return {
+      text: subagentResultForRun({ ...records, runs: resultRuns }, run).text,
+      executedModel: latestProviderTurnForAttempt(records.providerTurns, run.activeAttemptId)
+        ?.model,
+    };
+  }, Effect.mapError(localFailure));
 
   /** What the peer route does for a parent there, done here for a parent in this environment. */
   const tellParentDoneHere = (threadId: ThreadId, parentThreadId: ThreadId) =>
-    threads
-      .dispatch({
-        type: "thread.delegated-from.parent-done",
-        commandId: CommandId.make(`command:local-parent-done:${parentThreadId}:${threadId}`),
-        threadId,
-        parent: { environmentId: hereId, threadId: parentThreadId },
-      })
-      .pipe(
-        Effect.as("told" as const),
-        // A thread deleted here, or no longer this parent's task, is owed nothing.
-        Effect.catchTags({ OrchestratorDispatchError: () => Effect.succeed("told" as const) }),
-      );
+    random.uuidV4().pipe(
+      // Each telling is its own command: a parent done again after a follow-up must reach it.
+      Effect.flatMap((attempt) =>
+        threads.dispatch({
+          type: "thread.delegated-from.parent-done",
+          commandId: CommandId.make(`command:local-parent-done:${attempt}`),
+          threadId,
+          parent: { environmentId: hereId, threadId: parentThreadId },
+        }),
+      ),
+      Effect.as("told" as const),
+      // A thread deleted here, or no longer this parent's task, is owed nothing.
+      Effect.catchTags({ OrchestratorDispatchError: () => Effect.succeed("told" as const) }),
+    );
 
   /** The peer's project with this thread's repository, or the one the caller named. */
   const resolveRemoteProject = Effect.fn("RemoteDelegation.resolveRemoteProject")(function* (
@@ -911,7 +932,10 @@ const make = Effect.gen(function* () {
 
   /** A task's thread there that ended without a reply. */
   const noReply = "(The thread in the linked environment ended without a reply.)";
-  const noReplyHere = "(The task's thread ended without a reply.)";
+  const noRun = (remote: OrchestrationV2RemoteTaskChild) =>
+    isHere(remote)
+      ? "The task's thread has no run to follow."
+      : "The thread in the linked environment has no run to follow.";
 
   /**
    * Waits for the task's run there to end, completes the task here, and stops it there if it
@@ -1061,7 +1085,7 @@ const make = Effect.gen(function* () {
         parentThreadId,
         taskId,
         reply.text === undefined ? "failed" : "completed",
-        reply.text ?? "The thread in the linked environment has no run to follow.",
+        reply.text ?? noRun(remote),
         "ran-out",
       );
       return yield* settled(parentThreadId, taskId);
@@ -1103,7 +1127,7 @@ const make = Effect.gen(function* () {
       parentThreadId,
       taskId,
       terminalStatus(resultRun.status),
-      result.text ?? (isHere(remote) ? noReplyHere : noReply),
+      result.text ?? (isHere(remote) ? noRun(remote) : noReply),
       "ran-out",
       undefined,
       result.executedModel,
@@ -1289,9 +1313,22 @@ const make = Effect.gen(function* () {
       const key = `cancel:${encodeURIComponent(scope.requestNamespace)}:${
         input.clientRequestId ?? (yield* random.uuidV4())
       }`;
+      // An agent's cancel stops a thread here only up to its own thread's modes, as there.
+      const parentModes = isHere(remote)
+        ? yield* threads.getThreadShell(task.threadId).pipe(Effect.mapError(localFailure))
+        : null;
+      const stopTask =
+        parentModes === null
+          ? stopThere(there, remote, key, reason)
+          : stopThere(there, remote, key, reason).pipe(
+              Effect.provideService(DispatchModeLimit, {
+                runtimeMode: parentModes.runtimeMode,
+                interactionMode: parentModes.interactionMode,
+              }),
+            );
       if (task.result !== null) {
         // Best effort: the result stands whether or not the stop gets there.
-        yield* stopThere(there, remote, key, reason).pipe(
+        yield* stopTask.pipe(
           Effect.andThen(
             complete(
               task.threadId,
@@ -1314,7 +1351,7 @@ const make = Effect.gen(function* () {
       }
       // A link that is gone or a machine that is down still cancels the task
       // here; its follower keeps trying to stop it there, across restarts.
-      const unstopped = yield* stopThere(there, remote, key, reason).pipe(
+      const unstopped = yield* stopTask.pipe(
         Effect.as(undefined),
         Effect.catch((error) => Effect.succeed(error.message)),
       );

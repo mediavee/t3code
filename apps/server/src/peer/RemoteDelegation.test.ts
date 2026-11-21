@@ -9,6 +9,7 @@ import {
   MessageId,
   type ModelSelection,
   NodeId,
+  type OrchestrationV2LinkOrigin,
   type OrchestrationV2Run,
   type OrchestratorMcpThreadReadInput,
   ProjectId,
@@ -747,6 +748,7 @@ const layerLaunchHere = Layer.effect(
             interactionMode: input.interactionMode,
             branch: null,
             worktreePath: null,
+            ...(input.linkOrigin === undefined ? {} : { linkOrigin: input.linkOrigin }),
             ...(input.delegatedFrom === undefined ? {} : { delegatedFrom: input.delegatedFrom }),
             ...(input.localDelegation === undefined
               ? {}
@@ -935,6 +937,7 @@ const parentScope: McpInvocationContext.McpInvocationScope = {
 const seedParent = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   parentModelSelection: ModelSelection = modelSelection,
+  linkOrigin?: OrchestrationV2LinkOrigin,
 ) =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
@@ -952,6 +955,7 @@ const seedParent = (
       interactionMode: "default",
       branch: null,
       worktreePath: null,
+      ...(linkOrigin === undefined ? {} : { linkOrigin }),
     });
     yield* laptopEnv.sink.write({
       commandId: CommandId.make("command:seed:laptop-parent"),
@@ -2963,17 +2967,17 @@ const parentDoneThere = (
     );
 
 /** Ends the laptop parent's own run, which settling it waits for. */
-const endParentRun = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+const endParentRun = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, round = "") =>
   Effect.gen(function* () {
     const run = (yield* laptopEnv.orchestrator.getThreadProjection(parentThreadId)).runs.find(
       (candidate) => candidate.id === parentRunId,
     )!;
     const now = yield* DateTime.now;
     yield* laptopEnv.sink.write({
-      commandId: CommandId.make("command:end:laptop-parent-run"),
+      commandId: CommandId.make(`command:end:laptop-parent-run${round}`),
       events: [
         {
-          id: EventId.make("event:end:laptop-parent-run"),
+          id: EventId.make(`event:end:laptop-parent-run${round}`),
           type: "run.updated",
           threadId: parentThreadId,
           runId: parentRunId,
@@ -2987,10 +2991,11 @@ const endParentRun = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) 
 const doneParent = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   change: "settle" | "archive" | "delete",
+  round = "",
 ) =>
   laptopEnv.orchestrator.dispatch({
     type: `thread.${change}`,
-    commandId: CommandId.make(`command:${change}:laptop-parent`),
+    commandId: CommandId.make(`command:${change}:laptop-parent${round}`),
     threadId: parentThreadId,
   });
 
@@ -3457,22 +3462,24 @@ const endChildRun = (
   reply?: string,
 ) =>
   Effect.gen(function* () {
-    const run = (yield* laptopEnv.orchestrator.getThreadProjection(threadId)).runs[0]!;
+    const run = (yield* laptopEnv.orchestrator.getThreadProjection(threadId)).runs.toSorted(
+      (left, right) => right.ordinal - left.ordinal,
+    )[0]!;
     const now = yield* DateTime.now;
     yield* laptopEnv.sink.write({
-      commandId: CommandId.make(`command:end:${threadId}`),
+      commandId: CommandId.make(`command:end:${run.id}`),
       events: [
         ...(reply === undefined
           ? []
           : [
               {
-                id: EventId.make(`event:reply:${threadId}`),
+                id: EventId.make(`event:reply:${run.id}`),
                 type: "message.updated" as const,
                 threadId,
                 runId: run.id,
                 occurredAt: now,
                 payload: {
-                  id: MessageId.make(`message:reply:${threadId}`),
+                  id: MessageId.make(`message:reply:${run.id}`),
                   threadId,
                   runId: run.id,
                   nodeId: null,
@@ -3488,7 +3495,7 @@ const endChildRun = (
               },
             ]),
         {
-          id: EventId.make(`event:end:${threadId}`),
+          id: EventId.make(`event:end:${run.id}`),
           type: "run.updated",
           threadId,
           runId: run.id,
@@ -3624,6 +3631,111 @@ it.effect("a settled parent settles its task in another project here", () =>
       const child = yield* a.orchestrator.getThreadProjection(delegated.remoteChild.threadId);
       expect(child.thread.delegatedFrom?.parentDoneAt).not.toBeNull();
       expect(yield* a.projections.getRemoteTasksOwedParentDone()).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "a task in another project here keeps its parent's link fence, and the parent reaches it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        const linkOrigin = { sessionId: "session:fenced-link", label: "Fenced link" };
+        yield* seedParent(a, modelSelection, linkOrigin);
+
+        const delegated = yield* delegateHere(a);
+        const child = yield* a.orchestrator.getThreadProjection(delegated.remoteChild.threadId);
+        expect(child.thread.linkOrigin).toEqual(linkOrigin);
+        yield* endChildRun(a, delegated.remoteChild.threadId, "completed", "Done.");
+        yield* taskResult(a, delegated.taskId);
+        const sent = yield* a.call("t3_thread_send", {
+          threadId: delegated.remoteChild.threadId,
+          message: "One more thing.",
+        });
+        expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+/** The parent here wakes for a new turn after it was done, as a user's message would wake it. */
+const wakeParent = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>) =>
+  Effect.gen(function* () {
+    yield* laptopEnv.orchestrator.dispatch({
+      type: "thread.unsettle",
+      commandId: CommandId.make("command:unsettle:laptop-parent"),
+      threadId: parentThreadId,
+      reason: "user",
+    });
+    const run = (yield* laptopEnv.orchestrator.getThreadProjection(parentThreadId)).runs.find(
+      (candidate) => candidate.id === parentRunId,
+    )!;
+    const now = yield* DateTime.now;
+    yield* laptopEnv.sink.write({
+      commandId: CommandId.make("command:wake:laptop-parent-run"),
+      events: [
+        {
+          id: EventId.make("event:wake:laptop-parent-run"),
+          type: "run.updated",
+          threadId: parentThreadId,
+          runId: parentRunId,
+          occurredAt: now,
+          payload: { ...run, status: "running", completedAt: null },
+        },
+      ],
+    });
+  });
+
+const parentDoneAt = (
+  laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
+  threadId: ThreadId,
+) =>
+  laptopEnv.orchestrator
+    .getThreadProjection(threadId)
+    .pipe(Effect.map((projection) => projection.thread.delegatedFrom?.parentDoneAt));
+
+it.effect("a parent here that works with its done task again settles it again when done", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+      yield* a.remote.start();
+
+      const delegated = yield* delegateHere(a);
+      const childId = delegated.remoteChild.threadId;
+      yield* endChildRun(a, childId, "completed", "First pass done.");
+      yield* taskResult(a, delegated.taskId);
+      yield* endParentRun(a);
+      yield* doneParent(a, "settle");
+      yield* parentDoneThere(a, delegated.taskId);
+      expect(yield* parentDoneAt(a, childId)).toBeDefined();
+
+      // The parent works with its task again: the task is no longer one its parent is done with.
+      yield* wakeParent(a);
+      const sent = yield* a.call("t3_thread_send", {
+        threadId: childId,
+        message: "Now the second pass.",
+      });
+      expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
+      const followUp = (sent.structuredContent as { taskId?: NodeId }).taskId;
+      expect(followUp).toBeDefined();
+      expect(yield* parentDoneAt(a, childId)).toBeUndefined();
+
+      // Done again, the parent tells it again.
+      yield* endChildRun(a, childId, "completed", "Second pass done.");
+      yield* taskResult(a, followUp!);
+      yield* endParentRun(a, ":again");
+      yield* doneParent(a, "settle", ":again");
+      yield* parentDoneThere(a, followUp!);
+      expect(yield* parentDoneAt(a, childId)).toBeDefined();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
