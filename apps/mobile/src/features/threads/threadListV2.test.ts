@@ -659,20 +659,29 @@ describe("buildThreadListV2Items delegated task groups", () => {
     });
   const layoutOf = (
     threads: ReadonlyArray<EnvironmentThreadShell>,
-    options: { readonly expanded?: boolean; readonly searchQuery?: string } = {},
+    options: {
+      readonly expanded?: boolean;
+      readonly searchQuery?: string;
+      readonly environmentId?: EnvironmentId;
+      readonly projectRefs?: ReadonlyArray<{ environmentId: EnvironmentId; projectId: ProjectId }>;
+    } = {},
   ) => {
     const delegatedTaskGroups = groupDelegatedTasks({
       threads,
+      delegatedUnderParent: new Set(),
       isParentArchived: () => false,
       environmentLabel: () => null,
     });
     return buildThreadListV2Items({
       threads,
-      environmentId: null,
+      environmentId: options.environmentId ?? null,
+      projectRefs: options.projectRefs ?? null,
       searchQuery: options.searchQuery ?? "",
       now: NOW,
       delegatedTaskGroups,
-      expandedDelegatedGroupKeys: new Set(options.expanded ? [`${macbook}:coordinator`] : []),
+      expandedDelegatedGroupKeys: new Set(
+        options.expanded ? delegatedTaskGroups.groups.map((group) => group.key) : [],
+      ),
     });
   };
   const rows = (layout: ReturnType<typeof buildThreadListV2Items>) =>
@@ -707,7 +716,95 @@ describe("buildThreadListV2Items delegated task groups", () => {
     });
     expect(listItems.map((item) => item.key)).toEqual([
       `v2-thread:${environmentId}:mine`,
-      `v2-delegated-group:${macbook}:coordinator`,
+      `v2-delegated-group:${layoutOf(threads).items[1]?.delegatedGroup?.group.key}`,
+    ]);
+  });
+
+  it("gives each project and environment in scope a group with only its tasks", () => {
+    const laptop = EnvironmentId.make("laptop");
+    const app = ProjectId.make("app");
+    const site = ProjectId.make("site");
+    const threads = [
+      { ...delegated("app-task", "2026-06-01T01:00:00.000Z"), projectId: app },
+      { ...delegated("site-task", "2026-06-01T02:00:00.000Z"), projectId: site },
+      {
+        ...delegated("laptop-task", "2026-06-01T03:00:00.000Z"),
+        environmentId: laptop,
+        projectId: app,
+      },
+    ];
+    expect(rows(layoutOf(threads)).toSorted()).toEqual([
+      "group Plan: app-task",
+      "group Plan: laptop-task",
+      "group Plan: site-task",
+    ]);
+    expect(
+      rows(layoutOf(threads, { expanded: true, projectRefs: [{ environmentId, projectId: app }] })),
+    ).toEqual(["group Plan: app-task", "  app-task"]);
+    expect(rows(layoutOf(threads, { projectRefs: [{ environmentId, projectId: site }] }))).toEqual([
+      "group Plan: site-task",
+    ]);
+    expect(rows(layoutOf(threads, { environmentId: laptop }))).toEqual(["group Plan: laptop-task"]);
+  });
+
+  it("gives a nested task its own state and the actions of a top-level row", () => {
+    const layout = layoutOf(
+      [
+        delegated("busy", "2026-06-01T03:00:00.000Z"),
+        delegated("done", "2026-06-01T02:00:00.000Z", true),
+        {
+          ...delegated("later", "2026-06-01T01:00:00.000Z"),
+          snoozedAt: NOW,
+          snoozedUntil: "2026-06-03T00:00:00.000Z",
+        },
+        { ...delegated("kept", "2026-06-01T00:00:00.000Z"), pinnedAt: NOW },
+      ],
+      { expanded: true },
+    );
+    const nested = layout.items.filter((item) => item.nested === true);
+    expect(
+      nested.map((item) => ({
+        id: item.thread.id,
+        variant: item.variant,
+        snoozed: item.snoozed,
+        pinned: item.pinned,
+        actions: resolveThreadListV2SwipeActions({
+          variant: item.variant,
+          settlementSupported: true,
+          snoozeSupported: true,
+          snoozable: true,
+          snoozed: item.snoozed,
+        }),
+      })),
+    ).toEqual([
+      {
+        id: "busy",
+        variant: "card",
+        snoozed: false,
+        pinned: false,
+        actions: { primary: "settle", secondary: "snooze" },
+      },
+      {
+        id: "done",
+        variant: "slim",
+        snoozed: false,
+        pinned: false,
+        actions: { primary: "unsettle", secondary: "snooze" },
+      },
+      {
+        id: "later",
+        variant: "slim",
+        snoozed: true,
+        pinned: false,
+        actions: { primary: "unsnooze", secondary: null },
+      },
+      {
+        id: "kept",
+        variant: "card",
+        snoozed: false,
+        pinned: true,
+        actions: { primary: "settle", secondary: "snooze" },
+      },
     ]);
   });
 

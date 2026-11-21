@@ -2,16 +2,17 @@ import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { isListedThreadLineage } from "@t3tools/contracts";
 
 import { scopedThreadKey } from "../environment/scoped.ts";
+import { threadKey } from "./entities.ts";
 import type { EnvironmentThreadShell } from "./models.ts";
 import { resolveThreadActivityTimestamp, toSortableTimestamp } from "./threadSort.ts";
 
 /**
- * Tasks delegated here by one parent thread the client cannot list. Lists show
+ * Tasks one parent thread the client cannot list delegated into one project of one
+ * environment, so a list scoped to a project or environment holds whole groups. Lists show
  * one row for the parent in the place of `representativeKey`, its most relevant task.
- * Keys are `scopedThreadKey`s, as list rows use.
+ * Task keys are `scopedThreadKey`s, as list rows use.
  */
 export interface DelegatedTaskGroup {
-  /** The parent's thread key. */
   readonly key: string;
   readonly parent: ScopedThreadRef;
   readonly title: string;
@@ -40,6 +41,7 @@ type GroupableThread = Pick<
   EnvironmentThreadShell,
   | "environmentId"
   | "id"
+  | "projectId"
   | "archivedAt"
   | "lineage"
   | "delegatedFrom"
@@ -50,38 +52,49 @@ type GroupableThread = Pick<
 >;
 
 /**
- * Groups the delegated tasks among `threads`, the threads lists show, by parent. Those
- * lists leave out tasks under a parent they show; a parent known to be archived leaves
- * its tasks listed on their own.
+ * Groups the delegated tasks among `threads` that no listed parent shows by parent, then by
+ * the environment and project they run in. A parent known to be archived leaves its tasks
+ * listed on their own. Allocates nothing until it finds a task to group.
  */
 export function groupDelegatedTasks(input: {
   readonly threads: ReadonlyArray<GroupableThread>;
+  /** `threadKey`s of the tasks listed under their parent. */
+  readonly delegatedUnderParent: ReadonlySet<string>;
   readonly isParentArchived: (parent: ScopedThreadRef) => boolean;
   readonly environmentLabel: (environmentId: EnvironmentId) => string | null;
 }): DelegatedTaskGroups {
-  const byParent = new Map<string, Array<{ key: string; thread: GroupableThread; at: number }>>();
+  let byGroup: Map<string, Array<{ key: string; thread: GroupableThread; at: number }>> | undefined;
   for (const thread of input.threads) {
     const from = thread.delegatedFrom;
-    if (from == null || thread.archivedAt !== null || !isListedThreadLineage(thread.lineage)) {
+    if (
+      from == null ||
+      thread.archivedAt !== null ||
+      !isListedThreadLineage(thread.lineage) ||
+      input.delegatedUnderParent.has(
+        threadKey({ environmentId: thread.environmentId, threadId: thread.id }),
+      )
+    ) {
       continue;
     }
     const key = scopedThreadKey({ environmentId: thread.environmentId, threadId: thread.id });
-    const parentKey = scopedThreadKey(from);
-    let tasks = byParent.get(parentKey);
+    const groupKey = `${scopedThreadKey(from)}|${thread.environmentId}:${thread.projectId}`;
+    byGroup ??= new Map();
+    let tasks = byGroup.get(groupKey);
     if (tasks === undefined) {
-      const parent = { environmentId: from.environmentId, threadId: from.threadId };
-      if (input.isParentArchived(parent)) continue;
+      if (input.isParentArchived({ environmentId: from.environmentId, threadId: from.threadId })) {
+        continue;
+      }
       tasks = [];
-      byParent.set(parentKey, tasks);
+      byGroup.set(groupKey, tasks);
     }
     const at = toSortableTimestamp(resolveThreadActivityTimestamp(thread) ?? undefined) ?? 0;
     tasks.push({ key, thread, at });
   }
-  if (byParent.size === 0) return NO_DELEGATED_TASK_GROUPS;
+  if (byGroup === undefined || byGroup.size === 0) return NO_DELEGATED_TASK_GROUPS;
   const groups: DelegatedTaskGroup[] = [];
   const byRepresentativeKey = new Map<string, DelegatedTaskGroup>();
   const foldedKeys = new Set<string>();
-  for (const [key, tasks] of byParent) {
+  for (const [key, tasks] of byGroup) {
     tasks.sort((left, right) => right.at - left.at || (left.key < right.key ? -1 : 1));
     const newest = tasks[0]!;
     const representative =

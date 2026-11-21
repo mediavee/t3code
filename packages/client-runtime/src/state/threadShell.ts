@@ -68,6 +68,8 @@ const isChildRunLive = (
       thread.status === "running" ||
       thread.status === "waiting";
 
+const isDelegatedTask = (thread: EnvironmentThreadShell) => thread.delegatedFrom != null;
+
 /**
  * Whether a thread shows under its parent rather than in thread lists: a
  * subagent, a side chat, or a task a linked environment delegated here whose parent the
@@ -790,15 +792,30 @@ export function createEnvironmentThreadShellAtoms(input: {
     return next;
   }).pipe(Atom.withLabel("environment-navigation-thread-shells"));
 
-  // Tasks whose parent no list shows, one group per parent; lists give each group a row.
+  // Tasks whose parent no list shows, grouped for a row per parent in each project. Built
+  // from the quiet shells, so a task's streaming ticks do not regroup.
   let previousDelegatedTaskGroups = NO_DELEGATED_TASK_GROUPS;
   const delegatedTaskGroupsAtom = Atom.make((get) => {
+    const threads = get(quietThreadShellsAtom);
+    if (!threads.some(isDelegatedTask)) {
+      previousDelegatedTaskGroups = NO_DELEGATED_TASK_GROUPS;
+      return NO_DELEGATED_TASK_GROUPS;
+    }
     const catalog = get(input.catalogValueAtom);
+    let archivedKeys: ReadonlySet<string> | undefined;
     const next = groupDelegatedTasks({
-      threads: get(navigationThreadShellsAtom),
-      isParentArchived: (parent) =>
-        (get(environmentThreadIndexAtom(parent.environmentId)).get(parent.threadId)?.archivedAt ??
-          null) !== null,
+      threads,
+      delegatedUnderParent: get(delegatedUnderParentAtom),
+      isParentArchived: (parent) => {
+        archivedKeys ??= new Set(
+          threads.flatMap((thread) =>
+            thread.archivedAt === null
+              ? []
+              : [threadKey({ environmentId: thread.environmentId, threadId: thread.id })],
+          ),
+        );
+        return archivedKeys.has(threadKey(parent));
+      },
       environmentLabel: (environmentId) => catalog.entries.get(environmentId)?.target.label ?? null,
     });
     if (delegatedTaskGroupsEqual(previousDelegatedTaskGroups, next)) {

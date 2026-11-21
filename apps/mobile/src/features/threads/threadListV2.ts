@@ -863,14 +863,22 @@ export function buildThreadListV2Items(input: {
       ? input.delegatedTaskGroups
       : undefined;
   const delegatedTaskByKey = new Map<string, EnvironmentThreadShell>();
+  const shelfOf = (thread: EnvironmentThreadShell) => {
+    const supportsSettlement = input.settlementEnvironmentIds?.has(thread.environmentId) ?? true;
+    const supportsSnooze = input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true;
+    if (supportsSnooze && effectiveSnoozed(thread, { now })) return "snoozed";
+    const hasQueuedMessages =
+      queuedThreadKeys?.has(`${thread.environmentId}:${thread.id}`) === true;
+    if (supportsSettlement && thread.settledOverride === "settled" && !hasQueuedMessages) {
+      return "settled";
+    }
+    return thread.pinnedAt != null ? "pinned" : "active";
+  };
   for (const thread of listedThreads) {
-    if (delegatedGroups !== undefined) {
-      const key = `${thread.environmentId}:${thread.id}`;
-      if (delegatedGroups.byRepresentativeKey.has(key)) delegatedTaskByKey.set(key, thread);
-      if (delegatedGroups.foldedKeys.has(key)) {
-        delegatedTaskByKey.set(key, thread);
-        continue;
-      }
+    const rowKey = `${thread.environmentId}:${thread.id}`;
+    const folded = delegatedGroups?.foldedKeys.has(rowKey) === true;
+    if (folded || delegatedGroups?.byRepresentativeKey.has(rowKey) === true) {
+      delegatedTaskByKey.set(rowKey, thread);
     }
     if (matchingThreads !== null && !matchingThreads.has(thread)) {
       const key = threadSearchMatchKey({
@@ -880,10 +888,9 @@ export function buildThreadListV2Items(input: {
       if (input.matchedThreadKeys?.has(key) !== true) continue;
       contentOnlyThreadKeys.add(key);
     }
-    const supportsSettlement = input.settlementEnvironmentIds?.has(thread.environmentId) ?? true;
-    const supportsSnooze = input.snoozeEnvironmentIds?.has(thread.environmentId) ?? true;
-    if (supportsSnooze && effectiveSnoozed(thread, { now })) {
-      snoozed.push(thread);
+    const shelf = shelfOf(thread);
+    if (shelf === "snoozed") {
+      // A folded task wakes in its group's row, so its wake time still counts.
       if (
         thread.snoozedUntil != null &&
         (nextSnoozeWakeAt === null ||
@@ -891,15 +898,12 @@ export function buildThreadListV2Items(input: {
       ) {
         nextSnoozeWakeAt = thread.snoozedUntil;
       }
-      continue;
     }
-    const hasQueuedMessages =
-      queuedThreadKeys?.has(`${thread.environmentId}:${thread.id}`) === true;
-    if (supportsSettlement && thread.settledOverride === "settled" && !hasQueuedMessages) {
-      settled.push(thread);
-    } else if (thread.pinnedAt != null) {
-      pinned.push(thread);
-    } else if (workingShelfEnabled && (input.isWorking ?? isThreadWorking)(thread)) {
+    if (folded) continue;
+    if (shelf === "snoozed") snoozed.push(thread);
+    else if (shelf === "settled") settled.push(thread);
+    else if (shelf === "pinned") pinned.push(thread);
+    else if (workingShelfEnabled && (input.isWorking ?? isThreadWorking)(thread)) {
       working.push(thread);
     } else {
       active.push(thread);
@@ -1012,13 +1016,16 @@ export function buildThreadListV2Items(input: {
     const expanded = input.expandedDelegatedGroupKeys?.has(group.key) === true;
     items.push({ ...item, delegatedGroup: { group, tasks, expanded } });
     if (!expanded) return;
+    // Each task keeps its own shelf's look and actions.
     for (const thread of tasks) {
+      const shelf = shelfOf(thread);
+      const slim = shelf === "snoozed" || shelf === "settled";
       items.push({
         thread,
-        variant: "slim",
-        snoozed: false,
-        pinned: false,
-        wokeAt: null,
+        variant: slim ? "slim" : "card",
+        snoozed: shelf === "snoozed",
+        pinned: shelf === "pinned",
+        wokeAt: slim ? null : resolveThreadListV2WokeAt(thread, { now }),
         isLast: false,
         nested: true,
       });

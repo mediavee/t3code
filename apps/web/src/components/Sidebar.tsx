@@ -201,6 +201,8 @@ import {
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
   resolveSidebarThreadSection,
+  sidebarRowVariantAction,
+  splitFoldedSidebarThreads,
   resolveSidebarReorderableThreadKeys,
   searchSidebarThreads,
   shouldCreateNewThreadInCurrentProject,
@@ -385,6 +387,7 @@ function threadShellKey(thread: Pick<SidebarThreadSummary, "environmentId" | "id
 
 const NO_DRAGGED_ORDER: readonly string[] = [];
 const NO_DELEGATED_TASKS: ReadonlyMap<string, EnvironmentThreadShell> = new Map();
+const NO_FOLDED_THREADS: readonly EnvironmentThreadShell[] = [];
 const NO_DRAGGED_ORDERS: {
   readonly settledOrder: readonly string[];
   readonly activeOrder: readonly string[] | undefined;
@@ -578,6 +581,14 @@ function useSidebarThreads(input: {
   ] as const) {
     for (const thread of list) sectionByThreadKey.set(threadShellKey(thread), section);
   }
+  // Folded tasks keep their own section, so menus and keyboard actions treat them as their row.
+  const settledThreadKeys = new Set(settledThreads.map(threadShellKey));
+  const snoozedThreadKeys = new Set(snoozedThreads.map(threadShellKey));
+  for (const [key, section] of partition.foldedSections) {
+    sectionByThreadKey.set(key, section);
+    if (section === "settled") settledThreadKeys.add(key);
+    if (section === "snoozed") snoozedThreadKeys.add(key);
+  }
   return {
     ...partition,
     threads,
@@ -616,8 +627,8 @@ function useSidebarThreads(input: {
     visibleWorkingThreads,
     orderedThreadKeys: orderedThreads.map(threadShellKey),
     threadByKey: new Map(orderedThreads.map((thread) => [threadShellKey(thread), thread] as const)),
-    settledThreadKeys: new Set(settledThreads.map(threadShellKey)),
-    snoozedThreadKeys: new Set(snoozedThreads.map(threadShellKey)),
+    settledThreadKeys,
+    snoozedThreadKeys,
     sectionByThreadKey,
     pinnedKeys: pinnedThreads.map(threadShellKey),
     activeKeys: activeThreads.map(threadShellKey),
@@ -643,15 +654,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
-  const foldedThreads: EnvironmentThreadShell[] = [];
-  const unfolded =
-    foldedThreadKeys.size === 0
-      ? visible
-      : visible.filter((thread) => {
-          if (!foldedThreadKeys.has(threadShellKey(thread))) return true;
-          foldedThreads.push(thread);
-          return false;
-        });
+  const { unfolded, folded: foldedSections } = splitFoldedSidebarThreads(visible, {
+    foldedThreadKeys,
+    configLoaded: (environmentId) => serverConfigs.has(environmentId),
+    now: preciseNow,
+  });
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -738,7 +745,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     ),
     settledThreads: sortSettledThreads(settled),
     visibleThreads: visible,
-    foldedThreads,
+    foldedThreads:
+      foldedSections.size === 0
+        ? NO_FOLDED_THREADS
+        : visible.filter((thread) => foldedSections.has(threadShellKey(thread))),
+    foldedSections,
     snoozeNow: preciseNow,
   };
 }
@@ -1347,6 +1358,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     snoozedThreads,
     settledThreads,
     snoozeNow,
+    foldedSections,
     searchableThreads,
     settledVisibleCount,
     settledCount,
@@ -3482,12 +3494,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           thread,
                           variant: rowVariant,
                           navigationParent: rowNavigationParent(section, folderRow),
-                          variantAction:
-                            section === "snoozed"
-                              ? "unsnooze"
-                              : section === "settled"
-                                ? "unsettle"
-                                : "settle",
+                          variantAction: sidebarRowVariantAction(section),
                           settlementSupported: serverConfigs.has(thread.environmentId),
                           snoozeSupported: serverConfigs.has(thread.environmentId),
                           pinningSupported: serverConfigs.has(thread.environmentId),
@@ -3577,7 +3584,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                     key={taskKey}
                                     {...threadRowProps(
                                       task,
-                                      task.settledOverride === "settled" ? "settled" : "active",
+                                      taskKey === threadKey
+                                        ? section
+                                        : (foldedSections.get(taskKey) ?? "active"),
                                       groupRowId,
                                     )}
                                     variant="folder"
