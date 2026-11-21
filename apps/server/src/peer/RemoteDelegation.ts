@@ -13,6 +13,7 @@ import {
   type OrchestratorMcpThreadSendInput,
   type OrchestratorMcpThreadSendResult,
   type OrchestratorMcpThreadTimelineItem,
+  type OrchestratorMcpDelegateTaskResult,
   type OrchestratorMcpThreadWaitResult,
   type OrchestrationV2RemoteTaskChild,
   type OrchestrationV2Subagent,
@@ -21,6 +22,7 @@ import {
   type ProviderInstanceId,
   ProviderDriverKind,
   type RunId,
+  type RuntimeRequestId,
   type ThreadId,
   type OrchestratorMcpThreadBackgroundTask,
 } from "@t3tools/contracts";
@@ -51,6 +53,10 @@ import {
   taskPrompt,
 } from "../mcp/delegatedTaskModes.ts";
 import { followUpOwnerRun } from "../orchestration-v2/CommandPolicy.ts";
+import {
+  parentWakeCommand,
+  parentWakeMessageId,
+} from "../orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import { DispatchModeLimit } from "../orchestration-v2/DispatchModeLimit.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { runOutcome } from "../orchestration-v2/RestartBackgroundNote.ts";
@@ -112,7 +118,13 @@ export class RemoteDelegation extends Context.Service<
           readonly environmentId: EnvironmentId;
         };
       },
-    ) => Effect.Effect<{ readonly taskId: NodeId }, OrchestratorMcpFailure>;
+    ) => Effect.Effect<
+      {
+        readonly taskId: NodeId;
+        readonly runtimeModeSteppedDown?: OrchestratorMcpDelegateTaskResult["runtimeModeSteppedDown"];
+      },
+      OrchestratorMcpFailure
+    >;
     /**
      * Records a thread already launched here, in another project, as a task of the calling
      * thread's active run, and follows it as a task there would be: its end wakes the parent,
@@ -517,7 +529,7 @@ const make = Effect.gen(function* () {
         title,
         ...(launched.runId === null ? {} : { runId: launched.runId }),
       };
-      return yield* record(scope, {
+      const { taskId } = yield* record(scope, {
         commandId: CommandId.make(
           `command:mcp:${encodeURIComponent(scope.requestNamespace)}:remote-delegate:${encodeURIComponent(key)}`,
         ),
@@ -531,6 +543,11 @@ const make = Effect.gen(function* () {
         remoteChild,
         completionWake: input.mode === "wait" ? "settled_only" : "always",
       });
+      const { runtimeModeSteppedDown } = launched;
+      return {
+        taskId,
+        ...(runtimeModeSteppedDown === undefined ? {} : { runtimeModeSteppedDown }),
+      };
     },
   );
 
@@ -1008,6 +1025,87 @@ const make = Effect.gen(function* () {
    * A task completed here first (cancelled, or its parent stopped) is
    * stopped there, and done once that stop is recorded here.
    */
+  // The requests each followed task's parent was woken for: the wait's hint, not the record.
+  const wokenRequests = new Map<NodeId, ReadonlySet<RuntimeRequestId>>();
+
+  /** The task's wakes still queued on its parent, each with the request it is for. */
+  const queuedWakes = Effect.fn("RemoteDelegation.queuedWakes")(function* (
+    task: OrchestrationV2Subagent,
+  ) {
+    const { thread, runs } = yield* threads.getThreadRecords(task.threadId, ["runs"], {
+      runStatuses: ["queued"],
+    });
+    const prefix = parentWakeMessageId(task.threadId, "" as RuntimeRequestId);
+    const candidates = runs.filter(
+      (run) => run.status === "queued" && run.userMessageId.startsWith(prefix),
+    );
+    const messages =
+      candidates.length === 0
+        ? new Map()
+        : yield* threads.getMessagesById(
+            task.threadId,
+            candidates.map((run) => run.userMessageId),
+          );
+    const wakes = candidates.flatMap((run) => {
+      const source = messages.get(run.userMessageId)?.notification?.source;
+      return source?.kind === "delegated_task" && source.taskIds.includes(task.id)
+        ? [{ run, requestId: run.userMessageId.slice(prefix.length) as RuntimeRequestId }]
+        : [];
+    });
+    return { thread, wakes };
+  });
+
+  /**
+   * Wakes the parent here for each request its task there waits on, as a task here would, and
+   * cancels the task's queued wakes for any other. Those are read from the parent's queue, so a
+   * wake queued before a restart is still cancelled once its request is answered there.
+   */
+  const tellParentOfRequests = Effect.fn("RemoteDelegation.tellParentOfRequests")(function* (
+    task: OrchestrationV2Subagent,
+    remote: OrchestrationV2RemoteTaskChild,
+    pending: NonNullable<OrchestratorMcpThreadWaitResult["pendingRequests"]>,
+  ) {
+    const { thread, wakes } = yield* queuedWakes(task);
+    const woken = wokenRequests.get(task.id) ?? new Set<RuntimeRequestId>();
+    const live = new Set(pending.map((request) => request.requestId));
+    if (thread.archivedAt === null && thread.deletedAt === null) {
+      for (const request of pending) {
+        if (woken.has(request.requestId)) continue;
+        // Its command id is the request's, so one woken before a restart is not woken again.
+        yield* threads
+          .dispatch(
+            parentWakeCommand(
+              task,
+              remote.threadId,
+              {
+                id: request.requestId,
+                kind: request.kind,
+                answeredByMessage: request.answeredByMessage,
+                prompt: request.prompt,
+                reason: request.reason,
+              },
+              remote.environmentId,
+            ),
+          )
+          .pipe(Effect.ignoreCause({ log: true }));
+      }
+    }
+    for (const { run, requestId } of wakes) {
+      if (live.has(requestId)) continue;
+      yield* threads
+        .dispatch({
+          type: "queued-run.cancel",
+          commandId: CommandId.make(
+            `server:delegated-task-question-cancel:${task.threadId}:${requestId}`,
+          ),
+          threadId: task.threadId,
+          runId: run.id,
+        })
+        .pipe(Effect.ignoreCause({ log: true }));
+    }
+    wokenRequests.set(task.id, live);
+  });
+
   const followOnce = Effect.fn("RemoteDelegation.followOnce")(function* (
     parentThreadId: ThreadId,
     taskId: NodeId,
@@ -1086,11 +1184,26 @@ const make = Effect.gen(function* () {
             // tasks to wake it for the answer, which a task here waits for too.
             // An older peer ignores this and reports the run alone.
             untilDelegatedWorkSettled: true,
+            // Its questions and approvals end the wait too, so the parent here hears of them.
+            untilPendingRequestsChangeFrom: [
+              ...(wokenRequests.get(taskId) ??
+                // After a restart, what its parent still has queued.
+                (yield* queuedWakes(task)).wakes.map(({ requestId }) => requestId)),
+            ],
           })
     ).pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
-    if (waited.timedOut || waited.interruptedByIncomingMessage === true) return false;
+    const runGoesOn = waited.timedOut || waited.interruptedByIncomingMessage === true;
+    // A run that ended there answers no request, so its wakes here are dropped.
+    if (
+      !isHere(remote) &&
+      task.result === null &&
+      (waited.pendingRequests !== undefined || !runGoesOn)
+    ) {
+      yield* tellParentOfRequests(task, remote, runGoesOn ? (waited.pendingRequests ?? []) : []);
+    }
+    if (runGoesOn) return false;
     // A task recorded without its run waits on the thread's latest; a
     // thread there with none has nothing left to wait for.
     if (waited.runId === null) {
@@ -1190,7 +1303,10 @@ const make = Effect.gen(function* () {
         }),
         Effect.ensuring(
           Effect.sync(() => {
-            if (following.get(taskId) === state) following.delete(taskId);
+            if (following.get(taskId) === state) {
+              following.delete(taskId);
+              wokenRequests.delete(taskId);
+            }
           }),
         ),
       );

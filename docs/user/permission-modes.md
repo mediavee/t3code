@@ -23,6 +23,9 @@ An administrator can cap the modes available on a machine with a
 Approve or reject requests in the conversation to let the agent continue. Permission modes do
 not prevent the agent from asking questions about the task. Subagent approval requests appear in
 the parent conversation with the subagent's name, so you can respond without switching threads.
+A delegated task's approval request also reaches the agent that delegated it, which can approve
+it only if its own permission mode would allow the action, or decline it. A request your own ask
+rules raised despite full access waits for you. Whichever answer comes first applies.
 
 ## Provider differences
 

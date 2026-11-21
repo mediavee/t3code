@@ -1394,7 +1394,8 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     const question = requestEvent("event:question", "request:question", "live");
     const asyncQuestion = requestEvent("event:async-question", "request:async-question");
     const answered = requestEvent("event:answered", "request:answered", "live");
-    const approval = requestEvent("event:approval", "request:approval", "message", "command");
+    // A blocking wait returns the approval itself, so it wakes no one either.
+    const approval = requestEvent("event:approval", "request:approval", "live", "command");
     const eventSink = yield* EventSink.EventSinkV2;
     yield* eventSink.write({
       events: [question, asyncQuestion, answered, approval],
@@ -1511,13 +1512,19 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     const caughtUp = (yield* projections.getThreadProjection(parentThreadId)).messages.filter(
       (message) => message.notification !== undefined,
     );
-    assert.equal(caughtUp.length, 2);
-    assert.equal(
-      caughtUp.filter((message) => message.text.includes(`requestId ${question.payload.id}.`))
-        .length,
-      1,
+    // The wait that held the approval ended with the parent's run, so it wakes the parent now.
+    assert.equal(caughtUp.length, 3);
+    for (const request of [question, approval]) {
+      assert.equal(
+        caughtUp.filter((message) => message.text.includes(`requestId ${request.payload.id}`))
+          .length,
+        1,
+      );
+    }
+    assert.include(
+      caughtUp.find((message) => message.text.includes(`requestId ${question.payload.id}.`))?.text,
+      "is blocked on a question",
     );
-    assert.include(caughtUp[1]?.text, "is blocked on a question");
     assert.isFalse(
       caughtUp.some((message) => message.text.includes(`requestId ${answered.payload.id}.`)),
     );
@@ -1526,7 +1533,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       (yield* projections.getThreadProjection(parentThreadId)).messages.filter(
         (message) => message.notification !== undefined,
       ).length,
-      2,
+      3,
     );
     const terminalQuestion = requestEvent(
       "event:terminal-question",
@@ -1539,7 +1546,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       (yield* projections.getThreadProjection(parentThreadId)).messages.filter(
         (message) => message.notification !== undefined,
       ).length,
-      3,
+      4,
     );
     yield* eventSink.write({
       events: [
@@ -1571,7 +1578,7 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
       (yield* projections.getThreadProjection(parentThreadId)).messages.filter(
         (message) => message.notification !== undefined,
       ).length,
-      4,
+      5,
     );
     const waitDelivered = requestEvent("event:wait-delivered", "request:wait-delivered", "live");
     const waitDeliveredParentCompleted = {
@@ -1580,7 +1587,8 @@ it.effect("wakes the parent once when its delegated task asks a question", () =>
     };
     yield* eventSink.write({ events: [waitDelivered, waitDeliveredParentCompleted] });
     yield* reactor.handle(waitDeliveredParentCompleted);
-    assert.isFalse(
+    // Still pending when the parent's turn ends: whatever its wait returned, it was not answered.
+    assert.isTrue(
       (yield* projections.getThreadProjection(parentThreadId)).messages.some((message) =>
         message.text.includes(`requestId ${waitDelivered.payload.id}.`),
       ),
