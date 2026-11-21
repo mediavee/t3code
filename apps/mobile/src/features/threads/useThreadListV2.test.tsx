@@ -316,9 +316,9 @@ it("counts no older settled task the list shows under its parent, before or afte
     settledShelfExpanded: true,
     selectedThreadKey: null,
   };
-  let settledCount: number | undefined;
+  let result: ReturnType<typeof useThreadListV2> | undefined;
   function ListProbe() {
-    settledCount = useThreadListV2(input).layout.settledCount;
+    result = useThreadListV2(input);
     return null;
   }
   const root = createRoot(document.createElement("div"));
@@ -330,11 +330,17 @@ it("counts no older settled task the list shows under its parent, before or afte
       </RegistryContext>,
     ),
   );
-  expect(settledCount).toBe(0);
+  expect(result?.layout.settledCount).toBe(0);
 
   await act(async () => {
     registry.set(held, [task(true)]);
     registry.set(shelfAtom, shelfFor(1));
   });
-  expect(settledCount).toBe(0);
+  expect(result?.layout.settledCount).toBe(0);
+
+  // A held-row change that leaves the count alone does not rebuild the list.
+  const { layout, items } = result!;
+  await act(async () => registry.set(held, [{ ...task(true), title: "Renamed" }]));
+  expect(result?.layout).toBe(layout);
+  expect(result?.items).toBe(items);
 });

@@ -136,7 +136,12 @@ export function useThreadListV2(input: {
   const { isListed, unloadedCount } = olderSettledShelf;
   const delegatedTaskGroups = useAtomValue(steadyDelegatedTaskGroupsAtom);
   // The server counts tasks shown under a parent too, so every held row counts against it.
+  // Only the number reaches the layout, so other held-row changes do not rebuild the list.
   const heldThreads = useAtomValue(steadyQuietThreadShellsAtom);
+  const unloadedSettledCount = useMemo(
+    () => unloadedCount(heldThreads.filter((thread) => thread.archivedAt === null)),
+    [unloadedCount, heldThreads],
+  );
   const [expandedDelegatedGroupKeys, setExpandedDelegatedGroupKeys] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
@@ -170,9 +175,7 @@ export function useThreadListV2(input: {
         isListedSettled: isListed,
         delegatedTaskGroups,
         expandedDelegatedGroupKeys,
-        unloadedSettledCount: unloadedCount(
-          heldThreads.filter((thread) => thread.archivedAt === null),
-        ),
+        unloadedSettledCount,
       }),
     [
       input.pendingOrder,
@@ -194,8 +197,7 @@ export function useThreadListV2(input: {
       input.settledShelfExpanded,
       input.selectedThreadKey,
       isListed,
-      unloadedCount,
-      heldThreads,
+      unloadedSettledCount,
       delegatedTaskGroups,
       expandedDelegatedGroupKeys,
     ],
