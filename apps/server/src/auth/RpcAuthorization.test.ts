@@ -25,6 +25,7 @@ import {
   RunId,
   WS_METHODS,
   WsRpcGroup,
+  clientRpcRequiredScopes,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -51,6 +52,24 @@ describe("RPC authorization scopes", () => {
       WS_METHODS.scheduledTasksRotateWebhookToken,
     ]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
+  it("requires terminal operate to set or remove a scheduled task gate, which runs a shell command", () => {
+    const task = {
+      projectId: "p",
+      name: "Nightly",
+      prompt: "Check",
+      schedule: { kind: "interval" },
+    };
+    expect(clientRpcRequiredScopes(WS_METHODS.scheduledTasksUpsert, task)).toEqual([
+      AuthOrchestrationOperateScope,
+    ]);
+    for (const gate of [{ command: "true" }, null]) {
+      expect(clientRpcRequiredScopes(WS_METHODS.scheduledTasksUpsert, { ...task, gate })).toEqual([
+        AuthOrchestrationOperateScope,
+        AuthTerminalOperateScope,
+      ]);
     }
   });
 

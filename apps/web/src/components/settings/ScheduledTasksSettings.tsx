@@ -88,11 +88,15 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { WorktreeBaseBranchPicker } from "../WorktreeBaseBranchPicker";
 import { EnvironmentMachineIcon } from "../EnvironmentMachineIcon";
 import { ConnectionStatusDot, connectionPhaseDotClassName } from "../ConnectionStatusDot";
-import { AuthOrchestrationOperateScope, clampManagedRuntimeMode } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  AuthTerminalOperateScope,
+  clampManagedRuntimeMode,
+} from "@t3tools/contracts";
 import { resolvePastedPath } from "@t3tools/shared/path";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { ManagedNotice } from "../ManagedPolicy";
-import { readEnvironmentScope } from "~/state/session";
+import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
 import { useSettingsScope } from "./SettingsScopeContext";
 import { EnvironmentRow, useEnvironmentTransportLabel } from "./EnvironmentRow";
 import { SettingsGroup } from "./SettingsGroup";
@@ -102,6 +106,9 @@ import {
   changeDraftProject,
   moveDraftToThread,
   scheduleDraftErrors,
+  gateDraftErrors,
+  gateFromDraft,
+  GATE_DRAFT_DEFAULTS,
   scheduledTaskDestinationThreads,
   toDateTimeLocalValue,
   webhookDeliveryLabel,
@@ -220,6 +227,7 @@ const EMPTY_DRAFT: DraftState = {
   coalesceWindowSeconds: "",
   filters: [],
   savedFilters: [],
+  ...GATE_DRAFT_DEFAULTS,
 };
 
 function WebhookFiltersField({
@@ -386,6 +394,33 @@ function deliveryOutcomeVariant(outcome: string) {
   }
   if (outcome === "dispatch_failed" || outcome === "rejected_signature") return "error";
   return "outline";
+}
+
+const GATE_OUTCOME_LABELS: Record<string, string> = {
+  passed: msg("Started the run"),
+  skipped: msg("Skipped: the command exited with 78"),
+  unchanged: msg("Skipped: same output as the last run"),
+  failed: msg("Failed", { $context: "scheduled task gate outcome" }),
+  timed_out: msg("Timed out"),
+  blocked: msg("Blocked by policy"),
+};
+
+function GateResultLine({ result }: { result: NonNullable<ScheduledTask["gateResult"]> }) {
+  const messages = useMessages();
+  const label = GATE_OUTCOME_LABELS[result.outcome];
+  return (
+    <p className="text-xs text-muted-foreground" data-testid="scheduled-task-gate-result">
+      <T>
+        Last gate: <Var>{label ? messages(label) : result.outcome}</Var>,{" "}
+        <ScheduledRelativeLabel value={result.at} />
+      </T>
+      {result.detail ? (
+        <span className="mt-1 block whitespace-pre-wrap font-mono text-destructive">
+          {result.detail}
+        </span>
+      ) : null}
+    </p>
+  );
 }
 
 const RUN_STATUS_LABELS: Record<ScheduledTask["lastRunStatus"], string> = {
@@ -1508,6 +1543,8 @@ function ScheduledTaskEditorForm({
   const upsertTask = useAtomCommand(serverEnvironment.upsertScheduledTask, {
     label: "scheduled task upsert",
   });
+  // The server asks for terminal access to set a gate, since it runs a shell command.
+  const canGate = useEnvironmentScope(environmentId, AuthTerminalOperateScope);
   const webhookDenial = managedCapabilityDenial(
     useManagedPolicy(environmentId),
     "webhookTasks",
@@ -1665,6 +1702,13 @@ function ScheduledTaskEditorForm({
       );
       return;
     }
+    // Without terminal access the gate is read-only, so the save leaves it to the server.
+    const gateErrors = canGate ? gateDraftErrors(draft) : [];
+    if (gateErrors.length > 0) {
+      for (const error of gateErrors) reportFailure(error.title, error.description);
+      return;
+    }
+    const gate = canGate ? gateFromDraft(draft) : undefined;
     if (draft.workspaceMode === "existing_worktree" && !draft.existingWorktreePath.trim()) {
       reportFailure(
         gt("Checkout path is required"),
@@ -1700,6 +1744,7 @@ function ScheduledTaskEditorForm({
         draft.runtimeMode,
       interactionMode: draft.interactionMode,
       creationSource: "web",
+      ...(gate === undefined ? {} : { gate }),
     };
     // Lock before React renders, and keep successful creates locked until the form closes.
     submissionPending.current = true;
@@ -2414,6 +2459,75 @@ function ScheduledTaskEditorForm({
               </div>
             )}
           </div>
+
+          {/* Kept visible on a webhook task that still has one, so it can be removed. */}
+          {draft.scheduleMode === "webhook" && !draft.gateCommand.trim() ? null : (
+            <div className="space-y-3">
+              <Field
+                label={gt("Gate command")}
+                hint={gt("optional")}
+                htmlFor="scheduled-task-gate-command"
+              >
+                <Textarea
+                  id="scheduled-task-gate-command"
+                  aria-describedby="scheduled-task-gate-description"
+                  disabled={!canGate}
+                  value={draft.gateCommand}
+                  onChange={(event) =>
+                    setDraft((current) => ({ ...current, gateCommand: event.target.value }))
+                  }
+                />
+              </Field>
+              <p id="scheduled-task-gate-description" className="text-xs text-muted-foreground">
+                {canGate
+                  ? gt(
+                      "Runs in a shell as this server's user before each scheduled run. Exit 0 starts the run with the command's output; exit 78, or the same output as the last started run, skips it; anything else fails it.",
+                    )
+                  : gt("Only a device with terminal access can change the gate.")}
+              </p>
+              {draft.gateCommand.trim() ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field
+                    label={gt("Gate folder")}
+                    hint={gt("default: the project folder")}
+                    htmlFor="scheduled-task-gate-cwd"
+                  >
+                    <Input
+                      id="scheduled-task-gate-cwd"
+                      nativeInput
+                      disabled={!canGate}
+                      value={draft.gateCwd}
+                      onChange={(event) =>
+                        setDraft((current) => ({ ...current, gateCwd: event.target.value }))
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label={gt("Gate timeout")}
+                    hint={gt("seconds, default 30")}
+                    htmlFor="scheduled-task-gate-timeout"
+                  >
+                    <Input
+                      id="scheduled-task-gate-timeout"
+                      type="number"
+                      nativeInput
+                      min={1}
+                      max={300}
+                      disabled={!canGate}
+                      value={draft.gateTimeoutSeconds}
+                      onChange={(event) =>
+                        setDraft((current) => ({
+                          ...current,
+                          gateTimeoutSeconds: event.target.value,
+                        }))
+                      }
+                    />
+                  </Field>
+                </div>
+              ) : null}
+              {liveTask?.gateResult ? <GateResultLine result={liveTask.gateResult} /> : null}
+            </div>
+          )}
 
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0 space-y-1">

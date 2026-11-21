@@ -12837,5 +12837,35 @@
   "67d4a779cd49a863": "{count, plural, one {{count} fertig} other {{count} fertig}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} offener PR} other {{count} offene PRs}}",
   "5c73b69a42cb7616": "Untergeordnete Threads",
-  "fa97f7ae0f746034": "{count, plural, one {{count} wartet auf eine Antwort} other {{count} warten auf eine Antwort}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} wartet auf eine Antwort} other {{count} warten auf eine Antwort}}",
+  "acaf4e0d74541a20": "Lauf gestartet",
+  "1297caf1422b5f9a": "Übersprungen: Der Befehl endete mit 78",
+  "7a0bdd4a31f25e60": "Übersprungen: gleiche Ausgabe wie beim letzten Lauf",
+  "f8f43e1550ea3ae4": "Fehlgeschlagen",
+  "fa891300374ac336": "Durch Richtlinie blockiert",
+  "a5099ec6e691530a": "Prüfbefehl",
+  "253f645e9911c794": "optional",
+  "8d07b99e1775d2fa": "Läuft vor jedem geplanten Lauf in einer Shell als Benutzer dieses Servers. Exit 0 startet den Lauf mit der Ausgabe des Befehls; Exit 78 oder dieselbe Ausgabe wie beim letzten gestarteten Lauf überspringt ihn; alles andere lässt ihn fehlschlagen.",
+  "472cff2d538f1cf1": "Nur ein Gerät mit Terminalzugriff kann die Prüfung ändern.",
+  "430b587cb8d53ffe": "Ordner der Prüfung",
+  "09f7ae8cca9b68b7": "Standard: der Projektordner",
+  "3e2b4d1001bb2d02": "Zeitlimit der Prüfung",
+  "fe38d9981aeea3f1": "Sekunden, Standard 30",
+  "73c3680625b8c71f": [
+    "Letzte Prüfung: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ",",
+    " ",
+    {
+      "t": "ScheduledRelativeLabel",
+      "i": 2
+    }
+  ],
+  "fe3927cdd40da07b": "Ungültige Prüfung",
+  "74ff2ebf21a05651": "Eine Webhook-Aufgabe kann keinen Prüfbefehl haben.",
+  "ceb3cbae8957e562": "Gib ganze Sekunden von 1 bis {max} ein oder lass das Feld leer."
 }
