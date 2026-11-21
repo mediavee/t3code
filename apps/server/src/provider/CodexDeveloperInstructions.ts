@@ -1,6 +1,9 @@
 import type { AgentFeedbackMode } from "@t3tools/contracts";
 import type { V2TurnStartParams__AdditionalContextEntry } from "effect-codex-app-server/schema";
-import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
+import {
+  buildRuntimeInstructions,
+  standingInstructionsBlock,
+} from "@t3tools/provider-core/server/runtimeInstructions";
 
 import {
   T3_CODE_BROWSER_TOOL_INSTRUCTIONS,
@@ -59,4 +62,33 @@ export function buildCodexAdditionalContext(
     },
     ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
   };
+}
+
+/** Standing instructions can exceed one entry's cap, so they span numbered entries. */
+export function buildCodexStandingInstructionsContext(
+  text: string | undefined,
+): Record<string, V2TurnStartParams__AdditionalContextEntry> {
+  const block = standingInstructionsBlock(text);
+  if (block === undefined) return {};
+  const encoder = new TextEncoder();
+  const chunks: Array<string> = [];
+  let chunk = "";
+  let chunkBytes = 0;
+  for (const character of block) {
+    const bytes = encoder.encode(character).length;
+    if (chunkBytes + bytes > CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES) {
+      chunks.push(chunk);
+      chunk = "";
+      chunkBytes = 0;
+    }
+    chunk += character;
+    chunkBytes += bytes;
+  }
+  chunks.push(chunk);
+  return Object.fromEntries(
+    chunks.map((value, index) => [
+      `t3_project_instructions_${String(index + 1).padStart(2, "0")}`,
+      { kind: "application" as const, value },
+    ]),
+  );
 }

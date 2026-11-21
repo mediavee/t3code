@@ -85,6 +85,7 @@ import {
 } from "@t3tools/provider-grok/testing";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { standingInstructionsBlock } from "@t3tools/provider-core/server/runtimeInstructions";
 import { makeTurnInput } from "./AcpAdapterV2.testkit.ts";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import {
@@ -799,6 +800,7 @@ const pollProtocolMethods = (events: Queue.Queue<EffectAcpProtocol.AcpProtocolLo
 const makeInstructionCompactionHarness = Effect.fnUntraced(function* (
   environment: Readonly<Record<string, string>>,
   prepareAttachments = false,
+  standingInstructions?: string,
 ) {
   const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const selfInvocation = yield* resolveSelfInvocation();
@@ -882,6 +884,7 @@ const makeInstructionCompactionHarness = Effect.fnUntraced(function* (
     runtimeMode: "full-access",
     interactionMode: "default",
     cwd: process.cwd(),
+    ...(standingInstructions === undefined ? {} : { standingInstructions }),
   });
   const modelSelection = { instanceId, model: "default" } as const;
   const runtime = yield* adapter.openSession({
@@ -2854,6 +2857,24 @@ describe("AcpAdapterV2", () => {
           "Continue after the undelivered prompt.",
         );
       }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.live("sends the project's standing instructions with the ACP runtime instructions", () =>
+    Effect.gen(function* () {
+      const standing = standingInstructionsBlock("Merge when checks pass.") ?? "";
+      const without = yield* makeInstructionCompactionHarness({});
+      assert.notInclude(
+        (yield* without.runTurn("Start work.")).map((block) => block.text).join("\n"),
+        "<project_standing_instructions>",
+      );
+      const { runTurn } = yield* makeInstructionCompactionHarness(
+        {},
+        false,
+        "Merge when checks pass.",
+      );
+      assert.include((yield* runTurn("Start work."))[1]?.text ?? "", standing);
+      assert.deepEqual(yield* runTurn("Continue."), [{ type: "text", text: "Continue." }]);
+    }).pipe(Effect.provide(layerTest)),
   );
 
   it.live(

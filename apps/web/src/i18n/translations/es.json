@@ -12979,5 +12979,21 @@
   "ae62ee82e0c146bb": "reintentar fallo error 502 503 pasarela conexión recuperar continuar",
   "0d1c02eb9bb693c4": "No se pudieron reanudar las sesiones fallidas",
   "72516ad01a8e3386": "{count, plural, one {{count} sesión falló en la última hora} other {{count} sesiones fallaron en la última hora}}",
-  "253a12fc99873da8": "Reanudar todo"
+  "253a12fc99873da8": "Reanudar todo",
+  "8da6072f5854cc90": "Implementación",
+  "4cd3a0ae6907eec5": "Revisión",
+  "1738f499d0c9cf60": "Investigación",
+  "7810d54298dc35ed": "Diseño",
+  "186b1da30c46df95": "Modelo de rol no guardado",
+  "9b956a2e78983634": "Se da a cada agente de este ámbito, en cada proveedor, incluidos los agentes que inicia.",
+  "2ad0fcb6553dd859": "Restablecer las instrucciones permanentes",
+  "9c66fa8659d60792": "Instrucciones permanentes",
+  "9227dca0f915c2c8": "Fusionar y desplegar cuando pasen las comprobaciones. Preguntar antes de reiniciar servicios compartidos.",
+  "731c9be7011a1a27": "Modelo de {role}",
+  "f0cbaf4d64034115": "Las tareas delegadas con este rol se ejecutan aquí, salvo que el agente indique un proveedor o modelo. Desactivado hereda el modelo del padre.",
+  "053cd07366c3b6d3": "Los destinos seleccionados usan modelos de rol distintos. Selecciona uno para editar.",
+  "185aca00f0cc4446": "Usar un modelo para el rol {role}",
+  "afefb672d4c5c274": "agente política reglas permisos autonomía prompt cada hilo subagentes",
+  "8a3aabfbbfb30487": "Modelos por rol",
+  "69bad5ed2f17955e": "delegar tarea enrutamiento revisión investigación diseño prueba implementación modelo"
 }

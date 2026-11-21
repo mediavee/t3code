@@ -117,7 +117,10 @@ import * as PortScanner from "../../preview/PortScanner.ts";
 import { getCodexServiceTierOptionValue } from "../../codexModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
-import { buildCodexAdditionalContext } from "../../provider/CodexDeveloperInstructions.ts";
+import {
+  buildCodexAdditionalContext,
+  buildCodexStandingInstructionsContext,
+} from "../../provider/CodexDeveloperInstructions.ts";
 import {
   describeMcpElicitation,
   toMcpElicitationResponse,
@@ -1001,6 +1004,9 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
             },
           )
         : undefined;
+    const standingContext = buildCodexStandingInstructionsContext(
+      input.runtimePolicy.standingInstructions,
+    );
     // Its own entry, so the folder list reaches the model without T3 Code's MCP tools too.
     const workspaceInstructions = buildWorkspaceInstructions(input.runtimePolicy);
     const workspaceContext =
@@ -1010,9 +1016,10 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
     const additionalContext =
       t3Context === undefined &&
       workspaceContext === undefined &&
+      Object.keys(standingContext).length === 0 &&
       Object.keys(appContext).length === 0
         ? undefined
-        : { ...t3Context, ...workspaceContext, ...appContext };
+        : { ...t3Context, ...workspaceContext, ...standingContext, ...appContext };
     return yield* decodeCodexTurnStartParams({
       threadId: input.nativeThreadId,
       input: input.codexInput,

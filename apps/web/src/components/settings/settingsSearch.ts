@@ -976,6 +976,20 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("generated thread titles prompt custom style naming rename regenerate")],
   },
   {
+    id: "standing-instructions",
+    title: msg("Standing instructions"),
+    to: "/settings/threads",
+    scope: "project-defaults",
+    searchTerms: [msg("agent policy rules permissions autonomy prompt every thread subagents")],
+  },
+  {
+    id: "role-models",
+    title: msg("Models by role"),
+    to: "/settings/threads",
+    scope: "project-defaults",
+    searchTerms: [msg("delegate task routing review research design test implementation model")],
+  },
+  {
     id: "app-version",
     title: msg("Version"),
     to: "/settings/about",

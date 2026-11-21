@@ -12993,5 +12993,21 @@
   "ae62ee82e0c146bb": "retry failed error 502 503 gateway connection recover continue",
   "0d1c02eb9bb693c4": "Could not resume the failed sessions",
   "72516ad01a8e3386": "{count, plural, one {{count} session failed in the last hour} other {{count} sessions failed in the last hour}}",
-  "253a12fc99873da8": "Resume all"
+  "253a12fc99873da8": "Resume all",
+  "8da6072f5854cc90": "Implementation",
+  "4cd3a0ae6907eec5": "Review",
+  "1738f499d0c9cf60": "Research",
+  "7810d54298dc35ed": "Design",
+  "186b1da30c46df95": "Role model not saved",
+  "9b956a2e78983634": "Given to every agent in this scope, on every provider, including the agents they start.",
+  "2ad0fcb6553dd859": "Reset standing instructions to default",
+  "9c66fa8659d60792": "Standing instructions",
+  "9227dca0f915c2c8": "Merge and deploy when checks pass. Ask before restarting shared services.",
+  "731c9be7011a1a27": "{role} model",
+  "f0cbaf4d64034115": "Delegated tasks with this role run here unless the agent names a provider or model. Off inherits the parent's model.",
+  "053cd07366c3b6d3": "The selected targets use different role models. Select one to edit.",
+  "185aca00f0cc4446": "Use a model for the {role} role",
+  "afefb672d4c5c274": "agent policy rules permissions autonomy prompt every thread subagents",
+  "8a3aabfbbfb30487": "Models by role",
+  "69bad5ed2f17955e": "delegate task routing review research design test implementation model"
 }
