@@ -1268,11 +1268,11 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "remove-agent-credits-on-merge",
-    title: msg("Remove agent credits when merging"),
+    title: msg("Remove agent credits from pull requests"),
     to: "/settings/source-control",
     scope: "project-defaults",
     searchTerms: [
-      `pull request ${SOURCE_CONTROL_HOST_LABELS} squash co-authored-by attribution claude codex generated`,
+      `pull request ${SOURCE_CONTROL_HOST_LABELS} description body squash co-authored-by attribution claude codex cursor generated`,
     ],
   },
   {
