@@ -30,6 +30,7 @@ import {
   endRunlessRootTurns,
   PROVIDER_STOP_REASON_SIGNAL,
 } from "@t3tools/provider-core/server/subagentProjection";
+import { DELEGATED_CHILD_COMMAND_HOLD_MS } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
@@ -236,7 +237,12 @@ function taskFixture() {
     checkpointId: null,
     contextHandoffId: null,
   };
-  return { projection: { ...projection, runs: [run] }, run };
+  // Read as the delegated child its progress describes.
+  const thread = {
+    ...projection.thread,
+    lineage: { ...projection.thread.lineage, relationshipToParent: "subagent" as const },
+  };
+  return { projection: { ...projection, thread, runs: [run] }, run };
 }
 
 it("reports the run that ended last, not the highest ordinal", () => {
@@ -247,15 +253,18 @@ it("reports the run that ended last, not the highest ordinal", () => {
     ordinal,
     completedAt: DateTime.makeUnsafe(completedAt),
   });
-  const progress = delegatedTaskProgress({
-    ...projection,
-    runs: [
-      { ...run, status: "cancelled" },
-      ended(4, "2026-07-24T10:00:00.000Z"),
-      ended(2, "2026-07-24T10:05:00.000Z"),
-      ended(3, "2026-07-24T10:10:00.000Z"),
-    ],
-  });
+  const progress = delegatedTaskProgress(
+    {
+      ...projection,
+      runs: [
+        { ...run, status: "cancelled" },
+        ended(4, "2026-07-24T10:00:00.000Z"),
+        ended(2, "2026-07-24T10:05:00.000Z"),
+        ended(3, "2026-07-24T10:10:00.000Z"),
+      ],
+    },
+    childCreatedAt,
+  );
   assert.equal(progress.state, "result_available");
   assert.equal(progress.resultRun?.ordinal, 3);
 });
@@ -263,48 +272,67 @@ it("reports the run that ended last, not the highest ordinal", () => {
 it("waits for nested work and retains the report across monitor acknowledgements", () => {
   const { projection, run } = taskFixture();
   assert.equal(
-    delegatedTaskProgress({ ...projection, subagents: [{ status: "running" }] }).state,
+    delegatedTaskProgress({ ...projection, subagents: [{ status: "running" }] }, childCreatedAt)
+      .state,
     "waiting_for_children",
   );
   assert.equal(
-    delegatedTaskProgress({ ...projection, subagents: [{ status: "completed" }] }).state,
+    delegatedTaskProgress({ ...projection, subagents: [{ status: "completed" }] }, childCreatedAt)
+      .state,
     "result_available",
   );
   assert.equal(
-    delegatedTaskProgress({ ...projection, subagents: [{ status: "idle" }] }).state,
+    delegatedTaskProgress({ ...projection, subagents: [{ status: "idle" }] }, childCreatedAt).state,
     "result_available",
   );
   for (const state of ["pending", "claimed"] as const) {
     assert.equal(
-      delegatedTaskProgress({
-        ...projection,
-        subagents: [{ status: "idle", completionDelivery: { state, observedByRunId: null } }],
-      }).state,
+      delegatedTaskProgress(
+        {
+          ...projection,
+          subagents: [{ status: "idle", completionDelivery: { state, observedByRunId: null } }],
+        },
+        childCreatedAt,
+      ).state,
       "result_available",
     );
     assert.equal(
-      delegatedTaskProgress({
-        ...projection,
-        subagents: [{ status: "completed", completionDelivery: { state, observedByRunId: null } }],
-      }).state,
+      delegatedTaskProgress(
+        {
+          ...projection,
+          subagents: [
+            { status: "completed", completionDelivery: { state, observedByRunId: null } },
+          ],
+        },
+        childCreatedAt,
+      ).state,
       "waiting_for_children",
     );
   }
   for (const state of ["acknowledged", "delivered", "disposed"] as const) {
     assert.equal(
-      delegatedTaskProgress({
-        ...projection,
-        subagents: [{ status: "completed", completionDelivery: { state, observedByRunId: null } }],
-      }).state,
+      delegatedTaskProgress(
+        {
+          ...projection,
+          subagents: [
+            { status: "completed", completionDelivery: { state, observedByRunId: null } },
+          ],
+        },
+        childCreatedAt,
+      ).state,
       "result_available",
     );
   }
-  for (const [awaited, state] of [
-    [true, "waiting_for_children"],
-    [false, "result_available"],
+  // A command the child did not await holds it until the bound after its turn ended.
+  const holdEnds = DateTime.add(childCreatedAt, { milliseconds: DELEGATED_CHILD_COMMAND_HOLD_MS });
+  for (const [awaited, readAt, state] of [
+    [true, childCreatedAt, "waiting_for_children"],
+    [true, holdEnds, "waiting_for_children"],
+    [false, childCreatedAt, "waiting_for_children"],
+    [false, holdEnds, "result_available"],
   ] as const) {
-    assert.equal(
-      delegatedTaskProgress({
+    const progress = delegatedTaskProgress(
+      {
         ...projection,
         providerThreads: [
           {
@@ -314,10 +342,25 @@ it("waits for nested work and retains the report across monitor acknowledgements
             ],
           },
         ],
-      }).state,
-      state,
+      },
+      readAt,
+    );
+    assert.equal(progress.state, state);
+    assert.deepEqual(
+      progress.commandHoldEndsAt,
+      !awaited && readAt === childCreatedAt ? holdEnds : undefined,
     );
   }
+  assert.equal(
+    delegatedTaskProgress(
+      {
+        ...projection,
+        providerThreads: [{ pendingBackgroundTasks: [{ taskId: "log-watcher", kind: "monitor" }] }],
+      },
+      childCreatedAt,
+    ).state,
+    "result_available",
+  );
   const pending = {
     ...run,
     id: RunId.make("followup"),
@@ -325,12 +368,18 @@ it("waits for nested work and retains the report across monitor acknowledgements
     status: "queued" as const,
     startedAt: null,
   };
-  assert.equal(delegatedTaskProgress({ ...projection, runs: [run, pending] }).state, "working");
+  assert.equal(
+    delegatedTaskProgress({ ...projection, runs: [run, pending] }, childCreatedAt).state,
+    "working",
+  );
   const cancelled = { ...run, status: "cancelled" as const };
-  const held = delegatedTaskProgress({
-    ...projection,
-    runs: [cancelled, { ...pending, queueHeld: true }],
-  });
+  const held = delegatedTaskProgress(
+    {
+      ...projection,
+      runs: [cancelled, { ...pending, queueHeld: true }],
+    },
+    childCreatedAt,
+  );
   assert.equal(held.state, "result_available");
   assert.equal(held.resultRun?.id, cancelled.id);
   const report = { ...pending, status: "completed" as const, startedAt: parentCreatedAt };
@@ -357,17 +406,17 @@ it("waits for nested work and retains the report across monitor acknowledgements
       summary: "Monitor update",
     },
   };
-  const progress = delegatedTaskProgress({
-    ...projection,
-    runs: [run, report, monitor],
-    messages: [update],
-  });
+  const progress = delegatedTaskProgress(
+    { ...projection, runs: [run, report, monitor], messages: [update] },
+    childCreatedAt,
+  );
   assert.equal(progress.state, "result_available");
   assert.equal(progress.resultRun?.id, report.id);
   // A task still waiting when the wake ran gets that run's outcome, not its earlier report.
   assert.equal(
     delegatedTaskProgress(
       { ...projection, runs: [run, report, monitor], messages: [update] },
+      childCreatedAt,
       { unsettled: true },
     ).resultRun?.id,
     monitor.id,
@@ -375,15 +424,16 @@ it("waits for nested work and retains the report across monitor acknowledgements
   // A monitor-woken run can stop the awaited work itself, so it holds the task until it ends.
   const executing = { ...monitor, status: "running" as const, completedAt: null };
   assert.equal(
-    delegatedTaskProgress({ ...projection, runs: [run, report, executing], messages: [update] })
-      .state,
+    delegatedTaskProgress(
+      { ...projection, runs: [run, report, executing], messages: [update] },
+      childCreatedAt,
+    ).state,
     "working",
   );
-  const failed = delegatedTaskProgress({
-    ...projection,
-    runs: [run, report, { ...monitor, status: "failed" }],
-    messages: [update],
-  });
+  const failed = delegatedTaskProgress(
+    { ...projection, runs: [run, report, { ...monitor, status: "failed" }], messages: [update] },
+    childCreatedAt,
+  );
   assert.equal(failed.state, "result_available");
   assert.equal(failed.resultRun?.id, monitor.id);
   // A usage limit leaves later wakes queued without a hold, so a queued update holds nothing.
@@ -394,30 +444,36 @@ it("waits for nested work and retains the report across monitor acknowledgements
     completedAt: null,
   };
   assert.equal(
-    delegatedTaskProgress({
-      ...projection,
-      runs: [run, { ...report, status: "failed" }, queuedUpdate],
-      messages: [update],
-    }).state,
+    delegatedTaskProgress(
+      {
+        ...projection,
+        runs: [run, { ...report, status: "failed" }, queuedUpdate],
+        messages: [update],
+      },
+      childCreatedAt,
+    ).state,
     "result_available",
   );
   const ended = { ...report, id: RunId.make("monitor-ended"), ordinal: 4 };
-  const afterMonitorEnded = delegatedTaskProgress({
-    ...projection,
-    runs: [run, report, monitor, ended],
-    messages: [
-      update,
-      {
-        ...artifacts.message,
-        runId: ended.id,
-        notification: {
-          source: { kind: "monitor" },
-          outcome: "completed",
-          summary: 'Monitor "ticks" finished',
+  const afterMonitorEnded = delegatedTaskProgress(
+    {
+      ...projection,
+      runs: [run, report, monitor, ended],
+      messages: [
+        update,
+        {
+          ...artifacts.message,
+          runId: ended.id,
+          notification: {
+            source: { kind: "monitor" },
+            outcome: "completed",
+            summary: 'Monitor "ticks" finished',
+          },
         },
-      },
-    ],
-  });
+      ],
+    },
+    childCreatedAt,
+  );
   assert.equal(afterMonitorEnded.resultRun?.id, ended.id);
 });
 
@@ -468,7 +524,7 @@ it("keeps the report when a run queued behind it ends without assistant text", (
       ],
       turnItems: [{ ...report.turnItem, runId: run.id }],
     };
-    const progress = delegatedTaskProgress(child);
+    const progress = delegatedTaskProgress(child, childCreatedAt);
     assert.equal(progress.state, "result_available");
     assert.equal(subagentResultForRun(child, progress.resultRun!).text, "REPORT-OK");
     // Another task's run, or one that did not complete, keeps its own outcome.

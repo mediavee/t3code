@@ -18,12 +18,19 @@ import type {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  backgroundWorkHoldsCompletion,
+  delegatedChildBackgroundWorkHold,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import { derive } from "./IdAllocator.ts";
-import { isOrchestrationV2WorkActive, latestProviderTurnForAttempt } from "@t3tools/contracts";
+import {
+  isDelegatedAppThread,
+  isOrchestrationV2WorkActive,
+  latestProviderTurnForAttempt,
+} from "@t3tools/contracts";
 
 function trimmed(value: string | null | undefined): string | undefined {
   const result = value?.trim();
@@ -413,6 +420,7 @@ export function subagentHoldsCompletion(
  */
 export function delegatedTaskProgress(
   projection: {
+    readonly thread: Pick<OrchestrationV2ThreadProjection["thread"], "lineage" | "delegatedFrom">;
     readonly runs: OrchestrationV2ThreadProjection["runs"];
     readonly messages: ReadonlyArray<
       Pick<OrchestrationV2ConversationMessage, "runId" | "notification" | "createdBy">
@@ -424,6 +432,7 @@ export function delegatedTaskProgress(
       Pick<OrchestrationV2ThreadProjection["providerThreads"][number], "pendingBackgroundTasks">
     >;
   },
+  now: DateTime.Utc,
   options?: { readonly unsettled?: boolean },
 ) {
   const terminal = (status: string) =>
@@ -448,14 +457,17 @@ export function delegatedTaskProgress(
     ),
   );
   const awaitsUserRun = workRuns.some((run) => held(run) && userRunIds.has(run.id));
-  const children =
-    projection.subagents.some(subagentHoldsCompletion) ||
-    projection.providerThreads.some((thread) =>
-      backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []),
-    );
   const resultRun = workRuns
     .filter((run) => terminal(run.status) && (run.startedAt !== null || run.ordinal === 1))
     .toSorted((a, b) => (runRanAfter(a, b) ? -1 : runRanAfter(b, a) ? 1 : 0))[0];
+  const tasks = projection.providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []);
+  // `untilDelegatedWorkSettled` waits read top-level threads too, which keep their own rule.
+  const backgroundHold: ReturnType<typeof delegatedChildBackgroundWorkHold> = isDelegatedAppThread(
+    projection.thread,
+  )
+    ? delegatedChildBackgroundWorkHold({ tasks, turnEndedAt: resultRun?.completedAt, now })
+    : { holds: backgroundWorkHoldsCompletion(tasks) };
+  const children = projection.subagents.some(subagentHoldsCompletion) || backgroundHold.holds;
   return {
     state:
       active || awaitsUserRun || resultRun === undefined
@@ -464,6 +476,9 @@ export function delegatedTaskProgress(
           ? ("waiting_for_children" as const)
           : ("result_available" as const),
     resultRun,
+    ...(active || backgroundHold.commandHoldEndsAt === undefined
+      ? {}
+      : { commandHoldEndsAt: backgroundHold.commandHoldEndsAt }),
     /** Working only because of a held message the user wrote, which a cancel does not wait for. */
     onlyAwaitsUserRun: awaitsUserRun && !active && resultRun !== undefined,
   };

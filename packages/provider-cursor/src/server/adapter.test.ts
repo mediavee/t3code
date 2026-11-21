@@ -2723,7 +2723,11 @@ describe("CursorAdapterV2", () => {
           Stream.runCollect,
           Effect.map(listed),
         );
-        assert.deepStrictEqual(listed(events).at(-1), { tasks: ["7", "8"], sessionScoped: false });
+        // Shell 6 finished after the turn ended; it stays listed until its wake run starts.
+        assert.deepStrictEqual(listed(events).at(-1), {
+          tasks: ["7", "8", "6"],
+          sessionScoped: false,
+        });
         // Idle release keeps the session while a shell runs.
         assert.isTrue(yield* runtime.hasPendingBackgroundWork!);
 
@@ -2737,7 +2741,7 @@ describe("CursorAdapterV2", () => {
           { matched: ["70"] },
         );
         assert.deepStrictEqual(yield* nextUpdate, [
-          { tasks: ["7 awaited", "8"], sessionScoped: true },
+          { tasks: ["7 awaited", "8", "6"], sessionScoped: true },
         ]);
 
         yield* report({
@@ -2747,7 +2751,9 @@ describe("CursorAdapterV2", () => {
           exitCode: 1,
           outputPath: "/terminals/8.txt",
         });
-        assert.deepStrictEqual(yield* nextUpdate, [{ tasks: ["7 awaited"], sessionScoped: true }]);
+        assert.deepStrictEqual(yield* nextUpdate, [
+          { tasks: ["7 awaited", "6", "8"], sessionScoped: true },
+        ]);
 
         // Rolling back stops what the discarded runs left running, so it cannot wake the thread.
         yield* runtime.rollbackThread({
