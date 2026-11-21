@@ -2387,6 +2387,23 @@ const make = Effect.gen(function* () {
     };
   });
 
+  // As t3_thread_launch checks a named model, except an unknown provider instance is refused here:
+  // nothing would report it until the first run fails.
+  const requireScheduledModel = Effect.fn("OrchestratorMcpService.requireScheduledModel")(
+    function* (selection: ModelSelection, cwd: string) {
+      const provider = withWorkspaceModels(yield* loadProviders, cwd).find(
+        (candidate) => candidate.instanceId === selection.instanceId,
+      );
+      if (provider === undefined)
+        return yield* failure(
+          "invalid_request",
+          `Provider instance ${selection.instanceId} is not configured here. orchestrator_capabilities lists providers and models.`,
+        );
+      yield* requireAdvertisedModel(provider, selection.model);
+      yield* requireAdvertisedOptions(provider, selection.model, selection.options);
+    },
+  );
+
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
       const modes = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
@@ -2485,8 +2502,13 @@ const make = Effect.gen(function* () {
             : "bindToCurrentThread binds to this thread, which belongs to a different project.",
         );
       }
+      if (input.modelSelection !== undefined)
+        yield* requireScheduledModel(input.modelSelection, project.workspaceRoot);
       const modelSelection =
-        parent?.thread.modelSelection ?? (yield* projectDefaultModelSelection(project));
+        input.modelSelection ??
+        parent?.thread.modelSelection ??
+        (yield* projectDefaultModelSelection(project));
+      const runtimeMode = yield* resolveRuntimeMode(limits.runtimeMode, input.runtimeMode);
       // Never end on a lone high surrogate, which renders as a broken character.
       const derivedTitle = (input.prompt.split("\n")[0]?.trim() ?? "")
         .slice(0, 80)
@@ -2504,9 +2526,11 @@ const make = Effect.gen(function* () {
           : bindToCurrentThread
             ? "continue"
             : "new_thread",
-        workspaceStrategy: yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId),
+        workspaceStrategy:
+          input.workspaceStrategy ??
+          (yield* scheduledTaskWorkspaceStrategy(bindToCurrentThread, projectId)),
         modelSelection,
-        runtimeMode: limits.runtimeMode,
+        runtimeMode,
         interactionMode: limits.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
@@ -2589,9 +2613,19 @@ const make = Effect.gen(function* () {
               : null;
         // Reset the workspace only when the binding flips, so unbinding cannot leave runs in the shared checkout.
         const workspaceStrategy =
-          (threadId === null) === (existing.threadId === null)
+          input.workspaceStrategy ??
+          ((threadId === null) === (existing.threadId === null)
             ? existing.workspaceStrategy
-            : yield* scheduledTaskWorkspaceStrategy(threadId !== null, existing.projectId);
+            : yield* scheduledTaskWorkspaceStrategy(threadId !== null, existing.projectId));
+        if (input.modelSelection !== undefined)
+          yield* requireScheduledModel(
+            input.modelSelection,
+            (yield* requireProject(existing.projectId)).workspaceRoot,
+          );
+        const runtimeMode =
+          input.runtimeMode === undefined
+            ? existing.runtimeMode
+            : yield* resolveRuntimeMode(limits.runtimeMode, input.runtimeMode);
         const upsertInput: ScheduledTaskUpsertInput = {
           id: existing.id,
           title: input.title ?? existing.title,
@@ -2613,8 +2647,8 @@ const make = Effect.gen(function* () {
                   ? "new_thread"
                   : "continue",
           workspaceStrategy,
-          modelSelection: existing.modelSelection,
-          runtimeMode: existing.runtimeMode,
+          modelSelection: input.modelSelection ?? existing.modelSelection,
+          runtimeMode,
           interactionMode: existing.interactionMode,
           createdBy: existing.createdBy,
           creationSource: existing.creationSource,

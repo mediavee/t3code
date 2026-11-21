@@ -34,6 +34,33 @@ const forkIndexes = [
   },
 ] as const;
 
+// Fork columns, added the same way for the same reason as the indexes above.
+const forkColumns = [
+  {
+    // The thread of a scheduled task's last dispatch, so a due run waits while that thread is busy.
+    table: "scheduled_tasks",
+    column: "last_run_thread_id",
+    statement: "ALTER TABLE scheduled_tasks ADD COLUMN last_run_thread_id TEXT",
+  },
+] as const;
+
+const FORK_COLUMN_CONDITION = forkColumns
+  .map(({ table, column }) => `(t.name = '${table}' AND c.name = '${column}')`)
+  .join(" OR ");
+
+const missingForkColumns = Effect.fn("missingForkColumns")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const present = yield* sql<{ readonly tableName: string; readonly columnName: string }>`
+    SELECT t.name AS tableName, c.name AS columnName
+    FROM sqlite_master t, pragma_table_info(t.name) c
+    WHERE t.type = 'table' AND (${sql.literal(FORK_COLUMN_CONDITION)})
+  `;
+  return forkColumns.filter(
+    ({ table, column }) =>
+      !present.some((row) => row.tableName === table && row.columnName === column),
+  );
+});
+
 // Earlier fork builds recorded these indexes as numbered migrations; startup removes those rows.
 const FORK_LEDGER_ROWS = [
   [103, "RemoteParentDoneIndex"],
@@ -55,7 +82,7 @@ export function withoutForkLedgerRows<Row extends { readonly id: number; readonl
   );
 }
 
-/** Whether the fork's ledger rows or indexes need work; expects the migration ledger to exist. */
+/** Whether the fork's ledger rows, indexes or columns need work; expects the migration ledger to exist. */
 export const forkIndexesPending = Effect.fn("forkIndexesPending")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ readonly ledgerRows: number; readonly indexes: number }>`
@@ -65,7 +92,11 @@ export const forkIndexesPending = Effect.fn("forkIndexesPending")(function* () {
       (SELECT COUNT(*) FROM sqlite_master
         WHERE type = 'index' AND name IN (${sql.literal(FORK_INDEX_NAMES)})) AS indexes
   `;
-  return (row?.ledgerRows ?? 0) > 0 || (row?.indexes ?? 0) < forkIndexes.length;
+  return (
+    (row?.ledgerRows ?? 0) > 0 ||
+    (row?.indexes ?? 0) < forkIndexes.length ||
+    (yield* missingForkColumns()).length > 0
+  );
 });
 
 /** Deletes the fork's old ledger rows, matched by id and name; returns what it removed. */
@@ -82,7 +113,7 @@ export const forgetForkLedgerRows = Effect.fn("forgetForkLedgerRows")(function* 
   return forgotten.map((row) => `${row.migration_id}_${row.name} (ledger row removed)`);
 });
 
-/** Creates the missing fork indexes; returns their names. */
+/** Creates the missing fork indexes and columns; returns their names. */
 export const applyForkIndexes = Effect.fn("applyForkIndexes")(function* () {
   const sql = yield* SqlClient.SqlClient;
   const existing = yield* sql<{ readonly name: string }>`
@@ -94,6 +125,10 @@ export const applyForkIndexes = Effect.fn("applyForkIndexes")(function* () {
     if (existingNames.has(name)) continue;
     yield* sql.unsafe(statement);
     created.push(name);
+  }
+  for (const { table, column, statement } of yield* missingForkColumns()) {
+    yield* sql.unsafe(statement);
+    created.push(`${table}.${column}`);
   }
   return created;
 });
