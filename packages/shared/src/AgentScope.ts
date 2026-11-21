@@ -16,7 +16,17 @@ export interface AgentScopeShape {
      */
     readonly shared?: boolean | undefined;
   }) => Effect.Effect<AgentScopeCommand>;
-  readonly oomKilled: (threadId: string) => Effect.Effect<boolean>;
+  /**
+   * Creates the thread's own temp directory and returns it, or undefined when the env sets its
+   * own TMPDIR, TMP or TEMP or the platform has none. `wrap` applies it to unshared launches;
+   * a process serving several threads sets it per thread through its own protocol.
+   */
+  readonly threadTemp: (input: {
+    readonly threadId: string;
+    readonly env?: NodeJS.ProcessEnv | undefined;
+  }) => Effect.Effect<string | undefined>;
+  /** The kill names the per-agent memory ceiling the scope ran under, if any. */
+  readonly oomKilled: (threadId: string) => Effect.Effect<false | AgentOomKill>;
   /**
    * Reaps processes left after the owning agent exits, including setsid
    * descendants outside its process group. Preserves systemd OOM diagnosis.
@@ -36,6 +46,10 @@ export interface AgentScopeShape {
   readonly clear: (threadId: string) => Effect.Effect<void>;
 }
 
+export interface AgentOomKill {
+  readonly memoryMaxGiB: number | null;
+}
+
 export interface AgentScopeCommand {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
@@ -46,6 +60,7 @@ export interface AgentScopeCommand {
 export const AgentScope = Context.Reference<AgentScopeShape>("@t3tools/shared/AgentScope", {
   defaultValue: () => ({
     wrap: ({ command, args }) => Effect.succeed({ command, args }),
+    threadTemp: () => Effect.undefined,
     oomKilled: () => Effect.succeed(false),
     stop: () => Effect.void,
     kill: () => Effect.succeed(false),
