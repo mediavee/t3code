@@ -5704,5 +5704,8 @@
   "f6cf1627f4acc5ef": "댓글 공개 범위",
   "eb1fd384ad5919dd": "내부 메모",
   "b45f0b467e9406d0": "고객에게 답변",
-  "15e5597f8f93ce12": "{start}~{end}"
+  "15e5597f8f93ce12": "{start}~{end}",
+  "3d4448e3c061f894": "다른 기기",
+  "349587beaf00ce5e": "{title}, {machine}에서 위임됨, {count, plural, other {작업 {count}개}}",
+  "88bcb7d812dfb32a": "{machine} · {count, plural, other {작업 {count}개}}"
 }

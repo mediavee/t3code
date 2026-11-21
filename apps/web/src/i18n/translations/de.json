@@ -13056,5 +13056,7 @@
   "5807c08e225c6b3d": "Herunterladen",
   "0d50b5bfe7151ece": "Datei konnte nicht heruntergeladen werden",
   "eb1fd384ad5919dd": "Interne Notiz",
-  "b45f0b467e9406d0": "Dem Kunden antworten"
+  "b45f0b467e9406d0": "Dem Kunden antworten",
+  "3d4448e3c061f894": "Anderer Rechner",
+  "349587beaf00ce5e": "{title}, delegiert von {machine}, {count, plural, one {{count} Aufgabe} other {{count} Aufgaben}}"
 }

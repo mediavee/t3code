@@ -5697,5 +5697,8 @@
   "f6cf1627f4acc5ef": "コメントの公開範囲",
   "eb1fd384ad5919dd": "内部メモ",
   "b45f0b467e9406d0": "顧客に返信",
-  "15e5597f8f93ce12": "{start}〜{end}"
+  "15e5597f8f93ce12": "{start}〜{end}",
+  "3d4448e3c061f894": "別のマシン",
+  "349587beaf00ce5e": "{title}、{machine} から委任、{count, plural, other {{count} 件のタスク}}",
+  "88bcb7d812dfb32a": "{machine} · {count, plural, other {{count} 件のタスク}}"
 }

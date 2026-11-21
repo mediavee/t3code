@@ -5726,5 +5726,8 @@
   "f6cf1627f4acc5ef": "Kommentarens synlighet",
   "eb1fd384ad5919dd": "Intern anteckning",
   "b45f0b467e9406d0": "Svara kunden",
-  "15e5597f8f93ce12": "{start} till {end}"
+  "15e5597f8f93ce12": "{start} till {end}",
+  "3d4448e3c061f894": "Annan dator",
+  "349587beaf00ce5e": "{title}, delegerad från {machine}, {count, plural, one {{count} uppgift} other {{count} uppgifter}}",
+  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} uppgift} other {{count} uppgifter}}"
 }

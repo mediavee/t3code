@@ -5720,5 +5720,8 @@
   "f6cf1627f4acc5ef": "Visibilidad del comentario",
   "eb1fd384ad5919dd": "Nota interna",
   "b45f0b467e9406d0": "Responder al cliente",
-  "15e5597f8f93ce12": "{start} a {end}"
+  "15e5597f8f93ce12": "{start} a {end}",
+  "3d4448e3c061f894": "Otra máquina",
+  "349587beaf00ce5e": "{title}, delegado desde {machine}, {count, plural, one {{count} tarea} other {{count} tareas}}",
+  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} tarea} other {{count} tareas}}"
 }

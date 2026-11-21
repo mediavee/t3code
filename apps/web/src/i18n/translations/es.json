@@ -13051,5 +13051,7 @@
   "5807c08e225c6b3d": "Descargar",
   "0d50b5bfe7151ece": "No se pudo descargar el archivo",
   "eb1fd384ad5919dd": "Nota interna",
-  "b45f0b467e9406d0": "Responder al cliente"
+  "b45f0b467e9406d0": "Responder al cliente",
+  "3d4448e3c061f894": "Otra máquina",
+  "349587beaf00ce5e": "{title}, delegado desde {machine}, {count, plural, one {{count} tarea} other {{count} tareas}}"
 }
