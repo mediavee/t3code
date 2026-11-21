@@ -12820,5 +12820,9 @@
   "f77cd905c392b357": "Доступно на серверах Linux, где агенты работают в областях systemd.",
   "633d27014d678cbf": "Сбросить ограничение памяти агентов к значению по умолчанию",
   "70957383caba7e76": "Ограничение памяти агентов",
-  "b3be8f59fe52c268": "память лимит ram oom нехватка памяти cgroup systemd memorymax tmpdir временные"
+  "b3be8f59fe52c268": "память лимит ram oom нехватка памяти cgroup systemd memorymax tmpdir временные",
+  "67d4a779cd49a863": "{count, plural, one {{count} завершён} few {{count} завершено} many {{count} завершено} other {{count} завершено}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} открытый PR} few {{count} открытых PR} many {{count} открытых PR} other {{count} открытых PR}}",
+  "5c73b69a42cb7616": "Дочерние треды",
+  "fa97f7ae0f746034": "{count, plural, one {{count} ждёт ответа} few {{count} ждут ответа} many {{count} ждут ответа} other {{count} ждут ответа}}"
 }
