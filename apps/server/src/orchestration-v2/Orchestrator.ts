@@ -95,7 +95,7 @@ import { outputRequestProblem } from "./runOutput.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   backgroundWorkHoldsCompletion,
-  delegatedChildCommandsLeftRunning,
+  withDelegatedChildCommandsLeftRunning,
   derivePendingBackgroundWork,
   hasPendingBackgroundSubagent,
   pendingBackgroundTurnItems,
@@ -144,6 +144,8 @@ import {
   continuationFailedBeforePrompt,
   continuationStartRetryDelayMs,
   delegatedTaskAwaitsWork,
+  delegatedTaskBackgroundHold,
+  delegatedTaskOwnBackgroundTasks,
   delegatedTaskResultRun,
   delegatedTaskRuns,
   isRestartContinuationSource,
@@ -15232,27 +15234,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
       const now = yield* DateTime.now;
       const runResult = subagentResultForRun(childProjection, { ...childRun, status: outcome });
-      // A hold that ran out leaves these running; the lead decides what to do with them.
-      const leftRunning = cancelled
+      // A hold that ran out leaves these running; each task names only its own.
+      const ownBackgroundTasks = cancelled
         ? []
-        : delegatedChildCommandsLeftRunning(
-            childControls.providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []),
-          );
-      const result =
-        leftRunning.length === 0
-          ? runResult
-          : {
-              ...runResult,
-              text: [
-                runResult.text,
-                "",
-                "Background commands still running, not awaited, when this result was sent:",
-                ...leftRunning.map(
-                  (task) =>
-                    `- ${task.taskId}${task.description === undefined ? "" : `: ${task.description}`}`,
-                ),
-              ].join("\n"),
-            };
+        : delegatedTaskOwnBackgroundTasks(taskRuns, childControls);
+      const result = {
+        ...runResult,
+        text: withDelegatedChildCommandsLeftRunning(runResult.text, ownBackgroundTasks),
+      };
       const { parentRun, ...parentProjection } = yield* readDelegatedCompletionPlanRecords(
         parentThreadId,
         task,
@@ -15397,20 +15386,47 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       now,
     );
 
-  // No event marks a child's command hold running out, so a timer looks again then. A later turn's
-  // hold replaces it; the look runs in its own fiber so a hold it renews does not interrupt it.
+  // Tasks seen holding per provider thread, so a roster that drops one finalizes its child.
+  // Any command counts: a delegated child's hold covers those it did not await too.
+  const holdingTaskIdsByProviderThread = new Map<string, ReadonlySet<string>>();
+  const holdingTaskIds = (tasks: OrchestrationV2ProviderThread["pendingBackgroundTasks"]) =>
+    new Set(
+      (tasks ?? [])
+        .filter((task) => task.kind === "command" || backgroundWorkHoldsCompletion([task]))
+        .map((task) => task.taskId),
+    );
+
+  // No event marks a child's command hold running out, so a timer looks again at the earliest
+  // open task's bound. The look runs in its own fiber so a hold it renews does not interrupt it.
   const orchestratorScope = yield* Effect.scope;
   const commandHoldExpiries = yield* FiberMap.make<ThreadId>();
-  const lookAgainWhenCommandHoldEnds = (
-    childThreadId: ThreadId,
+  const armedCommandHoldEnds = new Map<ThreadId, number>();
+  const armCommandHold = Effect.fnUntraced(function* (
+    child: Pick<DelegatedChildControls, "providerThreads"> & { readonly threadId: ThreadId },
     parentThreadId: ThreadId,
-    endsAt: DateTime.Utc,
-  ): Effect.Effect<void> =>
-    FiberMap.run(
+    endsAt: DateTime.Utc | undefined,
+  ): Effect.fn.Return<void> {
+    const childThreadId = child.threadId;
+    const armed = armedCommandHoldEnds.get(childThreadId);
+    if (endsAt === undefined) {
+      if (armed === undefined) return;
+      armedCommandHoldEnds.delete(childThreadId);
+      return yield* FiberMap.remove(commandHoldExpiries, childThreadId);
+    }
+    // A roster read before this server saw it change would not count its tasks as held.
+    for (const thread of child.providerThreads)
+      if (!holdingTaskIdsByProviderThread.has(thread.id)) {
+        const holding = holdingTaskIds(thread.pendingBackgroundTasks);
+        if (holding.size > 0) holdingTaskIdsByProviderThread.set(thread.id, holding);
+      }
+    if (armed === DateTime.toEpochMillis(endsAt)) return;
+    armedCommandHoldEnds.set(childThreadId, DateTime.toEpochMillis(endsAt));
+    yield* FiberMap.run(
       commandHoldExpiries,
       childThreadId,
       Effect.gen(function* () {
         yield* Effect.sleep(DateTime.distance(yield* DateTime.now, endsAt));
+        armedCommandHoldEnds.delete(childThreadId);
         yield* threadReactions
           .run(
             childThreadId,
@@ -15425,7 +15441,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           )
           .pipe(Effect.forkIn(orchestratorScope));
       }),
-    ).pipe(Effect.asVoid);
+    );
+  });
 
   const finalizeAppOwnedSubagent = Effect.fn("Orchestrator.finalizeAppOwnedSubagent")(function* (
     childThreadId: ThreadId,
@@ -15460,12 +15477,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       childThreadId,
       openTasks.map((task) => task.id),
     );
-    if (progress.commandHoldEndsAt !== undefined && openTasks.length > 0)
-      yield* lookAgainWhenCommandHoldEnds(
-        childThreadId,
-        parentThreadId,
-        progress.commandHoldEndsAt,
-      );
+    const now = yield* DateTime.now;
+    // Each task's bound runs from its own last turn, so a later follow-up does not delay it.
+    const commandHoldEnds = openTasks.flatMap((task) => {
+      if (task.cancelledRunId !== undefined) return [];
+      const taskRuns = delegatedTaskRuns(childControls, task.id);
+      const endsAt =
+        taskRuns.length > 0
+          ? delegatedTaskBackgroundHold(taskRuns, childControls, now).commandHoldEndsAt
+          : task.id === forkedFrom.nodeId
+            ? progress.commandHoldEndsAt
+            : undefined;
+      return endsAt === undefined ? [] : [endsAt];
+    });
+    yield* armCommandHold(
+      { threadId: childThreadId, providerThreads: childControls.providerThreads },
+      parentThreadId,
+      commandHoldEnds.reduce<DateTime.Utc | undefined>(
+        (earliest, endsAt) =>
+          earliest === undefined || DateTime.isLessThan(endsAt, earliest) ? endsAt : earliest,
+        undefined,
+      ),
+    );
     for (const task of openTasks) {
       // A cancelled task does not wait for the work its cancel is stopping.
       const cancelled = task.cancelledRunId !== undefined;
@@ -16775,18 +16808,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // A child whose run ends while its background tasks or its own subagents still run has no
   // result yet. When that work settles there is no run update to finalize it, so these events
   // do it. A roster counts when a task seen holding leaves it, since that may be one follow-up's.
-  const holdingTaskIdsByProviderThread = new Map<string, ReadonlySet<string>>();
   const settlesChildWork = (stored: OrchestrationV2StoredEvent) => {
     const { event } = stored;
     if (event.type === "subagent.updated")
       return !isOrchestrationV2WorkActive(event.payload.status);
     if (event.type !== "provider-thread.updated") return false;
-    // Any command counts: a delegated child's hold covers those it did not await too.
-    const holding = new Set(
-      (event.payload.pendingBackgroundTasks ?? [])
-        .filter((task) => task.kind === "command" || backgroundWorkHoldsCompletion([task]))
-        .map((task) => task.taskId),
-    );
+    const holding = holdingTaskIds(event.payload.pendingBackgroundTasks);
     const previous = holdingTaskIdsByProviderThread.get(event.payload.id);
     if (holding.size > 0) holdingTaskIdsByProviderThread.set(event.payload.id, holding);
     else holdingTaskIdsByProviderThread.delete(event.payload.id);

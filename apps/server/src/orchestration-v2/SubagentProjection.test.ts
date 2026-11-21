@@ -237,7 +237,12 @@ function taskFixture() {
     checkpointId: null,
     contextHandoffId: null,
   };
-  return { projection: { ...projection, runs: [run] }, run };
+  // Read as the delegated child its progress describes.
+  const thread = {
+    ...projection.thread,
+    lineage: { ...projection.thread.lineage, relationshipToParent: "subagent" as const },
+  };
+  return { projection: { ...projection, thread, runs: [run] }, run };
 }
 
 it("reports the run that ended last, not the highest ordinal", () => {

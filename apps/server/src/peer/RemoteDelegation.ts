@@ -22,7 +22,9 @@ import {
   ProviderDriverKind,
   type RunId,
   type ThreadId,
+  type OrchestratorMcpThreadBackgroundTask,
 } from "@t3tools/contracts";
+import { withDelegatedChildCommandsLeftRunning } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -843,6 +845,7 @@ const make = Effect.gen(function* () {
     let run: OrchestratorMcpThreadRun | undefined;
     let remainingItems = 0;
     let tailProbed = false;
+    let backgroundTasks: ReadonlyArray<OrchestratorMcpThreadBackgroundTask> = [];
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -855,6 +858,7 @@ const make = Effect.gen(function* () {
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
       run ??= read.recentRuns.find((candidate) => candidate.runId === runId);
+      if (afterPosition === undefined) backgroundTasks = read.thread.pendingBackgroundTasks ?? [];
       reply =
         read.items.findLast(
           (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
@@ -906,6 +910,8 @@ const make = Effect.gen(function* () {
       text += part.text ?? "";
       textOffset = part.textTruncated ? (part.nextTextOffset ?? null) : null;
     }
+    // A hold that ran out there leaves these running, as a local child's result names them.
+    if (!failed) text = withDelegatedChildCommandsLeftRunning(text, backgroundTasks);
     return {
       text: run === undefined ? text : withExecutedModelNote(text, run.model, run.executedModel),
       executedModel,

@@ -238,6 +238,54 @@ export function delegatedTaskRuns(
   return projection.runs.filter((run) => owned.has(run.id));
 }
 
+/** The background work a follow-up task's runs started, held by the rule for delegated children. */
+export function delegatedTaskBackgroundHold(
+  runs: ReadonlyArray<OrchestrationV2Run>,
+  child: {
+    readonly providerThreads: ReadonlyArray<
+      Pick<OrchestrationV2ProviderThread, "pendingBackgroundTasks">
+    >;
+  },
+  now: DateTime.Utc,
+): ReturnType<typeof delegatedChildBackgroundWorkHold> {
+  const runIds = new Set<string>(runs.map((run) => run.id));
+  return delegatedChildBackgroundWorkHold({
+    tasks: child.providerThreads.flatMap((thread) =>
+      (thread.pendingBackgroundTasks ?? []).filter(
+        (task) => task.runId !== undefined && runIds.has(task.runId),
+      ),
+    ),
+    turnEndedAt: delegatedTaskResultRun(runs)?.completedAt,
+    now,
+  });
+}
+
+/**
+ * Background work a task's own runs started: a follow-up's runs, or for the original task
+ * (no runs of its own) all but what follow-ups started.
+ */
+export function delegatedTaskOwnBackgroundTasks(
+  taskRuns: ReadonlyArray<OrchestrationV2Run>,
+  child: {
+    readonly runs: ReadonlyArray<Pick<OrchestrationV2Run, "id" | "delegatedTaskId">>;
+    readonly providerThreads: ReadonlyArray<
+      Pick<OrchestrationV2ProviderThread, "pendingBackgroundTasks">
+    >;
+  },
+): ReadonlyArray<OrchestrationV2PendingBackgroundTask> {
+  const taskRunIds = new Set<string>(taskRuns.map((run) => run.id));
+  const followUpRunIds = new Set<string>(
+    child.runs.flatMap((run) => (run.delegatedTaskId === undefined ? [] : [run.id])),
+  );
+  return child.providerThreads
+    .flatMap((thread) => thread.pendingBackgroundTasks ?? [])
+    .filter((task) =>
+      taskRuns.length > 0
+        ? task.runId !== undefined && taskRunIds.has(task.runId)
+        : task.runId === undefined || !followUpRunIds.has(task.runId),
+    );
+}
+
 /**
  * A follow-up task's runs still owe a subagent they started its result, or still await
  * background work they started, as the original task waits on both.
@@ -257,15 +305,7 @@ export function delegatedTaskAwaitsWork(
   const runIds = new Set<string | null>(runs.map((run) => run.id));
   return (
     child.subagents.some((task) => runIds.has(task.runId) && subagentHoldsCompletion(task)) ||
-    delegatedChildBackgroundWorkHold({
-      tasks: child.providerThreads.flatMap((thread) =>
-        (thread.pendingBackgroundTasks ?? []).filter(
-          (task) => task.runId !== undefined && runIds.has(task.runId),
-        ),
-      ),
-      turnEndedAt: delegatedTaskResultRun(runs)?.completedAt,
-      now,
-    }).holds
+    delegatedTaskBackgroundHold(runs, child, now).holds
   );
 }
 

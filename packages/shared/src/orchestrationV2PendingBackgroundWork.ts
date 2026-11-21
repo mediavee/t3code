@@ -124,10 +124,29 @@ function backgroundWorkKindHoldsCompletion(kind: PendingBackgroundWorkTask["kind
 /** How long after a delegated child's turn ends the commands it did not await hold its completion. */
 export const DELEGATED_CHILD_COMMAND_HOLD_MS = 15 * 60_000;
 
-export function delegatedChildCommandsLeftRunning<
+function delegatedChildCommandsLeftRunning<
   Task extends Pick<PendingBackgroundWorkTask, "kind" | "awaited">,
 >(tasks: ReadonlyArray<Task>): ReadonlyArray<Task> {
   return tasks.filter((task) => task.kind === "command" && task.awaited !== true);
+}
+
+/** A delegated child's result, naming the commands it left running, which its lead decides on. */
+export function withDelegatedChildCommandsLeftRunning(
+  text: string,
+  tasks: ReadonlyArray<
+    Pick<PendingBackgroundWorkTask, "taskId" | "description" | "kind" | "awaited">
+  >,
+): string {
+  const leftRunning = delegatedChildCommandsLeftRunning(tasks);
+  if (leftRunning.length === 0) return text;
+  return [
+    text,
+    "",
+    "Background commands still running, not awaited, when this result was sent:",
+    ...leftRunning.map(
+      (task) => `- ${task.taskId}${task.description === undefined ? "" : `: ${task.description}`}`,
+    ),
+  ].join("\n");
 }
 
 /**
