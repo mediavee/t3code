@@ -64,6 +64,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
+import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
@@ -1282,28 +1283,29 @@ const make = Effect.gen(function* () {
         { messageRoles: ["user"], monitorNotificationsOnly: true },
       );
       const progress = delegatedTaskProgress(records, yield* DateTime.now);
+      const { commandHoldEndsAt } = progress;
       // A thread rolled back past all its work, with nothing left running, has no answer to wait for.
       if (
         progress.resultRun === undefined &&
         records.runs.every((run) => isTerminalRunStatus(run.status))
       ) {
-        return latestRun(records);
+        return { resultRun: latestRun(records), commandHoldEndsAt };
       }
-      if (progress.state !== "result_available") return undefined;
+      if (progress.state !== "result_available") return { resultRun: undefined, commandHoldEndsAt };
       const pending = yield* orchestrator
         .delegatedTaskResultPending(input.threadId)
         .pipe(Effect.mapError(loadError));
-      return pending ? undefined : progress.resultRun;
+      return { resultRun: pending ? undefined : progress.resultRun, commandHoldEndsAt };
     });
     const evaluate = Effect.fn("orchestrationV2.threadManagement.evaluate")(function* (
       runs: ReadonlyArray<OrchestrationV2Run>,
     ) {
       const current = yield* outcome(runs);
       if (!current.settled || !untilDelegatedWorkSettled) {
-        return { ...current, resultRun: undefined };
+        return { ...current, resultRun: undefined, commandHoldEndsAt: undefined };
       }
-      const resultRun = yield* delegatedWorkResult;
-      return { ...current, settled: resultRun !== undefined, resultRun };
+      const { resultRun, commandHoldEndsAt } = yield* delegatedWorkResult;
+      return { ...current, settled: resultRun !== undefined, resultRun, commandHoldEndsAt };
     });
     const knownRequests =
       input.untilPendingRequestsChangeFrom === undefined
@@ -1355,6 +1357,18 @@ const make = Effect.gen(function* () {
     if (initial.current.settled || pendingRequestsChanged(initial.requests))
       return settledResult(initial.current, initial.requests);
 
+    // A command hold running out records no event, so the wait looks again
+    // when the latest look's bound passes.
+    const commandHoldEndsAt = yield* SubscriptionRef.make(initial.current.commandHoldEndsAt);
+    const commandHoldEnded = SubscriptionRef.changes(commandHoldEndsAt).pipe(
+      Stream.switchMap((endsAt) =>
+        endsAt === undefined
+          ? Stream.empty
+          : Stream.fromEffect(
+              Effect.flatMap(DateTime.now, (now) => Effect.sleep(DateTime.distance(now, endsAt))),
+            ),
+      ),
+    );
     // A declined continuation records no event, so its effect settling wakes
     // the wait too.
     const wait = Stream.merge(
@@ -1393,9 +1407,13 @@ const make = Effect.gen(function* () {
         ? Stream.fromEffect(orchestrator.awaitRestartContinuation(initial.current.run))
         : Stream.empty,
     ).pipe(
+      Stream.merge(commandHoldEnded),
       Stream.mapEffect(() =>
         getProjectThreadRecords(input, ["runs"]).pipe(
           Effect.flatMap((current) => evaluateAll(current.runs)),
+          Effect.tap(({ current }) =>
+            SubscriptionRef.set(commandHoldEndsAt, current.commandHoldEndsAt),
+          ),
         ),
       ),
       Stream.filter(({ current, requests }) => current.settled || pendingRequestsChanged(requests)),
