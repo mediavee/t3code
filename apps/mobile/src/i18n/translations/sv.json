@@ -5638,5 +5638,11 @@
   "8ec2c57414669b79": "Anslut en andra {tracker}-arbetsyta eller användare.",
   "3d4448e3c061f894": "Annan dator",
   "349587beaf00ce5e": "{title}, delegerad från {machine}, {count, plural, one {{count} uppgift} other {{count} uppgifter}}",
-  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} uppgift} other {{count} uppgifter}}"
+  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} uppgift} other {{count} uppgifter}}",
+  "948185631ef288e6": "{count, plural, one {{count} körs} other {{count} körs}}",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} misslyckades} other {{count} misslyckades}}",
+  "67d4a779cd49a863": "{count, plural, one {{count} klar} other {{count} klara}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} öppen PR} other {{count} öppna PR}}",
+  "5c73b69a42cb7616": "Undertrådar",
+  "fa97f7ae0f746034": "{count, plural, one {{count} väntar på svar} other {{count} väntar på svar}}"
 }

@@ -5632,5 +5632,11 @@
   "8ec2c57414669b79": "Conecta un segundo espacio de trabajo o usuario de {tracker}.",
   "3d4448e3c061f894": "Otra máquina",
   "349587beaf00ce5e": "{title}, delegado desde {machine}, {count, plural, one {{count} tarea} other {{count} tareas}}",
-  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} tarea} other {{count} tareas}}"
+  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} tarea} other {{count} tareas}}",
+  "948185631ef288e6": "{count, plural, one {{count} en ejecución} other {{count} en ejecución}}",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} con errores} other {{count} con errores}}",
+  "67d4a779cd49a863": "{count, plural, one {{count} terminado} other {{count} terminados}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} PR abierta} other {{count} PR abiertas}}",
+  "5c73b69a42cb7616": "Hilos hijos",
+  "fa97f7ae0f746034": "{count, plural, one {{count} espera una respuesta} other {{count} esperan una respuesta}}"
 }
