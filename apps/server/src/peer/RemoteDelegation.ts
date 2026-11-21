@@ -936,7 +936,7 @@ const make = Effect.gen(function* () {
         afterPosition,
       });
       run ??= read.recentRuns.find((candidate) => candidate.runId === runId);
-      if (afterPosition === undefined) {
+      if (afterPosition === -1) {
         backgroundTasks = read.thread.pendingBackgroundTasks ?? [];
         worktree =
           read.thread.worktreePath === null
