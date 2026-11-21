@@ -9001,7 +9001,9 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
 
       const candidates = store.getTransientFailureCandidates(now, now);
-      assert.deepEqual(yield* candidates, [{ ...gateway, completedAt: now }]);
+      assert.deepEqual(yield* candidates, [
+        { ...gateway, completedAt: now, spentRetryBudget: false },
+      ]);
       assert.deepEqual(
         yield* store.getTransientFailureCandidates(DateTime.add(now, { milliseconds: 1 }), now),
         [],
