@@ -214,6 +214,46 @@ export const ScheduledTaskUpsertSchedule = Schema.Union([
 ]);
 export type ScheduledTaskUpsertSchedule = typeof ScheduledTaskUpsertSchedule.Type;
 
+export const DEFAULT_SCHEDULED_TASK_GATE_TIMEOUT_MS = 30_000;
+export const MAX_SCHEDULED_TASK_GATE_TIMEOUT_MS = 300_000;
+/** A gate command exits with this to skip the occurrence without a run (EX_CONFIG in sysexits). */
+export const SCHEDULED_TASK_GATE_SKIP_EXIT_CODE = 78;
+
+/**
+ * A shell command run before each scheduled occurrence. Exit 0 starts the run with its output in
+ * the prompt, 78 or the output that started the last run skips it, anything else fails it.
+ */
+export const ScheduledTaskGate = Schema.Struct({
+  command: TrimmedNonEmptyString.check(Schema.isMaxLength(8_000)),
+  /** Default: the project's root. */
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  timeoutMs: Schema.optional(
+    Schema.Int.check(
+      Schema.isBetween({ minimum: 1_000, maximum: MAX_SCHEDULED_TASK_GATE_TIMEOUT_MS }),
+    ),
+  ),
+});
+export type ScheduledTaskGate = typeof ScheduledTaskGate.Type;
+
+export const ScheduledTaskGateOutcome = Schema.Literals([
+  "passed",
+  "skipped",
+  "unchanged",
+  "failed",
+  "timed_out",
+  "blocked",
+]);
+export type ScheduledTaskGateOutcome = typeof ScheduledTaskGateOutcome.Type;
+
+export const ScheduledTaskGateResult = Schema.Struct({
+  at: IsoDateTime,
+  // Any string, so an outcome added later doesn't break a client's whole list.
+  outcome: Schema.Union([ScheduledTaskGateOutcome, Schema.String]),
+  exitCode: Schema.NullOr(Schema.Int),
+  detail: Schema.NullOr(Schema.String),
+});
+export type ScheduledTaskGateResult = typeof ScheduledTaskGateResult.Type;
+
 export const ScheduledTaskRunStatus = Schema.Literals(["never", "running", "succeeded", "failed"]);
 export type ScheduledTaskRunStatus = typeof ScheduledTaskRunStatus.Type;
 
@@ -261,6 +301,9 @@ export const ScheduledTask = Schema.Struct({
   lastRunError: Schema.NullOr(Schema.String),
   runCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   webhook: Schema.optional(ScheduledTaskWebhookEndpoint),
+  gate: Schema.optional(ScheduledTaskGate),
+  /** The last gate run, absent until one ran. */
+  gateResult: Schema.optional(ScheduledTaskGateResult),
   /** Why the task cannot run regardless of `enabled`, such as a managed policy refusing webhooks. */
   blockedByPolicy: Schema.optionalKey(Schema.String),
 });
@@ -300,6 +343,8 @@ export const ScheduledTaskUpsertInput = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   createdBy: Schema.optional(OrchestrationV2Actor),
   creationSource: Schema.optional(OrchestrationV2CreationSource),
+  /** Omitted: keep the stored gate. Null removes it. Setting or removing one needs `terminal:operate`. */
+  gate: Schema.optional(Schema.NullOr(ScheduledTaskGate)),
 });
 export type ScheduledTaskUpsertInput = typeof ScheduledTaskUpsertInput.Type;
 

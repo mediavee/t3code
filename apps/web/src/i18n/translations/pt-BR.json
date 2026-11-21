@@ -12830,5 +12830,35 @@
   "67d4a779cd49a863": "{count, plural, one {{count} concluído} other {{count} concluídos}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} PR aberta} other {{count} PRs abertas}}",
   "5c73b69a42cb7616": "Threads filhas",
-  "fa97f7ae0f746034": "{count, plural, one {{count} aguardando resposta} other {{count} aguardando resposta}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} aguardando resposta} other {{count} aguardando resposta}}",
+  "acaf4e0d74541a20": "Execução iniciada",
+  "1297caf1422b5f9a": "Ignorada: o comando terminou com 78",
+  "7a0bdd4a31f25e60": "Ignorada: mesma saída da última execução",
+  "f8f43e1550ea3ae4": "Falhou",
+  "fa891300374ac336": "Bloqueada pela política",
+  "a5099ec6e691530a": "Comando de verificação",
+  "253f645e9911c794": "opcional",
+  "8d07b99e1775d2fa": "Roda em um shell como o usuário deste servidor antes de cada execução agendada. Saída 0 inicia a execução com a saída do comando; saída 78, ou a mesma saída da última execução iniciada, a ignora; qualquer outra a faz falhar.",
+  "472cff2d538f1cf1": "Só um dispositivo com acesso ao terminal pode alterar a verificação.",
+  "430b587cb8d53ffe": "Pasta da verificação",
+  "09f7ae8cca9b68b7": "padrão: a pasta do projeto",
+  "3e2b4d1001bb2d02": "Tempo limite da verificação",
+  "fe38d9981aeea3f1": "segundos, padrão 30",
+  "73c3680625b8c71f": [
+    "Última verificação: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ",",
+    " ",
+    {
+      "t": "ScheduledRelativeLabel",
+      "i": 2
+    }
+  ],
+  "fe3927cdd40da07b": "Verificação inválida",
+  "74ff2ebf21a05651": "Uma tarefa de webhook não pode ter um comando de verificação.",
+  "ceb3cbae8957e562": "Digite segundos inteiros de 1 a {max} ou deixe em branco."
 }
