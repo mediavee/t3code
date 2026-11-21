@@ -16,6 +16,7 @@ import {
   type OrchestratorMcpDelegateTaskResult,
   type OrchestratorMcpThreadWaitResult,
   type OrchestrationV2RemoteTaskChild,
+  type OrchestrationV2RemoteTaskWorktree,
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadShell,
   type ProjectId,
@@ -182,7 +183,7 @@ export class RemoteDelegation extends Context.Service<
       task: OrchestrationV2Subagent,
     ) => Effect.Effect<{
       readonly status: OrchestratorMcpThreadRun["status"] | null;
-      readonly worktree: { readonly path: string; readonly branch: string | null } | null;
+      readonly worktree: OrchestrationV2RemoteTaskWorktree | null;
     } | null>;
     /**
      * Follows every open remote task until it ends, including after a
@@ -435,21 +436,15 @@ const make = Effect.gen(function* () {
    * not resolve there, and an older peer would silently put the task in the shared checkout.
    */
   const remoteWorktreeBase = Effect.fn("RemoteDelegation.remoteWorktreeBase")(function* (
+    scope: ThreadScope,
     environmentId: EnvironmentId,
     projectId: ProjectId,
     baseRef: string | undefined,
   ) {
-    const base = yield* links
-      .worktreeBase(environmentId, { projectId, ...(baseRef === undefined ? {} : { baseRef }) })
-      .pipe(
-        Effect.mapError(
-          (error) =>
-            new OrchestratorMcpFailure({
-              code: error.reason === "incompatible" ? "invalid_request" : "orchestration_error",
-              message: error.message,
-            }),
-        ),
-      );
+    const base = yield* forwarding.worktreeBase(scope, environmentId, {
+      projectId,
+      ...(baseRef === undefined ? {} : { baseRef }),
+    });
     if (base.outcome === "resolved") {
       return {
         type: "worktree" as const,
@@ -458,7 +453,7 @@ const make = Effect.gen(function* () {
       };
     }
     return yield* new OrchestratorMcpFailure({
-      code: "invalid_request",
+      code: base.outcome === "refused" ? "capability_denied" : "invalid_request",
       message:
         base.outcome === "base_not_found" && baseRef !== undefined
           ? `${base.message} No task was started. A commit that exists only here is not there: push it, or omit baseRef to start from that project's default branch.`
@@ -541,7 +536,7 @@ const make = Effect.gen(function* () {
       );
       const workspaceStrategy =
         input.isolation === "worktree"
-          ? yield* remoteWorktreeBase(target.environmentId, projectId, input.baseRef)
+          ? yield* remoteWorktreeBase(scope, target.environmentId, projectId, input.baseRef)
           : undefined;
       // One key for the launch there and the record here, so a retry finds both.
       // Both are scoped to the provider session, as every key a caller passes is:
@@ -800,6 +795,7 @@ const make = Effect.gen(function* () {
     stoppedThere: "ran-out" | "stopped" | undefined,
     stopCount?: number,
     executedModel?: string,
+    worktree?: OrchestrationV2RemoteTaskWorktree,
   ) {
     const attempt = yield* random.uuidV4();
     const known = yield* knownSecrets.current;
@@ -815,6 +811,7 @@ const make = Effect.gen(function* () {
         ...(stoppedThere === undefined ? {} : { stoppedThere }),
         ...(stopCount === undefined ? {} : { stopCount }),
         ...(executedModel === undefined ? {} : { executedModel }),
+        ...(worktree === undefined ? {} : { worktree }),
       })
       .pipe(
         Effect.catch((error) =>
@@ -915,7 +912,9 @@ const make = Effect.gen(function* () {
     failed = false,
     probeSuccess = true,
   ) {
-    if (isHere(remote)) return yield* lastReplyHere(remote, runId, failed);
+    // A task here has no checkout there to report.
+    if (isHere(remote))
+      return { ...(yield* lastReplyHere(remote, runId, failed)), worktree: undefined };
     let reply: OrchestratorMcpThreadTimelineItem | undefined;
     let error: OrchestratorMcpThreadTimelineItem | undefined;
     let afterPosition: number | undefined;
@@ -923,6 +922,7 @@ const make = Effect.gen(function* () {
     let remainingItems = 0;
     let tailProbed = false;
     let backgroundTasks: ReadonlyArray<OrchestratorMcpThreadBackgroundTask> = [];
+    let worktree: OrchestrationV2RemoteTaskWorktree | undefined;
     while (true) {
       const read = yield* forwarding.readThread(scope, remote.environmentId, {
         threadId: remote.threadId,
@@ -935,7 +935,13 @@ const make = Effect.gen(function* () {
         ...(afterPosition === undefined ? {} : { afterPosition }),
       });
       run ??= read.recentRuns.find((candidate) => candidate.runId === runId);
-      if (afterPosition === undefined) backgroundTasks = read.thread.pendingBackgroundTasks ?? [];
+      if (afterPosition === undefined) {
+        backgroundTasks = read.thread.pendingBackgroundTasks ?? [];
+        worktree =
+          read.thread.worktreePath === null
+            ? undefined
+            : { path: read.thread.worktreePath, branch: read.thread.branch };
+      }
       reply =
         read.items.findLast(
           (item) => item.type === "assistant_message" && (runId === null || item.runId === runId),
@@ -972,7 +978,7 @@ const make = Effect.gen(function* () {
     }
     reply = error ?? reply;
     const executedModel = run?.executedModel ?? undefined;
-    if (reply === undefined) return { text: undefined, executedModel };
+    if (reply === undefined) return { text: undefined, executedModel, worktree };
     let text = reply.text ?? "";
     let textOffset = reply.textTruncated ? (reply.nextTextOffset ?? null) : null;
     while (textOffset !== null) {
@@ -992,6 +998,7 @@ const make = Effect.gen(function* () {
     return {
       text: run === undefined ? text : withExecutedModelNote(text, run.model, run.executedModel),
       executedModel,
+      worktree,
     };
   });
 
@@ -1266,6 +1273,9 @@ const make = Effect.gen(function* () {
         reply.text === undefined ? "failed" : "completed",
         reply.text ?? noRun(remote),
         "ran-out",
+        undefined,
+        undefined,
+        reply.worktree,
       );
       return yield* settled(parentThreadId, taskId);
     }
@@ -1310,6 +1320,7 @@ const make = Effect.gen(function* () {
       "ran-out",
       undefined,
       result.executedModel,
+      result.worktree,
     );
     return yield* settled(parentThreadId, taskId);
   });

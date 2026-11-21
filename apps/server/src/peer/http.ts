@@ -8,17 +8,14 @@ import {
 } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
-import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import * as ProjectService from "../project/ProjectService.ts";
-import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerClientPairing from "./PeerClientPairing.ts";
+import * as PeerWorktreeBase from "./PeerWorktreeBase.ts";
 
 const parentDoneEnvironment = (client: EnvironmentAuth.McpClientSession) =>
   client.peerLink ? client.peerEnvironmentId : undefined;
@@ -42,9 +39,7 @@ export const layer = HttpApiBuilder.group(
     const issuer = yield* PeerClientPairing.PeerClientPairingIssuer;
     const threads = yield* ThreadManagement.ThreadManagementService;
     const random = yield* SecureRandom.SecureRandom;
-    const projects = yield* ProjectService.ProjectService;
-    const launches = yield* ThreadLaunch.ThreadLaunchService;
-    const git = yield* GitVcsDriver.GitVcsDriver;
+    const worktreeBases = yield* PeerWorktreeBase.PeerWorktreeBase;
 
     const linkCaller = Effect.fnUntraced(function* (
       renewsIf?: (client: EnvironmentAuth.McpClientSession) => boolean,
@@ -151,51 +146,20 @@ export const layer = HttpApiBuilder.group(
       .handle(
         "worktreeBase",
         Effect.fn("environment.peerLink.worktreeBase")(function* ({ payload }) {
-          const caller = yield* linkCaller();
+          const caller = yield* linkCaller(yield* worktreeBases.admits);
           if (!caller.peerLink) {
             return yield* new EnvironmentHttpUnauthorizedError({
               message: "Only a linked environment's session is accepted here.",
             });
           }
-          const project = Option.getOrUndefined(
-            yield* projects
-              .getById(payload.projectId)
-              .pipe(Effect.mapError(internal("The project could not be read."))),
+          return yield* worktreeBases.resolve(caller, payload).pipe(
+            Effect.catchTags({
+              PeerWorktreeBaseRefused: (error) =>
+                Effect.fail(new EnvironmentHttpForbiddenError({ message: error.message })),
+              PeerWorktreeBaseUnavailable: (error) =>
+                Effect.fail(new EnvironmentHttpInternalServerError({ message: error.message })),
+            }),
           );
-          if (project === undefined || project.deletedAt !== null) {
-            return {
-              outcome: "project_not_found" as const,
-              message: `Project ${payload.projectId} was not found.`,
-            };
-          }
-          // A launch turns a worktree in a folder without Git into a shared checkout.
-          if (yield* launches.isNonGitProject(project.id)) {
-            return {
-              outcome: "not_repository" as const,
-              message: `Project "${project.title}" is not a Git repository, so it has no worktrees.`,
-            };
-          }
-          const baseRef =
-            payload.baseRef ??
-            (yield* GitVcsDriver.defaultWorktreeBaseRef(git, project.workspaceRoot));
-          const resolved = { outcome: "resolved" as const, baseRef, startFromOrigin: true };
-          return yield* launches
-            .checkWorktreeBase({
-              projectId: project.id,
-              workspaceStrategy: { type: "worktree", baseRef, startFromOrigin: true },
-            })
-            .pipe(
-              Effect.as(resolved),
-              Effect.catch((error) =>
-                Effect.succeed({
-                  outcome:
-                    error._tag === "ThreadLaunchNotRepositoryError"
-                      ? ("not_repository" as const)
-                      : ("base_not_found" as const),
-                  message: error.message,
-                }),
-              ),
-            );
         }),
       );
   }),

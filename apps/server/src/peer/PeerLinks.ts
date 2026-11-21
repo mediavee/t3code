@@ -148,11 +148,17 @@ export class PeerLinks extends Context.Service<
       environmentId: EnvironmentId,
       request: PeerLinkParentDoneRequest,
     ) => Effect.Effect<PeerLinkParentDoneResult["outcome"] | "refused", PeerLinkError>;
-    /** The base a delegated task's worktree in a project there starts from, checked there. */
+    /**
+     * The base a delegated task's worktree in a project there starts from, checked there.
+     * `refused`: that environment does not let this link start work in a new checkout there.
+     */
     readonly worktreeBase: (
       environmentId: EnvironmentId,
       request: PeerLinkWorktreeBaseRequest,
-    ) => Effect.Effect<PeerLinkWorktreeBaseResult, PeerLinkError>;
+    ) => Effect.Effect<
+      PeerLinkWorktreeBaseResult | { readonly outcome: "refused"; readonly message: string },
+      PeerLinkError
+    >;
   }
 >()("t3/peer/PeerLinks") {}
 
@@ -850,6 +856,11 @@ const make = Effect.gen(function* () {
         .pipe(
           Effect.timeout(WORKTREE_BASE_TIMEOUT),
           Effect.catchTags({
+            EnvironmentHttpForbiddenError: (error) =>
+              Effect.succeed({
+                outcome: "refused" as const,
+                message: `${label}: ${error.message}`,
+              }),
             EnvironmentHttpUnauthorizedError: () =>
               Effect.fail(
                 new PeerLinkError({

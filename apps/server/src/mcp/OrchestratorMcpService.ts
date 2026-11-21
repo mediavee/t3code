@@ -2238,6 +2238,8 @@ const make = Effect.gen(function* () {
   ): Effect.fn.Return<OrchestratorMcpDelegateTaskResult, OrchestratorMcpFailure> {
     // A task with its result needs nothing more from there.
     const there = task.result === null ? yield* remoteDelegation.readThere(scope, task) : null;
+    // A task with its result keeps the checkout its result was read from.
+    const worktree = there?.worktree ?? task.remoteChild?.worktree;
     const status: OrchestratorMcpDelegateTaskResult["status"] =
       task.result === null
         ? there?.status === "starting"
@@ -2292,7 +2294,7 @@ const make = Effect.gen(function* () {
             remoteChild: task.remoteChild,
             link: formatThreadLink(task.remoteChild, task.remoteChild.title),
           }),
-      ...(there?.worktree == null ? {} : { worktree: there.worktree }),
+      ...(worktree == null ? {} : { worktree }),
       childRunId: null,
       childNodeId: task.id,
       status,

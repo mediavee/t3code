@@ -39,6 +39,7 @@ import * as Sqlite from "../persistence/Sqlite.ts";
 import * as PeerHttp from "./http.ts";
 import * as PeerClientPairing from "./PeerClientPairing.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerWorktreeBase from "./PeerWorktreeBase.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -157,7 +158,7 @@ export const servePeer = <E, R, E2 = never, R2 = never>(
           PeerHttp.layer.pipe(
             Layer.provide(PeerClientPairing.layerIssuer),
             Layer.provide(threads),
-            Layer.provide(worktrees),
+            Layer.provide(PeerWorktreeBase.layer.pipe(Layer.provide(worktrees))),
           ),
         ),
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),

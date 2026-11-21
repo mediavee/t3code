@@ -39,6 +39,7 @@ import {
   OrchestrationV2Actor,
   OrchestrationV2CreationSource,
   OrchestrationV2DelegatedFrom,
+  OrchestrationV2RemoteTaskWorktree,
   OrchestrationV2RunStatus,
   type OrchestrationV2ThreadShell,
   OrchestrationV2TurnItemStatus,
@@ -305,9 +306,7 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   ),
   link: Schema.optional(Schema.String),
   /** A remote task's own checkout there, once it is ready. */
-  worktree: Schema.optional(
-    Schema.Struct({ path: Schema.String, branch: Schema.NullOr(Schema.String) }),
-  ),
+  worktree: Schema.optional(OrchestrationV2RemoteTaskWorktree),
   childRunId: Schema.NullOr(RunId),
   childNodeId: NodeId,
   status: OrchestratorMcpDelegatedTaskStatus.annotate({

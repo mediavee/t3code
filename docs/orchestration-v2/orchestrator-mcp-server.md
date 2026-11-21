@@ -262,7 +262,10 @@ from the remote project's default branch, freshly fetched, or from a `baseRef` t
 there. The remote side resolves and checks the base through `/api/peer-link/worktree-base`
 before anything launches, so a commit that exists only in the caller's checkout fails with a
 message to push it. A peer without the `linkWorktreeBase` capability fails instead of sharing
-its checkout. `task_status` reports the remote checkout as `worktree` once it is ready.
+its checkout. Resolving a base fetches it there, so that route refuses a read-only link and any
+link while Linked environments is off there, and the caller sends it only through the same gates
+as a forwarded tool call. `task_status` reports the remote checkout as `worktree` once it is
+ready, and keeps it on the finished task.
 
 A provider runs a runtime mode it does not offer as `approval-required`, so a
 child would ask for approval on every command. `orchestrator_capabilities`
