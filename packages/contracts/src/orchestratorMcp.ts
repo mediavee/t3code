@@ -267,6 +267,14 @@ const OrchestratorMcpExecutedModel = Schema.NullOr(Schema.String).annotate({
     "Model the provider reported running, or null when unavailable. Can differ from the requested `model`.",
 });
 
+/** Absent unless the child's provider lacks the mode it asked for or inherited. */
+export const OrchestratorMcpRuntimeModeSteppedDown = Schema.optional(
+  Schema.Struct({ asked: RuntimeMode, applied: RuntimeMode }).annotate({
+    description:
+      "Its provider lacks the `asked` mode, so it runs at `applied` and may ask for approvals.",
+  }),
+);
+
 export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   taskId: NodeId,
   /** Null for a task that runs in a linked environment; see `remoteChild`. */
@@ -301,12 +309,14 @@ export const OrchestratorMcpDelegateTaskResult = Schema.Struct({
   pendingApproval: Schema.NullOr(
     Schema.Struct({ requestId: RuntimeRequestId, kind: ProviderRequestKind, runId: RunId }),
   ).annotate({
-    description: "Oldest pending approval, or null. Ends a wait. Grants no approval rights.",
+    description:
+      "Oldest pending approval, or null. Ends a wait. Answer it via `t3_pending_request` on `childThreadId` within your own modes, or the user does.",
   }),
   waitTimedOut: Schema.Boolean.annotate({
     description: "True only on the timed-out wait call. The child keeps running.",
   }),
   next: Schema.optional(OrchestratorMcpRunningTaskNext),
+  runtimeModeSteppedDown: OrchestratorMcpRuntimeModeSteppedDown,
 });
 export type OrchestratorMcpDelegateTaskResult = typeof OrchestratorMcpDelegateTaskResult.Type;
 
@@ -364,6 +374,7 @@ export const OrchestratorMcpCreatedThread = Schema.Struct({
   creationSource: OrchestrationV2CreationSource,
   providerInstanceId: ProviderInstanceId,
   model: Schema.String,
+  runtimeModeSteppedDown: OrchestratorMcpRuntimeModeSteppedDown,
 });
 export type OrchestratorMcpCreatedThread = typeof OrchestratorMcpCreatedThread.Type;
 
@@ -658,6 +669,13 @@ export const OrchestratorMcpThreadWaitInput = Schema.Struct({
         "Also wait for the `output` the run was asked for, which a later turn may submit.",
     }),
   ),
+  /** A linked environment's follower of a task asks for this; older peers ignore it. */
+  untilPendingRequestsChangeFrom: Schema.optional(
+    Schema.Array(RuntimeRequestId).annotate({
+      description:
+        "Linked environments only: also end, unsettled, once the pending request ids differ from these.",
+    }),
+  ),
 });
 export type OrchestratorMcpThreadWaitInput = typeof OrchestratorMcpThreadWaitInput.Type;
 
@@ -674,6 +692,19 @@ export const OrchestratorMcpThreadWaitResult = Schema.Struct({
   /** A message for the caller arrived before the run finished; `waitingMessages` wait unread. */
   interruptedByIncomingMessage: Schema.optional(Schema.Literal(true)),
   waitingMessages: Schema.optional(NonNegativeInt),
+  /** With `untilPendingRequestsChangeFrom`: the thread's pending questions and approvals. */
+  pendingRequests: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        requestId: RuntimeRequestId,
+        kind: Schema.Union([ProviderRequestKind, Schema.Literal("user_input")]),
+        /** The task keeps working while it waits for this answer. */
+        answeredByMessage: Schema.Boolean,
+        prompt: Schema.optional(Schema.String),
+        reason: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
 });
 export type OrchestratorMcpThreadWaitResult = typeof OrchestratorMcpThreadWaitResult.Type;
 

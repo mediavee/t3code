@@ -373,6 +373,9 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
 
     const inherited = yield* launchPi();
     expect(inherited.launched[0]?.runtimeMode).toBe("auto-accept-edits");
+    expect(inherited.result).toMatchObject({
+      runtimeModeSteppedDown: { asked: "auto", applied: "auto-accept-edits" },
+    });
 
     const requested = yield* launchPi("auto");
     expect(requested.result).toMatchObject({ code: "invalid_request" });
@@ -380,6 +383,7 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
 
     const offered = yield* launchPi("approval-required");
     expect(offered.launched[0]?.runtimeMode).toBe("approval-required");
+    expect(offered.result).not.toHaveProperty("runtimeModeSteppedDown");
   }),
 );
 
