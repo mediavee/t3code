@@ -234,6 +234,7 @@ import {
   knownProviderFailureMessage,
   makeProviderFailure,
   makeProviderRetryTurnItem,
+  PROVIDER_REQUEST_UNANSWERED_CODE,
   PROVIDER_RETRY_BUDGET_MS,
   providerProcessExitGuidance,
 } from "@t3tools/provider-core/server/failure";
@@ -6574,7 +6575,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             context,
             makeProviderFailure({
               class: "transport_error",
-              code: "claude_request_unanswered",
+              code: PROVIDER_REQUEST_UNANSWERED_CODE,
               message: `Claude sent nothing for ${PROVIDER_RETRY_BUDGET_MS / 60_000} minutes. The API or a gateway in front of it is not responding.`,
               retryable: true,
             }),

@@ -375,6 +375,27 @@ export function makeProviderFailureTurnItem(input: {
  */
 export const PROVIDER_RETRY_BUDGET_MS = 10 * 60 * 1000;
 
+/** A request the provider left silent for a whole retry budget; it carries no retry window. */
+export const PROVIDER_REQUEST_UNANSWERED_CODE = "claude_request_unanswered";
+
+/** Whether a failure item ended a turn that already spent a whole retry budget. */
+export function spentProviderRetryBudget(item: {
+  readonly code: string | null;
+  /** The item carries the provider retry it gave up on. */
+  readonly retried: boolean;
+  readonly startedAt: DateTime.Utc | null;
+  readonly completedAt: DateTime.Utc | null;
+}): boolean {
+  if (item.code === PROVIDER_REQUEST_UNANSWERED_CODE) return true;
+  return (
+    item.retried &&
+    item.startedAt !== null &&
+    item.completedAt !== null &&
+    DateTime.toEpochMillis(item.completedAt) - DateTime.toEpochMillis(item.startedAt) >=
+      PROVIDER_RETRY_BUDGET_MS
+  );
+}
+
 export function makeProviderRetryTurnItem(input: {
   readonly driver: ProviderDriverKind;
   readonly threadId: ThreadId;
