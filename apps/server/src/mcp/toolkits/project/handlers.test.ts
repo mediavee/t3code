@@ -1464,3 +1464,58 @@ it.effect("a project update or create that is refused tells the agent why", () =
     expect(dropped.at(-1)?.result).toMatchObject({ code: "invalid_request" });
   }),
 );
+
+it.effect("a project's default model refuses a setting it would drop", () =>
+  Effect.gen(function* () {
+    const harness = clientLaunchHarness({ runtimeModeCeiling: "full-access", launched: [] });
+    const updates: Array<unknown> = [];
+    const dependencies = Layer.merge(
+      harness.dependencies,
+      Layer.mock(Project.ProjectService)({
+        update: (input) =>
+          Effect.sync(() => {
+            updates.push(input.defaultModelSelection);
+            return {
+              id: input.projectId,
+              title: "Updated",
+              workspaceRoot: "/projects/updated",
+              defaultModelSelection: input.defaultModelSelection ?? null,
+              scripts: [],
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              deletedAt: null,
+            } as never;
+          }),
+      }),
+    );
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const update = (
+      defaultModelSelection: Record<string, string | Record<string, string | number>>,
+    ) =>
+      toolkit
+        .handle("t3_project_update", { projectId: harness.projectId, defaultModelSelection })
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.map((result) => String(result.at(-1)?.result)),
+          Effect.provide(dependencies),
+        );
+
+    expect(yield* update({ instanceId: "codex", model: "gpt-5.4", effort: "max" })).toContain(
+      'Unknown key "effort" in modelSelection. Accepted keys: provider, instanceId, model, options.',
+    );
+    expect(
+      yield* update({ instanceId: "codex", model: "gpt-5.4", options: { effort: 3 } }),
+    ).toContain('Option "effort" in modelSelection.options needs');
+    expect(updates).toEqual([]);
+
+    yield* update({ instanceId: "codex", model: "gpt-5.4", options: { effort: "max" } });
+    expect(updates).toEqual([
+      { instanceId: "codex", model: "gpt-5.4", options: [{ id: "effort", value: "max" }] },
+    ]);
+  }),
+);
