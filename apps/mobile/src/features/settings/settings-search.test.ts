@@ -26,6 +26,13 @@ const SECTIONS = [
       { id: "SettingsEnvironmentSourceControl", label: "Source control & issues" },
     ],
   },
+  {
+    title: "Environment",
+    rows: [
+      { id: "SettingsThreads", label: "Threads" },
+      { id: "SettingsEnvironmentMaintenance", label: "Maintenance" },
+    ],
+  },
 ];
 
 function visible(query: string) {
@@ -58,7 +65,19 @@ describe("filterSettingsSections", () => {
       query: "accounts",
       expected: [["Server settings", ["Provider accounts"]]],
     },
-    { query: "usage", expected: [[null, ["Usage"]]] },
+    { query: "standing instructions", expected: [["Environment", ["Threads"]]] },
+    { query: "provider errors", expected: [["Environment", ["Threads"]]] },
+    { query: "retry", expected: [["Environment", ["Threads"]]] },
+    { query: "memory ceiling", expected: [["Environment", ["Maintenance"]]] },
+    { query: "memory", expected: [["Environment", ["Maintenance"]]] },
+    // Threads holds the usage limits setting.
+    {
+      query: "usage",
+      expected: [
+        [null, ["Usage"]],
+        ["Environment", ["Threads"]],
+      ],
+    },
     { query: "zzzz", expected: [] },
   ])("$query", ({ query, expected }) => {
     expect(visible(query)).toEqual(expected);
