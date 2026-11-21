@@ -870,6 +870,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("caffeinate sleep prevent stay awake power laptop lid inhibit")],
   },
   {
+    id: "agent-memory-ceiling",
+    title: msg("Agent memory ceiling"),
+    to: "/settings/maintenance",
+    scope: "environment-defaults",
+    searchTerms: [msg("memory limit ram oom out of memory cgroup systemd memorymax tmpdir temp")],
+  },
+  {
     id: "background-activity",
     title: msg("Background activity"),
     to: "/settings/maintenance",
