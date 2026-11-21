@@ -216,7 +216,7 @@ describe("CodexAdapterV2 runtime policy", () => {
         runtimeMode: "approval-required" | "auto-accept-edits" | "auto" | "full-access",
         thread: Pick<
           Parameters<typeof CodexAdapterV2.buildCodexTurnStartParams>[0],
-          "appThread" | "browserToolsAvailable"
+          "appThread" | "browserToolsAvailable" | "codexPromptingTools"
         > = {},
       ) =>
         CodexAdapterV2.buildCodexTurnStartParams({
@@ -286,6 +286,23 @@ describe("CodexAdapterV2 runtime policy", () => {
         assert.equal(params.approvalPolicy, "never", JSON.stringify(thread));
         assert.equal(params.sandboxPolicy?.type, "dangerFullAccess");
       }
+      // Codex's own plugin or app prompts keep a watched thread granular without T3's browser.
+      assert.deepEqual(
+        (yield* build("full-access", {
+          appThread: userThread,
+          browserToolsAvailable: false,
+          codexPromptingTools: true,
+        })).approvalPolicy,
+        fullAccess.approvalPolicy,
+      );
+      for (const appThread of [delegated, launchedByAgent]) {
+        const params = yield* build("full-access", {
+          appThread,
+          browserToolsAvailable: false,
+          codexPromptingTools: true,
+        });
+        assert.equal(params.approvalPolicy, "never", JSON.stringify(appThread));
+      }
       const narrower = yield* build("auto-accept-edits", {
         appThread: delegated,
         browserToolsAvailable: false,
@@ -294,6 +311,36 @@ describe("CodexAdapterV2 runtime policy", () => {
       assert.equal(narrower.sandboxPolicy?.type, "workspaceWrite");
     }),
   );
+
+  it("counts a running plugin server or a callable app as Codex's own prompting tools", () => {
+    const server = (
+      pluginId: string | null,
+      runtimeStatus?: CodexSchema.V2ListMcpServerStatusResponse__McpServerConnectionStatus | null,
+    ) => ({
+      name: pluginId ?? "own-server",
+      authStatus: "unsupported" as const,
+      pluginId,
+      ...(runtimeStatus === undefined ? {} : { runtimeStatus }),
+      resources: [],
+      resourceTemplates: [],
+      tools: {},
+    });
+    const servers = (...data: ReadonlyArray<ReturnType<typeof server>>) =>
+      CodexAdapterV2.codexHasPromptingPluginServer({ data });
+    const app = (enabled: boolean, callable: boolean) => ({ id: "gmail", enabled, callable });
+
+    for (const status of [undefined, null, "notStarted", "starting", "connected"] as const) {
+      assert.isTrue(servers(server("chrome@openai", status)), String(status));
+      assert.isFalse(servers(server(null, status)), `own server ${String(status)}`);
+    }
+    for (const status of ["authenticationRequired", "failed", "cancelled", "disabled"] as const) {
+      assert.isFalse(servers(server("chrome@openai", status)), status);
+    }
+    assert.isTrue(CodexAdapterV2.codexHasPromptingApp({ apps: [app(true, true)] }));
+    assert.isFalse(
+      CodexAdapterV2.codexHasPromptingApp({ apps: [app(true, false), app(false, true)] }),
+    );
+  });
 
   it.effect("sends the chosen cyber access program, else the model's default", () =>
     Effect.gen(function* () {
@@ -1963,6 +2010,207 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           typeof policy === "object" && policy !== null ? Object.keys(policy)[0] : policy,
           approvalPolicy,
         );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
+  it.effect.each([
+    { thread: "user", apps: "app", servers: "unasked", approvalPolicy: "granular" },
+    { thread: "user", apps: "none", servers: "plugin", approvalPolicy: "granular" },
+    { thread: "user", apps: "error", servers: "plugin", approvalPolicy: "granular" },
+    { thread: "user", apps: "none", servers: "own", approvalPolicy: "never" },
+    { thread: "user", apps: "none", servers: "error", approvalPolicy: "never" },
+    { thread: "user", apps: "none", servers: "silent", approvalPolicy: "never" },
+    { thread: "delegated", apps: "unasked", servers: "unasked", approvalPolicy: "never" },
+  ] as const)(
+    "a full-access $thread turn without T3's browser (apps $apps, servers $servers) gets $approvalPolicy",
+    ({ thread, apps, servers, approvalPolicy }) =>
+      Effect.gen(function* () {
+        const scenario = `codex-plugin-${thread}-${apps}-${servers}`;
+        const nativeThreadId = `${scenario}-thread`;
+        const nativeTurnId = `${scenario}-turn`;
+        const prompt = "Book the flight.";
+        const requests: Array<string> = [];
+        const starts: Array<unknown> = [];
+        const listingSent = yield* Deferred.make<void>();
+        // What a turn here sends with T3's tools; only its approval policy differs between cases.
+        const expectedStart = yield* CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId,
+          codexInput: [{ type: "text", text: prompt }],
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          hasT3Mcp: true,
+          browserToolsAvailable: false,
+          codexPromptingTools: approvalPolicy === "granular",
+        });
+        const preamble = [
+          ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }).map((entry) =>
+            entry.type === "expect_outbound" && entry.label === "turn/start"
+              ? { ...entry, frame: { id: 3, method: "turn/start", params: expectedStart } }
+              : entry,
+          ),
+          {
+            type: "emit_inbound" as const,
+            frame: {
+              method: "turn/completed",
+              params: {
+                threadId: nativeThreadId,
+                turn: makeCodexReplayTurn({ id: nativeTurnId, status: "completed" }),
+              },
+            },
+          },
+        ];
+        // The turn names its thread before it lists, so the listing goes after the name.
+        const listing: Array<CodexReplay.CodexAppServerReplayEntry> = [
+          {
+            type: "expect_outbound",
+            label: "thread/name/set",
+            frame: {
+              id: 3,
+              method: "thread/name/set",
+              params: { threadId: nativeThreadId, name: CODEX_TEST_THREAD_TITLE },
+            },
+          },
+          { type: "emit_inbound", label: "thread/name/set", frame: { id: 3, result: {} } },
+        ];
+        const exchange = (method: string, params: unknown, reply: "silent" | object) => {
+          const id = listing.length / 2 + 3;
+          listing.push({ type: "expect_outbound", label: method, frame: { id, method, params } });
+          if (reply !== "silent") {
+            listing.push({ type: "emit_inbound", label: method, frame: { id, ...reply } });
+          }
+        };
+        const failed = { error: { code: -32601, message: "Method not found" } };
+        if (apps !== "unasked") {
+          exchange(
+            "app/installed",
+            { threadId: nativeThreadId },
+            apps === "error"
+              ? failed
+              : {
+                  result: {
+                    apps: apps === "app" ? [{ id: "gmail", enabled: true, callable: true }] : [],
+                  },
+                },
+          );
+        }
+        if (servers !== "unasked") {
+          const server = (pluginId: string | null) => ({
+            name: pluginId === null ? "own-server" : "chrome",
+            authStatus: "unsupported",
+            pluginId,
+            runtimeStatus: "connected",
+            resources: [],
+            resourceTemplates: [],
+            tools: {},
+          });
+          exchange(
+            "mcpServerStatus/list",
+            { threadId: nativeThreadId, detail: "toolsAndAuthOnly" },
+            servers === "silent"
+              ? "silent"
+              : servers === "error"
+                ? failed
+                : {
+                    result: {
+                      data: [server(servers === "plugin" ? "chrome@openai-curated" : null)],
+                    },
+                  },
+          );
+        }
+        // A listing with no reply still takes its id.
+        const turnStartId = 3 + Math.ceil(listing.length / 2);
+        const harness = yield* makeCodexReplayHarness(
+          makeCodexReplayTranscript({
+            scenario,
+            entries:
+              thread === "user"
+                ? [
+                    ...preamble.slice(0, 5),
+                    ...listing,
+                    ...preamble
+                      .slice(5)
+                      .map((entry) =>
+                        entry.type !== "runtime_exit" &&
+                        Predicate.isObject(entry.frame) &&
+                        entry.frame.id === 3
+                          ? withReplayRequestId(entry, turnStartId)
+                          : entry,
+                      ),
+                  ]
+                : preamble,
+          }),
+          undefined,
+          (method, params) =>
+            Effect.sync(() => {
+              requests.push(method);
+              if (method === "turn/start") starts.push(params);
+            }).pipe(
+              Effect.andThen(
+                method === "mcpServerStatus/list"
+                  ? Deferred.succeed(listingSent, undefined)
+                  : Effect.void,
+              ),
+            ),
+        );
+        yield* (yield* McpProviderSessions.McpProviderSessions).set({
+          environmentId: EnvironmentId.make("environment-codex-plugin"),
+          threadId: harness.threadId,
+          providerSessionId: `provider-session-${scenario}`,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+          endpoint: "http://127.0.0.1:43123/mcp",
+          authorizationHeader: "Bearer codex-plugin-token",
+          browserToolsAvailable: false,
+        });
+        const turnInput = makeCodexTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(`${scenario}-attempt`),
+          text: prompt,
+        });
+        const started = yield* harness.runtime
+          .startTurn({
+            ...turnInput,
+            appThread:
+              thread === "user"
+                ? { ...turnInput.appThread, createdBy: "user", creationSource: "web" }
+                : {
+                    ...turnInput.appThread,
+                    createdBy: "agent",
+                    creationSource: "mcp",
+                    lineage: {
+                      ...turnInput.appThread.lineage,
+                      parentThreadId: ThreadId.make("parent"),
+                      relationshipToParent: "subagent",
+                    },
+                  },
+          })
+          .pipe(Effect.forkScoped);
+        // A server that never answers holds the turn only until the listing's bound.
+        if (servers === "silent") {
+          yield* Deferred.await(listingSent);
+          assert.notInclude(requests, "turn/start");
+          yield* TestClock.adjust("2 seconds");
+        }
+        yield* Fiber.join(started);
+        yield* harness.firstTerminal;
+        const policy = (starts[0] as { approvalPolicy?: unknown } | undefined)?.approvalPolicy;
+        assert.equal(
+          typeof policy === "object" && policy !== null ? Object.keys(policy)[0] : policy,
+          approvalPolicy,
+        );
+        assert.equal(requests.includes("app/installed"), apps !== "unasked");
+        assert.equal(requests.includes("mcpServerStatus/list"), servers !== "unasked");
       }).pipe(
         Effect.scoped,
         Effect.provide(
