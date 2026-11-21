@@ -43,7 +43,7 @@ A turn's diff shows only that turn's own edits, commits, and conflict fixes—ex
 - **Mark files viewed**: Check off files in the **Code** tab to collapse them (reopens as **Changed** on new pushes). Syncs natively with GitHub; stored on your T3 Code server for other hosts.
 - **Mobile**: Open **Pull requests** across environments (cached lists, details, guides, and diffs stay readable offline). Tap **Work on PR** to start a worktree thread on the PR's branch.
 - **Quick actions & options**:
-  - Enable **Remove agent credits when merging** in **Settings → Source control & issues** to strip recognized agent co-author/generated-by trailers on GitHub merge/squash commits (keeps human co-authors).
+  - Enable **Remove agent credits from pull requests** in **Settings → Source control & issues** to strip recognized agent co-author, generated-by and "Made with Cursor" lines from GitHub merge/squash commits (keeps human co-authors), and the credit lines ending a pull request description when an agent opens or edits it through T3, or once when T3 first links a pull request your forge account opened another way.
   - Hold `Shift` in the GitHub PR list (web/desktop) to drag-close multiple PRs (`Esc` cancels).
   - GitHub, GitLab, and Azure DevOps support auto-merge; GitHub also supports approving fork workflows and opening revert PRs.
   - Azure DevOps comments must be edited on the host site; Bitbucket cannot reopen declined PRs.

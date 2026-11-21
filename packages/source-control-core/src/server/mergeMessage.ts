@@ -10,6 +10,8 @@ const AGENT_EMAILS = new Set([
 
 const GENERATED_BY_AGENT =
   /^(?:🤖\s*)?generated (?:with|by)\s+(?:claude(?: code)?|codex|cursor|github copilot|copilot|opencode|grok|antigravity)[.!]?$/i;
+// Cursor's PR footer, plain or linked to cursor.com.
+const MADE_WITH_CURSOR = /^made with cursor[.!]?$/i;
 
 const CO_AUTHOR_PREFIX = /^co-authored-by:/i;
 
@@ -27,10 +29,25 @@ function isAgentAuthor(text: string): boolean {
   );
 }
 
+const AGENT_LINK =
+  /\[([^[\]\r\n]+)\]\(https:\/\/(?:claude\.ai|claude\.com|www\.anthropic\.com|chatgpt\.com|openai\.com|cursor\.com|github\.com|opencode\.ai|x\.ai|antigravity\.google)(?:\/[^\s)[\]]*)?\)/gi;
+const CURSOR_LINK = /\[([^[\]\r\n]+)\]\(https:\/\/(?:www\.)?cursor\.com(?:\/[^\s)[\]]*)?\)/gi;
+
+function isCreditLine(line: string): boolean {
+  const text = line.trim().replace(/^(?:[-*]\s+)/, "");
+  return (
+    isAgentAuthor(text) ||
+    GENERATED_BY_AGENT.test(text.replace(AGENT_LINK, "$1")) ||
+    MADE_WITH_CURSOR.test(text.replace(CURSOR_LINK, "$1"))
+  );
+}
+
+const newlineOf = (text: string) => (text.includes("\r\n") ? "\r\n" : "\n");
+
 export function removeAgentCredits(message: string): string {
   let fence: string | undefined;
   let removed = false;
-  const newline = message.includes("\r\n") ? "\r\n" : "\n";
+  const newline = newlineOf(message);
   const lines = message.split(/\r?\n/).filter((line) => {
     if (/^(?: {4}|\t)/.test(line)) return true;
     const delimiter = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
@@ -49,14 +66,7 @@ export function removeAgentCredits(message: string): string {
       return true;
     }
     if (fence !== undefined) return true;
-    const text = line.trim().replace(/^(?:[-*]\s+)/, "");
-    if (!isAgentAuthor(text)) {
-      const footer = text.replace(
-        /\[([^[\]\r\n]+)\]\(https:\/\/(?:claude\.ai|claude\.com|www\.anthropic\.com|chatgpt\.com|openai\.com|cursor\.com|github\.com|opencode\.ai|x\.ai|antigravity\.google)(?:\/[^\s)[\]]*)?\)/gi,
-        "$1",
-      );
-      if (!GENERATED_BY_AGENT.test(footer)) return true;
-    }
+    if (!isCreditLine(line)) return true;
     removed = true;
     return false;
   });
@@ -65,4 +75,26 @@ export function removeAgentCredits(message: string): string {
     lines.pop();
   }
   return lines.join(newline);
+}
+
+/**
+ * A PR description keeps its own Markdown: only the credit lines that end it go, with the
+ * blank lines between them. A commit message uses `removeAgentCredits`.
+ */
+export function removeAgentCreditFooter(body: string): string {
+  const lines = body.split(/\r?\n/);
+  let end = lines.length;
+  let removed = false;
+  while (end > 0) {
+    const line = lines[end - 1]!;
+    if (/^[ \t]*$/.test(line)) {
+      end -= 1;
+      continue;
+    }
+    if (/^(?: {4}|\t)/.test(line) || !isCreditLine(line)) break;
+    end -= 1;
+    removed = true;
+  }
+  if (!removed) return body;
+  return lines.slice(0, end).join(newlineOf(body));
 }

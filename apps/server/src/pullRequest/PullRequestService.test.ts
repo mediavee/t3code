@@ -150,6 +150,100 @@ it.effect("reads maintainer edits and changes them through the update command", 
   }),
 );
 
+/** A GitHub PR by `author`; T3 acts as the fake provider's viewer, `bilal`. */
+const makeCreditService = Effect.fn(function* (input: {
+  readonly removes: boolean;
+  readonly body: string;
+  readonly author?: string;
+  readonly refuseEdit?: boolean;
+}) {
+  const forge = { hosted: input.body, reads: 0, written: [] as Array<string | undefined> };
+  const provider = fakePullRequestProvider(SourceControlProviderKind.make("github"), {
+    getChangeRequest: () =>
+      Effect.sync(() => {
+        forge.reads += 1;
+        return {
+          ...hostedChangeRequest(forge.hosted),
+          author: { login: input.author ?? "Bilal", name: null, avatarUrl: null },
+        };
+      }),
+    updateChangeRequest: (update) =>
+      input.refuseEdit === true
+        ? Effect.fail(
+            new PullRequestProviderError({
+              provider: SourceControlProviderKind.make("github"),
+              operation: "updateChangeRequest",
+              reason: "forbidden",
+              detail: "Resource not accessible by integration",
+            }),
+          )
+        : Effect.sync(() => {
+            forge.written.push(update.body);
+            if (update.body !== undefined) forge.hosted = update.body;
+          }),
+  });
+  const service = yield* makeService({
+    settings: { ...DEFAULT_SERVER_SETTINGS, removeAgentCreditsOnMerge: input.removes },
+    projects: [project({ id: "p1", title: "web", workspaceRoot: "/w", repository: "acme/web" })],
+    providers: [
+      {
+        ...provider,
+        capabilities: {
+          ...provider.capabilities,
+          edit: { changeRequest: true, comment: true, maintainerEdits: true },
+        },
+      },
+    ],
+  });
+  return {
+    service,
+    forge,
+    ref: { projectId: "p1" as ProjectId, repository: "acme/web", number: 1 },
+  };
+});
+
+const creditFree = "Fixes the build.\n\n- Made with Cursor\n- Adds a test";
+const credited = `${creditFree}\n\nMade with [Cursor](https://cursor.com)`;
+
+it.effect.each([true, false])(
+  "cleans only an agent's PR body, and only when the project asks (setting %s)",
+  (removes) =>
+    Effect.gen(function* () {
+      const { service, forge, ref } = yield* makeCreditService({ removes, body: credited });
+      assert.strictEqual(
+        yield* service.withoutAgentCredits({ projectId: ref.projectId, body: credited }),
+        removes ? creditFree : credited,
+      );
+      // A person's edit or task tick from the client is saved as typed.
+      yield* service.update({ ...ref, body: credited });
+      assert.deepStrictEqual(forge.written, [credited]);
+
+      // A PR T3's account opened another way: one edit, then not even a read this run.
+      assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), removes);
+      const reads = forge.reads;
+      forge.hosted = credited;
+      assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), false);
+      assert.strictEqual(forge.reads, reads);
+      assert.deepStrictEqual(forge.written, removes ? [credited, creditFree] : [credited]);
+    }),
+);
+
+it.effect.each([
+  ["a teammate's PR", { author: "alice" }, 0],
+  ["a credit-free body", { body: creditFree }, 0],
+  ["an edit the host refuses", { refuseEdit: true }, 0],
+] as const)("leaves %s alone without failing", ([, overrides, writes]) =>
+  Effect.gen(function* () {
+    const { service, forge, ref } = yield* makeCreditService({
+      removes: true,
+      body: credited,
+      ...overrides,
+    });
+    assert.strictEqual(yield* service.removeAgentCreditsFromBody(ref), false);
+    assert.strictEqual(forge.written.length, writes);
+  }),
+);
+
 it.effect("refuses maintainer edits on a host without the capability", () =>
   Effect.gen(function* () {
     let writes = 0;
