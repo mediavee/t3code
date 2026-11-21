@@ -14,6 +14,10 @@ import {
   EVENT_LOG_PRUNED_THROUGH,
 } from "../persistence/OrchestrationEventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import {
+  OPEN_REMOTE_TASK_CONDITION,
+  REMOTE_TASK_OWED_PARENT_DONE_CONDITION,
+} from "./remoteParentDone.ts";
 
 export class ProjectionMaintenanceError extends Schema.TaggedError<ProjectionMaintenanceError>()(
   "ProjectionMaintenanceError",
@@ -344,6 +348,16 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           WHERE task.child_thread_id = thread.thread_id
             AND task.status IN ('idle', 'pending', 'running', 'waiting')
             AND parent.deleted_at IS NULL
+        )
+        -- RemoteDelegation still reads a deleted parent's remote tasks to stop them there or to
+        -- tell them it is done; the sweep takes the thread once both are recorded.
+        AND NOT EXISTS (
+          SELECT 1 FROM orchestration_v2_projection_subagents
+          WHERE orchestration_v2_projection_subagents.thread_id = thread.thread_id
+            AND (
+              (${sql.literal(OPEN_REMOTE_TASK_CONDITION)})
+              OR (${sql.literal(REMOTE_TASK_OWED_PARENT_DONE_CONDITION)})
+            )
         )
         -- The delete's own purge always runs; the sweep only takes threads with something left.
         AND ${

@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
+  EnvironmentId,
   EventId,
   MessageId,
   NodeId,
@@ -500,6 +501,101 @@ it.effect("a deleted thread keeps only its tombstone", () =>
     assert.equal(leaked[0]?.count, 0);
     assert.deepEqual(yield* projections.getThreadProjection(live.id), liveProjection);
     assert.equal(yield* maintenance.purgeDeletedThread(deleted.id), 0);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+const remoteTask = (
+  threadId: ThreadId,
+  now: DateTime.Utc,
+  task: {
+    readonly status: "running" | "completed";
+    readonly stoppedThere?: true;
+    readonly parentDoneThere?: true;
+  },
+): OrchestrationV2DomainEvent => ({
+  id: EventId.make(`event:purge:${threadId}:remote-task`),
+  type: "subagent.updated",
+  threadId,
+  occurredAt: now,
+  payload: {
+    id: NodeId.make(`node:${threadId}:remote-task`),
+    threadId,
+    runId: null,
+    parentNodeId: NodeId.make(`node:${threadId}:parent`),
+    origin: "app_owned",
+    createdBy: "agent",
+    driver: providerDriver,
+    providerInstanceId,
+    providerThreadId: null,
+    childThreadId: null,
+    remoteChild: {
+      environmentId: EnvironmentId.make("environment:purge-elsewhere"),
+      threadId: ThreadId.make(`thread:there:${threadId}`),
+      label: "elsewhere",
+      ...(task.stoppedThere === undefined ? {} : { stoppedThere: true }),
+      ...(task.parentDoneThere === undefined ? {} : { parentDoneThere: true }),
+    },
+    nativeTaskRef: null,
+    prompt: "Review",
+    title: "Review",
+    model: null,
+    status: task.status,
+    result: task.status === "running" ? null : "Reviewed",
+    startedAt: now,
+    completedAt: task.status === "running" ? null : now,
+    updatedAt: now,
+  },
+});
+
+it.effect("a deleted parent keeps its remote tasks until they are stopped and told there", () =>
+  Effect.gen(function* () {
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    // Still running there, so its follower must stop it there.
+    const open = makeThread(ThreadId.make("thread:purge-remote-open"), now);
+    // Finished there, but its thread there is not yet told this parent is done.
+    const owed = makeThread(ThreadId.make("thread:purge-remote-owed"), now);
+    yield* writeThread(open, now);
+    yield* writeThread(owed, now);
+    yield* sink.write({
+      events: [remoteTask(open.id, now, { status: "running", parentDoneThere: true })],
+    });
+    yield* sink.write({
+      events: [remoteTask(owed.id, now, { status: "completed", stoppedThere: true })],
+    });
+    yield* deleteThread(open, now);
+    yield* deleteThread(owed, now);
+
+    assert.equal(yield* maintenance.purgeDeletedThread(open.id), 0);
+    assert.equal(yield* maintenance.purgeDeletedThread(owed.id), 0);
+    yield* maintenance.pruneEventStore();
+    const remoteTasks = sql<{ readonly thread_id: string }>`
+      SELECT thread_id FROM orchestration_v2_projection_subagents
+      WHERE json_type(payload_json, '$.remoteChild') = 'object' ORDER BY thread_id
+    `;
+    assert.deepEqual(
+      (yield* remoteTasks).map((row) => row.thread_id),
+      [open.id, owed.id],
+    );
+
+    yield* sql`
+      UPDATE orchestration_v2_projection_subagents
+      SET payload_json = json_set(payload_json, '$.result', 'Stopped', '$.status', 'interrupted',
+        '$.remoteChild.stoppedThere', json('true'))
+      WHERE thread_id = ${open.id}
+    `;
+    yield* sql`
+      UPDATE orchestration_v2_projection_subagents
+      SET payload_json = json_set(payload_json, '$.remoteChild.parentDoneThere', json('true'))
+      WHERE thread_id = ${owed.id}
+    `;
+    assert.isAbove(yield* maintenance.purgeDeletedThread(open.id), 0);
+    assert.isAbove((yield* maintenance.pruneEventStore()).purgedRowCount, 0);
+    assert.deepEqual(yield* remoteTasks, []);
+    assert.equal(yield* contentRowCount(open.id), 0);
+    assert.equal(yield* contentRowCount(owed.id), 0);
   }).pipe(Effect.provide(layerTest)),
 );
 
