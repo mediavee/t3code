@@ -12820,5 +12820,9 @@
   "f77cd905c392b357": "Disponible en servidores Linux, donde los agentes se ejecutan en scopes de systemd.",
   "633d27014d678cbf": "Restablecer el límite de memoria de los agentes al valor predeterminado",
   "70957383caba7e76": "Límite de memoria de los agentes",
-  "b3be8f59fe52c268": "memoria límite ram oom sin memoria cgroup systemd memorymax tmpdir temporal"
+  "b3be8f59fe52c268": "memoria límite ram oom sin memoria cgroup systemd memorymax tmpdir temporal",
+  "67d4a779cd49a863": "{count, plural, one {{count} terminado} other {{count} terminados}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} PR abierta} other {{count} PR abiertas}}",
+  "5c73b69a42cb7616": "Hilos hijos",
+  "fa97f7ae0f746034": "{count, plural, one {{count} espera una respuesta} other {{count} esperan una respuesta}}"
 }
