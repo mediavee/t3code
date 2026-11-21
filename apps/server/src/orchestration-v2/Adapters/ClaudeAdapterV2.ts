@@ -1681,11 +1681,20 @@ export const layerQueryRunner: Layer.Layer<
         endsOnFailedRequest = claudeHistoryEndsOnFailedRequest(history);
         resumeSessionAt = claudeResumeSessionAt(history) ?? resumeSessionAt;
       }
+      const baseEnv = sdkOptions.env ?? hostEnvironment;
+      // Set here rather than by the scope wrapper, so script entries get it and the task output tail finds it.
+      const tempDirectory = yield* agentScope.threadTemp({
+        threadId: input.threadId,
+        env: baseEnv,
+      });
       const queryOptions = {
         ...sdkOptions,
         ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
         env: {
-          ...(sdkOptions.env ?? hostEnvironment),
+          ...baseEnv,
+          ...(tempDirectory === undefined
+            ? {}
+            : { TMPDIR: tempDirectory, TMP: tempDirectory, TEMP: tempDirectory }),
           // The CLI would re-run a failed request by itself, then run the resume prompt as a second turn.
           ...(input.resume && !endsOnFailedRequest
             ? {
@@ -13553,6 +13562,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             status: "active",
           });
           const closed = yield* Deferred.make<void, never>();
+          // The query runner points the CLI's TMPDIR at the same thread directory.
+          const threadTempDirectory = yield* (yield* AgentScope).threadTemp({
+            threadId: turnInput.threadId,
+            env: adapterOptions.environment,
+          });
+          const taskOutputEnvironment =
+            threadTempDirectory === undefined
+              ? adapterOptions.environment
+              : { ...adapterOptions.environment, TMPDIR: threadTempDirectory };
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
             nativeThreadId,
@@ -13582,7 +13600,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ),
             modelLedger: new Map(),
             taskOutputRoot: claudeTaskOutputRoot(
-              adapterOptions.environment,
+              taskOutputEnvironment,
               path,
               resolvedTurnCwd,
               hostPlatform,
