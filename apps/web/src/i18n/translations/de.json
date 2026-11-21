@@ -12796,5 +12796,12 @@
   "33d18dda74f6d7b3": "Auto-Merge für Stack abbrechen",
   "012c67c7f1a99e33": "Auto-Merge für Stack",
   "3d4448e3c061f894": "Anderer Rechner",
-  "349587beaf00ce5e": "{title}, delegiert von {machine}, {count, plural, one {{count} Aufgabe} other {{count} Aufgaben}}"
+  "349587beaf00ce5e": "{title}, delegiert von {machine}, {count, plural, one {{count} Aufgabe} other {{count} Aufgaben}}",
+  "bc34446a962cdcfe": "Nach Anbieterfehlern fortsetzen",
+  "079d0bd4815b5348": "Anbieterfehler",
+  "bb9d9afd0523940a": "Setzt einen Turn, der an einem Server- oder Verbindungsfehler des Anbieters gescheitert ist, bis zu dreimal fort: nach 15 Sekunden, 1 Minute und 3 Minuten.",
+  "ae62ee82e0c146bb": "erneut versuchen fehlgeschlagen fehler 502 503 gateway verbindung wiederherstellen fortsetzen",
+  "0d1c02eb9bb693c4": "Die fehlgeschlagenen Sitzungen konnten nicht fortgesetzt werden",
+  "72516ad01a8e3386": "{count, plural, one {{count} Sitzung ist in der letzten Stunde fehlgeschlagen} other {{count} Sitzungen sind in der letzten Stunde fehlgeschlagen}}",
+  "253a12fc99873da8": "Alle fortsetzen"
 }

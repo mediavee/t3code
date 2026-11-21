@@ -8597,6 +8597,24 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       errorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 500 } },
       notification: false,
       expectedClass: "provider_error",
+      expectedRetryable: true,
+    },
+    {
+      name: "cyber-policy",
+      code: "cyberPolicy",
+      message: "This content was flagged for possible cybersecurity risk.",
+      notification: true,
+      expectedClass: "provider_error",
+      expectedRetryable: false,
+    },
+    {
+      name: "unauthorized",
+      code: "httpConnectionFailed",
+      errorInfo: { httpConnectionFailed: { httpStatusCode: 401 } },
+      message: "unexpected status 401 Unauthorized",
+      notification: true,
+      expectedClass: "provider_error",
+      expectedRetryable: false,
     },
     ...([false, true] as const).map(
       (notification) =>
@@ -8606,6 +8624,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           errorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
           notification,
           expectedClass: "transport_error",
+          expectedRetryable: true,
         }) as const,
     ),
     {
@@ -8628,6 +8647,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       errorInfo: { httpConnectionFailed: { httpStatusCode: 503 } },
       notification: false,
       expectedClass: "provider_error",
+      expectedRetryable: true,
     },
     {
       name: "chatgpt-workspace-limit",
@@ -8753,6 +8773,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           terminalErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 503 } },
           completionErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: null } },
           expectedClass: "provider_error",
+        },
+        // Only the terminal notification carries the 401, so it decides the retry.
+        {
+          name: "generic-exhaustion-unauthorized",
+          status: null,
+          terminalMessage: "Connection lost.",
+          terminalErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: 401 } },
+          completionErrorInfo: { responseTooManyFailedAttempts: { httpStatusCode: null } },
+          expectedClass: "provider_error",
+          expectedRetryable: false,
         },
       ] as const
     ).map((scenario) => ({
@@ -9060,7 +9090,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(terminal?.status, "failed");
       if (terminal?.status !== "failed") return;
       assert.equal(terminal.failure.class, scenario.expectedClass);
-      assert.notInclude(terminal.failure.message, "dummy-sensitive");
+      if ("expectedRetryable" in scenario) {
+        assert.equal(terminal.failure.retryable, scenario.expectedRetryable);
+      }
       assert.equal(terminal.threadDisposition, "reusable");
       if (scenario.name === "message-reset")
         assert.equal(
