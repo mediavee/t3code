@@ -13031,5 +13031,7 @@
   "717c1c47a852a1a5": "Pausar narración",
   "0eceb5780908eb6c": "Leer en voz alta",
   "3ee98da81538c6de": "No se pudo reproducir la narración.",
-  "95435f0b59cb2193": "Vista previa de audio"
+  "95435f0b59cb2193": "Vista previa de audio",
+  "3d4448e3c061f894": "Otra máquina",
+  "349587beaf00ce5e": "{title}, delegado desde {machine}, {count, plural, one {{count} tarea} other {{count} tareas}}"
 }

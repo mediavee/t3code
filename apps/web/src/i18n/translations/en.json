@@ -13044,5 +13044,7 @@
   "717c1c47a852a1a5": "Pause narration",
   "0eceb5780908eb6c": "Read aloud",
   "3ee98da81538c6de": "Could not play narration.",
-  "95435f0b59cb2193": "Audio preview"
+  "95435f0b59cb2193": "Audio preview",
+  "3d4448e3c061f894": "Other machine",
+  "349587beaf00ce5e": "{title}, delegated from {machine}, {count, plural, one {{count} task} other {{count} tasks}}"
 }

@@ -13036,5 +13036,7 @@
   "717c1c47a852a1a5": "Vorlesen pausieren",
   "0eceb5780908eb6c": "Vorlesen",
   "3ee98da81538c6de": "Die Vertonung konnte nicht abgespielt werden.",
-  "95435f0b59cb2193": "Audiovorschau"
+  "95435f0b59cb2193": "Audiovorschau",
+  "3d4448e3c061f894": "Anderer Rechner",
+  "349587beaf00ce5e": "{title}, delegiert von {machine}, {count, plural, one {{count} Aufgabe} other {{count} Aufgaben}}"
 }

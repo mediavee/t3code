@@ -5712,5 +5712,8 @@
   "99451a5d2d40440f": "Retirada por {by}.",
   "3ee30a50b70fffab": "Retirada por {by}: {reason}",
   "201490988858b511": "retirada por {by}",
-  "46d614fa7b4bf1e5": "Execuções de workflow"
+  "46d614fa7b4bf1e5": "Execuções de workflow",
+  "3d4448e3c061f894": "Outra máquina",
+  "349587beaf00ce5e": "{title}, delegado de {machine}, {count, plural, one {{count} tarefa} other {{count} tarefas}}",
+  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} tarefa} other {{count} tarefas}}"
 }
