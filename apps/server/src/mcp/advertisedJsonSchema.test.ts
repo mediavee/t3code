@@ -3,6 +3,8 @@ import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import { OrchestratorToolkit } from "./toolkits/orchestrator/tools.ts";
+import { ProjectToolkit } from "./toolkits/project/tools.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 
 it("drops JSON noise, merges tagged unions, and keeps null where it is required", () => {
@@ -58,4 +60,29 @@ it("advertises only string enum values, which Gemini requires", () => {
   collect(advertisedJsonSchema(ThemeToolkit.tools.t3_theme_set));
 
   expect(enumValues.filter((value) => typeof value !== "string")).toEqual([]);
+});
+
+it("advertises the key-checked dispatch objects without allOf or open additionalProperties", () => {
+  const keys: Array<string> = [];
+  const open: Array<unknown> = [];
+  const collect = (node: unknown): void => {
+    if (Array.isArray(node)) return node.forEach(collect);
+    if (typeof node !== "object" || node === null) return;
+    for (const [key, value] of Object.entries(node)) {
+      keys.push(key);
+      if (key === "additionalProperties" && (value === true || JSON.stringify(value) === "{}"))
+        open.push(value);
+      collect(value);
+    }
+  };
+  const propertiesOf = (tool: Tool.Any) =>
+    advertisedJsonSchema(tool).properties as Record<string, unknown>;
+  const { target } = propertiesOf(OrchestratorToolkit.tools.delegate_task);
+  const { modelSelection } = propertiesOf(ProjectToolkit.tools.t3_thread_launch);
+  collect([target, modelSelection]);
+
+  expect(keys).not.toContain("allOf");
+  expect(open).toEqual([]);
+  expect(target).toMatchObject({ properties: { model: {}, options: {} } });
+  expect(modelSelection).toMatchObject({ required: ["model"] });
 });
