@@ -1449,6 +1449,8 @@ export const ServerSettings = Schema.Struct({
   agentMemoryMaxGiB: Schema.NullOr(AgentMemoryMaxGiB).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  /** Masks known secret values, private keys and URL passwords in stored and served tool output. */
+  maskSecretsInToolOutput: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   /** New T3 Connect device keys wait for approval from someone already trusted here. */
   requireConnectDeviceApproval: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(false)),
@@ -1929,6 +1931,7 @@ export const ServerSettingsPatch = Schema.Struct({
   continueThreadsAfterServerUpdate: Schema.optionalKey(Schema.Boolean),
   keepAwakeWhileAgentsWork: Schema.optionalKey(Schema.Boolean),
   agentMemoryMaxGiB: Schema.optionalKey(Schema.NullOr(AgentMemoryMaxGiB)),
+  maskSecretsInToolOutput: Schema.optionalKey(Schema.Boolean),
   requireConnectDeviceApproval: Schema.optionalKey(Schema.Boolean),
   enableAgentBrowserAccess: Schema.optionalKey(Schema.Boolean),
   enablePreviewTunnel: Schema.optionalKey(Schema.Boolean),

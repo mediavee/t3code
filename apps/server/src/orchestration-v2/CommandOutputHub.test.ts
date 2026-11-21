@@ -29,6 +29,7 @@ import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
 
 const layerTestDatabase = SqlitePersistence.layerMemory;
 const layerTestStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
@@ -37,10 +38,15 @@ const layerTestStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pip
 const layerTestEventSink = EventSink.layer.pipe(
   Layer.provide(Layer.mergeAll(layerTestStores, layerTestDatabase)),
 );
+const FAKE_SECRET = "fake-secret-0000";
 const layerTest = Layer.mergeAll(
   layerTestEventSink,
   IdAllocator.layer,
-  CommandOutputHub.layer.pipe(Layer.provide(Layer.merge(layerTestEventSink, layerTestStores))),
+  CommandOutputHub.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(layerTestEventSink, layerTestStores, KnownSecrets.layerTest([FAKE_SECRET])),
+    ),
+  ),
 );
 
 const modelSelection = {
@@ -225,6 +231,24 @@ layer("CommandOutputHub", (it) => {
         });
         assert.equal(yield* Queue.take(frames), "ended");
       }),
+  );
+
+  it.effect("live output masks a known secret split across chunks", () =>
+    Effect.gen(function* () {
+      const hub = yield* CommandOutputHub.CommandOutputHub;
+      const threadId = yield* seedThread;
+      yield* writeCommandItem(threadId, { status: "running" });
+      yield* hub.append({ threadId, itemId: ITEM_ID, chunk: "export TOKEN=fake-sec" });
+
+      const frames = yield* subscribeFrames(threadId);
+      let client = applyFrame(EMPTY_TERMINAL_OUTPUT, yield* takeFrame(frames));
+      assert.equal(client.text, "export TOKEN=");
+
+      yield* TestClock.adjust("1 second");
+      yield* hub.append({ threadId, itemId: ITEM_ID, chunk: "ret-0000\nok\n" });
+      client = applyFrame(client, yield* takeFrame(frames));
+      assert.equal(client.text, "export TOKEN=[redacted]\nok\n");
+    }),
   );
 
   it.effect("a row that is not a known command fails instead of waiting forever", () =>

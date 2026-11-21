@@ -70,6 +70,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   makeProviderFailure,
@@ -797,7 +798,9 @@ function layerTest(input: {
         ),
       ),
     ),
-  ).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+  ).pipe(
+    Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, KnownSecrets.layerTest())),
+  );
 }
 
 const fakeHttpServer = HttpServer.HttpServer.of({
