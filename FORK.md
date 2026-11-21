@@ -26,6 +26,9 @@ Reports to the owner are in French. Use the `chantier` skill's worker and review
    - resolves each conflict keeping both behaviours; i18n catalogs: take upstream's, re-add the fork's keys,
      run the i18n check; `agentContextBudget.json`: regenerate with the repo's tool (label
      `agent-context-increase` when it grows);
+   - regenerates the upstream migration manifest from the tag and commits it in the sync PR:
+     `T3_UPSTREAM_REF=<T> T3_UPDATE_UPSTREAM_MIGRATIONS=1 vp test run apps/server/src/persistence/upstreamMigrations.test.ts`,
+     then runs the checks with `T3_UPSTREAM_REF=<T>` so the manifest is compared with the tag;
    - runs the full checks in a clean environment (`env -i`, Node 26.13.1 under
      `/home/agent/t3-fork-builds/toolchain`, non-hidden `TMPDIR`); a failure that also fails on `<T>` itself
      is upstream's and does not block;
