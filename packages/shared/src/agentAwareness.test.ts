@@ -285,6 +285,32 @@ describe("projectThreadAwarenessV2", () => {
     });
   });
 
+  it("lets a delegated task's local subagent approval outrank its coordinator's question", () => {
+    expect(
+      projectThreadAwarenessV2({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        thread: v2Thread({
+          delegatedFrom: {
+            environmentId: "env-parent" as EnvironmentId,
+            threadId: "thread-parent" as ThreadId,
+            title: "Coordinator",
+          },
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("request-coordinator-question"),
+            kind: "user_input",
+            createdAt: updatedAt,
+          },
+        }),
+        pendingSubagentRequest: {
+          requestId: RuntimeRequestId.make("request-child-approval"),
+          updatedAt,
+          waitsForInput: false,
+        },
+      }),
+    ).toMatchObject({ phase: "waiting_for_approval", headline: "Approval needed" });
+  });
+
   it("does not present authentication refreshes as user approvals", () => {
     expect(
       projectThreadAwarenessV2({
