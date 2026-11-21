@@ -9454,6 +9454,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
               id: state.thread.id,
               projectId: state.thread.projectId,
               creationSource: state.thread.creationSource,
+              ...(state.thread.delegatedFrom == null
+                ? {}
+                : { delegatedFrom: state.thread.delegatedFrom }),
               archivedAt: state.thread.archivedAt,
               snoozedUntil: state.thread.snoozedUntil ?? null,
               snoozedAt: state.thread.snoozedAt ?? null,
