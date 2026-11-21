@@ -4335,6 +4335,7 @@ describe("OrchestratorMcpService provider resolution", () => {
       defaults: {
         readonly project: ScheduledTask["modelSelection"] | null;
         readonly environment?: ScheduledTask["modelSelection"];
+        readonly providers?: ReadonlyArray<never>;
       } = { project: existing.modelSelection },
     ) =>
       OrchestratorMcpService.layer.pipe(
@@ -4352,7 +4353,9 @@ describe("OrchestratorMcpService provider resolution", () => {
                 ? {}
                 : { defaultModelSelection: defaults.environment },
             ),
-            Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
+            Layer.mock(ProviderRegistry.ProviderRegistry)({
+              getProviders: Effect.succeed(defaults.providers ?? []),
+            }),
             Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
               list: () => Effect.succeed([]),
             }),
@@ -4399,6 +4402,111 @@ describe("OrchestratorMcpService provider resolution", () => {
         assert.deepEqual(yield* Ref.get(saved), [
           { type: "worktree", baseRef: "origin/master", startFromOrigin: true },
         ]);
+      }),
+    );
+
+    it.effect("stores a named model, workspace and runtime mode within the caller's limits", () =>
+      Effect.gen(function* () {
+        const inputs = yield* Ref.make<ReadonlyArray<ScheduledTaskUpsertInput>>([]);
+        const mcp = yield* OrchestratorMcpService.OrchestratorMcpService.pipe(
+          Effect.provide(
+            service(
+              {
+                ...masterRepository,
+                listWorktreePaths: () => Effect.succeed([workspaceRoot, "/repo/scheduled-base-wt"]),
+              },
+              yield* Ref.make<ReadonlyArray<ScheduledTask["workspaceStrategy"]>>([]),
+              existing,
+              inputs,
+              {
+                project: existing.modelSelection,
+                providers: [
+                  { instanceId: ProviderInstanceId.make("claudeAgent"), models: [] } as never,
+                ],
+              },
+            ),
+          ),
+        );
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          model: "claude-opus-5-5",
+          options: [{ id: "effort", value: "high" }],
+        };
+        const workspaceStrategy = { type: "root", branch: "nightly" } as const;
+        yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          modelSelection,
+          workspaceStrategy,
+          runtimeMode: "approval-required",
+        });
+        const above = yield* mcp
+          .scheduleTask(client, {
+            projectId,
+            prompt: "Check the build",
+            schedule,
+            runtimeMode: "full-access",
+          })
+          .pipe(Effect.flip);
+        assert.equal(above.code, "runtime_mode_escalation_denied");
+        const unknown = yield* mcp
+          .scheduleTask(client, {
+            projectId,
+            prompt: "Check the build",
+            schedule,
+            modelSelection: { instanceId: ProviderInstanceId.make("missing"), model: "x" },
+          })
+          .pipe(Effect.flip);
+        assert.equal(unknown.code, "invalid_request");
+        const outside = { type: "existing_worktree", worktreePath: "/home/someone" } as const;
+        const outsideCreate = yield* mcp
+          .scheduleTask(client, {
+            projectId,
+            prompt: "Check the build",
+            schedule,
+            workspaceStrategy: outside,
+          })
+          .pipe(Effect.flip);
+        assert.equal(outsideCreate.code, "invalid_request");
+        const outsideUpdate = yield* mcp
+          .updateScheduledTask(client, {
+            scheduledTaskId: existing.id,
+            workspaceStrategy: outside,
+          })
+          .pipe(Effect.flip);
+        assert.equal(outsideUpdate.code, "invalid_request");
+        yield* mcp.scheduleTask(client, {
+          projectId,
+          prompt: "Check the build",
+          schedule,
+          workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo/scheduled-base-wt" },
+        });
+        yield* mcp.updateScheduledTask(client, {
+          scheduledTaskId: existing.id,
+          modelSelection,
+          workspaceStrategy,
+        });
+        const refusedUpdate = yield* mcp
+          .updateScheduledTask(client, { scheduledTaskId: existing.id, runtimeMode: "auto" })
+          .pipe(Effect.flip);
+        assert.equal(refusedUpdate.code, "runtime_mode_escalation_denied");
+        assert.deepEqual(
+          (yield* Ref.get(inputs)).map((input) => [
+            input.modelSelection,
+            input.workspaceStrategy,
+            input.runtimeMode,
+          ]),
+          [
+            [modelSelection, workspaceStrategy, "approval-required"],
+            [
+              existing.modelSelection,
+              { type: "existing_worktree", worktreePath: "/repo/scheduled-base-wt" },
+              "approval-required",
+            ],
+            [modelSelection, workspaceStrategy, "approval-required"],
+          ],
+        );
       }),
     );
 

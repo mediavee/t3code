@@ -10,6 +10,8 @@ import {
   type ScheduledTaskUpsertSchedule,
   scheduledTaskThreadMode,
   type ModelSelection,
+  type ProviderInstanceId,
+  type ProviderOptionDescriptor,
   type RuntimeMode,
   type ProviderInteractionMode,
   type ServerSettings,
@@ -27,6 +29,7 @@ import {
 import { scheduleTimeZoneLabel } from "@t3tools/client-runtime/scheduled-task-time-zone";
 import { msg } from "gt-react";
 
+import { createModelSelection } from "@t3tools/shared/model";
 import {
   resolveProjectSettings,
   type LegacyProjectSettingsFields,
@@ -140,7 +143,7 @@ export interface DraftState {
   readonly modelKey: string;
   readonly runtimeMode: RuntimeMode;
   readonly interactionMode: ProviderInteractionMode;
-  /** Retain the source selection's provider options when the picker leaves instanceId:model unchanged. */
+  /** The picked selection with its options; null until a pick or a saved task sets one. */
   readonly baseModelSelection: ModelSelection | null;
   readonly signatureEnabled: boolean;
   readonly signatureHeader: string;
@@ -490,4 +493,22 @@ export function defaultScheduledTaskProjectId<
       (scopedToProject ? scopedProjects[0] : undefined)
     )?.id ?? ""
   );
+}
+
+/** A model pick keeps each current option the new model offers with a value it accepts. */
+export function pickScheduledTaskModel(
+  current: ModelSelection | null,
+  instanceId: ProviderInstanceId,
+  model: string,
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): ModelSelection {
+  if (current?.instanceId === instanceId && current.model === model) return current;
+  const kept = (current?.options ?? []).filter((option) => {
+    const descriptor = descriptors.find((candidate) => candidate.id === option.id);
+    if (descriptor === undefined) return false;
+    return descriptor.type === "boolean"
+      ? typeof option.value === "boolean"
+      : descriptor.options.some((choice) => choice.id === option.value);
+  });
+  return createModelSelection(instanceId, model, kept);
 }
