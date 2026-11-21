@@ -5732,5 +5732,11 @@
   "46d614fa7b4bf1e5": "Execuções de workflow",
   "3d4448e3c061f894": "Outra máquina",
   "349587beaf00ce5e": "{title}, delegado de {machine}, {count, plural, one {{count} tarefa} other {{count} tarefas}}",
-  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} tarefa} other {{count} tarefas}}"
+  "88bcb7d812dfb32a": "{machine} · {count, plural, one {{count} tarefa} other {{count} tarefas}}",
+  "948185631ef288e6": "{count, plural, one {{count} em execução} other {{count} em execução}}",
+  "425e4a3d6c5c2867": "{count, plural, one {{count} com falha} other {{count} com falha}}",
+  "67d4a779cd49a863": "{count, plural, one {{count} concluído} other {{count} concluídos}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} PR aberta} other {{count} PRs abertas}}",
+  "5c73b69a42cb7616": "Threads filhas",
+  "fa97f7ae0f746034": "{count, plural, one {{count} aguardando resposta} other {{count} aguardando resposta}}"
 }
