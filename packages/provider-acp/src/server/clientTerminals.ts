@@ -96,14 +96,14 @@ interface ManagedAcpTerminal {
   readonly dispose: Effect.Effect<void>;
   exitStatus: EffectAcpSchema.TerminalExitStatus | undefined;
   released: boolean;
-  waiters: number;
+  /** The agent declared, through T3, that it resumes when this terminal exits. */
+  awaited: boolean;
 }
 
 /** A terminal still running for its session, as its thread's background command roster lists it. */
 export interface AcpRunningTerminal {
   readonly terminalId: string;
   readonly commandLine: string;
-  /** The agent is blocked in terminal/wait_for_exit on it. */
   readonly awaited: boolean;
 }
 
@@ -129,7 +129,15 @@ export interface AcpClientTerminals {
     terminalId: string,
   ) => AcpTerminalOutputSnapshot | undefined;
   readonly readCommandLine: (terminalId: string) => string | undefined;
-  readonly running: (sessionId: string) => ReadonlyArray<AcpRunningTerminal>;
+  /** Without a session, every session's. */
+  readonly running: (sessionId?: string) => ReadonlyArray<AcpRunningTerminal>;
+  /** Marks the running ones among `terminalIds` and returns those it matched. */
+  readonly setAwaited: (
+    sessionId: string,
+    terminalIds: ReadonlyArray<string>,
+    awaited: boolean,
+  ) => ReadonlyArray<string>;
+  /** Releases every terminal at once, then waits for them to exit. Later creates still work. */
   readonly disposeAll: Effect.Effect<void>;
 }
 
@@ -309,7 +317,7 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
             dispose: Scope.close(terminalScope, Exit.void).pipe(Effect.ignore),
             exitStatus: undefined,
             released: false,
-            waiters: 0,
+            awaited: false,
           };
           terminals.set(terminalId, record);
 
@@ -368,18 +376,7 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
 
   const waitForExit: AcpClientTerminals["waitForExit"] = (request) =>
     requireTerminal(request.sessionId, request.terminalId, "terminal/wait_for_exit").pipe(
-      Effect.flatMap((terminal) =>
-        Effect.acquireUseRelease(
-          Effect.sync(() => {
-            terminal.waiters += 1;
-          }).pipe(Effect.andThen(runningChanged(terminal.sessionId))),
-          () => Deferred.await(terminal.exit),
-          () =>
-            Effect.sync(() => {
-              terminal.waiters -= 1;
-            }).pipe(Effect.andThen(runningChanged(terminal.sessionId))),
-        ),
-      ),
+      Effect.flatMap((terminal) => Deferred.await(terminal.exit)),
     );
 
   const kill: AcpClientTerminals["kill"] = (request) =>
@@ -418,30 +415,49 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
   const readCommandLine: AcpClientTerminals["readCommandLine"] = (terminalId) =>
     terminals.get(terminalId)?.commandLine;
 
+  const isRunning = (terminal: ManagedAcpTerminal, sessionId?: string) =>
+    (sessionId === undefined || terminal.sessionId === sessionId) &&
+    !terminal.released &&
+    terminal.exitStatus === undefined;
+
   const running: AcpClientTerminals["running"] = (sessionId) =>
     Array.from(terminals.values()).flatMap((terminal) =>
-      terminal.sessionId !== sessionId || terminal.released || terminal.exitStatus !== undefined
-        ? []
-        : [
+      isRunning(terminal, sessionId)
+        ? [
             {
               terminalId: terminal.terminalId,
               commandLine: terminal.commandLine,
-              awaited: terminal.waiters > 0,
+              awaited: terminal.awaited,
             },
-          ],
+          ]
+        : [],
     );
 
+  const setAwaited: AcpClientTerminals["setAwaited"] = (sessionId, terminalIds, awaited) =>
+    [...new Set(terminalIds)].filter((terminalId) => {
+      const terminal = terminals.get(terminalId);
+      if (terminal === undefined || !isRunning(terminal, sessionId)) return false;
+      terminal.awaited = awaited;
+      return true;
+    });
+
   const disposeAll: AcpClientTerminals["disposeAll"] = Effect.uninterruptible(
-    Effect.suspend(() =>
-      Effect.forEach(
-        Array.from(terminals.values()),
-        (terminal) =>
-          Effect.sync(() => {
-            terminal.released = true;
-          }).pipe(Effect.andThen(terminal.dispose), Effect.andThen(Deferred.await(terminal.exit))),
-        { concurrency: "unbounded", discard: true },
-      ).pipe(Effect.andThen(Effect.sync(pruneReleasedSnapshots))),
-    ),
+    Effect.suspend(() => {
+      const live = Array.from(terminals.values()).filter((terminal) => !terminal.released);
+      for (const terminal of live) terminal.released = true;
+      return Effect.forEach(new Set(live.map((terminal) => terminal.sessionId)), runningChanged, {
+        discard: true,
+      }).pipe(
+        Effect.andThen(
+          Effect.forEach(
+            live,
+            (terminal) => terminal.dispose.pipe(Effect.andThen(Deferred.await(terminal.exit))),
+            { concurrency: "unbounded", discard: true },
+          ),
+        ),
+        Effect.andThen(Effect.sync(pruneReleasedSnapshots)),
+      );
+    }),
   );
 
   const logged =
@@ -468,6 +484,7 @@ export const makeAcpClientTerminals = Effect.fn("makeAcpClientTerminals")(functi
     readOutputSnapshot,
     readCommandLine,
     running,
+    setAwaited,
     disposeAll,
   };
 });
