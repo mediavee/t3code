@@ -24,6 +24,7 @@ describe("projectThreadAwarenessV2", () => {
       Pick<
         OrchestrationV2ThreadShell,
         | "activityRunStatus"
+        | "delegatedFrom"
         | "latestRunBackgroundWake"
         | "latestRunStopRequested"
         | "status"
@@ -247,6 +248,40 @@ describe("projectThreadAwarenessV2", () => {
     expect(projectThreadAwarenessV2(input)).toMatchObject({
       phase: "waiting_for_input",
       headline: "Waiting for input",
+    });
+  });
+
+  it("surfaces a delegated task only while it waits on the user, under its parent's title", () => {
+    const awareness = (overrides: Parameters<typeof v2Thread>[0]) =>
+      projectThreadAwarenessV2({
+        environmentId: "env-1" as EnvironmentId,
+        project,
+        thread: v2Thread({
+          delegatedFrom: {
+            environmentId: "env-parent" as EnvironmentId,
+            threadId: "thread-parent" as ThreadId,
+            title: "Coordinator",
+          },
+          ...overrides,
+        }),
+      });
+    const request = (kind: "command" | "user_input", userOnly?: boolean) => ({
+      id: RuntimeRequestId.make(`request-${kind}`),
+      kind,
+      createdAt: updatedAt,
+      ...(userOnly === undefined ? {} : { userOnly }),
+    });
+    expect(awareness({ status: "running" })).toBeNull();
+    expect(awareness({ status: "completed" })).toBeNull();
+    expect(awareness({ status: "failed" })).toBeNull();
+    expect(awareness({ pendingRuntimeRequest: request("user_input") })).toBeNull();
+    expect(awareness({ pendingRuntimeRequest: request("command") })).toMatchObject({
+      phase: "waiting_for_approval",
+      threadTitle: "Coordinator › Integrate orchestration",
+    });
+    expect(awareness({ pendingRuntimeRequest: request("user_input", true) })).toMatchObject({
+      phase: "waiting_for_input",
+      threadTitle: "Coordinator › Integrate orchestration",
     });
   });
 

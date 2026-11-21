@@ -606,6 +606,14 @@ export const make = Effect.gen(function* () {
     const publishIdentity = agentAwarenessPublishIdentity(snapshot.state, snapshot.subagentWait);
     const publishedStateByThread = yield* Ref.get(publishedStateByThreadRef);
     if (
+      snapshot.state === null &&
+      threadShell?.delegatedFrom != null &&
+      !hasLivePublishedState(publishedStateByThread, threadId)
+    ) {
+      // A delegated task has a row only while it waits on the user; like a subagent, it has none to clear.
+      return;
+    }
+    if (
       (snapshot.state?.phase === "completed" || snapshot.state?.phase === "failed") &&
       !hasLivePublishedState(publishedStateByThread, threadId)
     ) {

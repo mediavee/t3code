@@ -87,6 +87,7 @@ export interface ProjectThreadAwarenessV2Input {
   readonly thread: Pick<
     OrchestrationV2ThreadShell,
     | "activityRunStatus"
+    | "delegatedFrom"
     | "id"
     | "lineage"
     | "latestRunBackgroundWake"
@@ -113,6 +114,10 @@ export function projectThreadAwarenessV2(
   if (phase === null) {
     return null;
   }
+  // The parent on the delegating environment reports this task; only a wait it cannot
+  // answer surfaces here, and only until that environment can roll it up.
+  const delegatedFrom = thread.delegatedFrom ?? null;
+  if (delegatedFrom !== null && !delegatedTaskAwaitsUser(thread, subagentRequest)) return null;
   if (phase === "completed" && thread.latestRunStopRequested === true) return null;
   // Resolve the phase first so live or waiting work stays visible after settlement.
   const runStatus = thread.activityRunStatus ?? thread.status;
@@ -135,7 +140,7 @@ export function projectThreadAwarenessV2(
     environmentId,
     threadId: thread.id,
     projectTitle: project.title,
-    threadTitle: thread.title,
+    threadTitle: delegatedFrom === null ? thread.title : `${delegatedFrom.title} › ${thread.title}`,
     phase,
     headline: headlineForPhase(phase),
     ...(detail === undefined ? {} : { detail }),
@@ -149,6 +154,19 @@ export function projectThreadAwarenessV2(
     ),
     deepLink: buildAgentAwarenessDeepLink({ environmentId, threadId: thread.id }),
   };
+}
+
+function delegatedTaskAwaitsUser(
+  thread: ProjectThreadAwarenessV2Input["thread"],
+  subagentRequest: SubagentRequestAwareness | null,
+): boolean {
+  const request = thread.pendingRuntimeRequest;
+  return (
+    (request !== null &&
+      request.kind !== "auth_refresh" &&
+      (request.kind !== "user_input" || request.userOnly === true)) ||
+    subagentRequest !== null
+  );
 }
 
 function resolveThreadAwarenessPhaseV2(

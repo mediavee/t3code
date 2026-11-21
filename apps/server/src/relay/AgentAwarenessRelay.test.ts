@@ -732,6 +732,50 @@ describe("AgentAwarenessRelay", () => {
       }),
   );
 
+  it.effect("publishes a delegated task only while it waits on the user", () =>
+    Effect.gen(function* () {
+      const delegated = (overrides: Partial<OrchestrationV2ThreadShell> = {}) =>
+        shell({
+          delegatedFrom: {
+            environmentId: EnvironmentId.make("parent-environment"),
+            threadId: ThreadId.make("parent-thread"),
+            title: "Coordinator",
+          },
+          ...overrides,
+        });
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* Ref.set(currentShell, delegated());
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, delegated({ status: "completed" }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(publications, []);
+
+      yield* Ref.set(
+        currentShell,
+        delegated({
+          pendingRuntimeRequest: {
+            id: RuntimeRequestId.make("delegated-request"),
+            kind: "command",
+            createdAt: DateTime.makeUnsafe(NOW),
+          },
+        }),
+      );
+      yield* relay.publishThread(THREAD_ID);
+      assert.equal(publications.length, 1);
+      assert.equal(publications[0]?.state?.phase, "waiting_for_approval");
+      assert.equal(publications[0]?.state?.threadTitle, "Coordinator › Thread");
+
+      yield* Ref.set(currentShell, delegated({ status: "completed" }));
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.equal(publications.length, 2);
+      assert.isNull(publications[1]?.state);
+    }),
+  );
+
   it.effect("holds a completion through a continuation gap, then publishes it once", () =>
     Effect.gen(function* () {
       const { relay, currentShell, publications } = yield* makeTestRelay();
