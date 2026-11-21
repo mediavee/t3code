@@ -209,6 +209,21 @@ export const planThreadDeletion = Effect.fn("ThreadDeletion.planThreadDeletion")
       },
     });
   }
+  // Its tasks' threads, here or in a linked environment, would otherwise run on unwatched.
+  if (
+    projection.subagents.some(
+      (task) =>
+        task.origin === "app_owned" &&
+        (task.childThreadId !== null || task.remoteChild !== undefined),
+    )
+  ) {
+    effects.push({
+      id: `effect:${command.commandId}:delegated-tasks.stop`,
+      commandId: command.commandId,
+      threadId: command.threadId,
+      request: { type: "delegated-tasks.stop", reason: "Thread deleted." },
+    });
+  }
   effects.push({
     id: `effect:${command.commandId}:scheduled-tasks.cleanup`,
     commandId: command.commandId,
