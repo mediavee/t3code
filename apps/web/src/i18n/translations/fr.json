@@ -13079,5 +13079,35 @@
   "67d4a779cd49a863": "{count, plural, one {{count} terminé} other {{count} terminés}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} PR ouverte} other {{count} PR ouvertes}}",
   "5c73b69a42cb7616": "Fils enfants",
-  "fa97f7ae0f746034": "{count, plural, one {{count} attend une réponse} other {{count} attendent une réponse}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} attend une réponse} other {{count} attendent une réponse}}",
+  "acaf4e0d74541a20": "Exécution lancée",
+  "1297caf1422b5f9a": "Ignorée : la commande a terminé avec 78",
+  "7a0bdd4a31f25e60": "Ignorée : même sortie que la dernière exécution",
+  "f8f43e1550ea3ae4": "Échec",
+  "fa891300374ac336": "Bloquée par la stratégie",
+  "a5099ec6e691530a": "Commande de contrôle",
+  "253f645e9911c794": "facultatif",
+  "8d07b99e1775d2fa": "S'exécute dans un shell sous l'utilisateur de ce serveur avant chaque exécution planifiée. Le code 0 lance l'exécution avec la sortie de la commande ; le code 78, ou la même sortie que la dernière exécution lancée, l'ignore ; tout autre code la fait échouer.",
+  "472cff2d538f1cf1": "Seul un appareil avec accès au terminal peut modifier le contrôle.",
+  "430b587cb8d53ffe": "Dossier du contrôle",
+  "09f7ae8cca9b68b7": "par défaut : le dossier du projet",
+  "3e2b4d1001bb2d02": "Délai du contrôle",
+  "fe38d9981aeea3f1": "secondes, 30 par défaut",
+  "73c3680625b8c71f": [
+    "Dernier contrôle : ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ",",
+    " ",
+    {
+      "t": "ScheduledRelativeLabel",
+      "i": 2
+    }
+  ],
+  "fe3927cdd40da07b": "Contrôle invalide",
+  "74ff2ebf21a05651": "Une tâche webhook ne peut pas avoir de commande de contrôle.",
+  "ceb3cbae8957e562": "Saisissez un nombre entier de secondes de 1 à {max}, ou laissez vide."
 }
