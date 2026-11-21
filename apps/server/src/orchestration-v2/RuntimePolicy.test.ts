@@ -78,9 +78,12 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
     },
   }) as ProviderInstance;
 
-const layerWithPolicy = (policy?: ManagedPolicySummary) =>
+const layerWithPolicy = (
+  policy?: ManagedPolicySummary,
+  settings: Parameters<typeof ServerSettings.layerTest>[0] = {},
+) =>
   RuntimePolicy.layerFromProjectStore.pipe(
-    Layer.provide(ServerSettings.layerTest({}, policy)),
+    Layer.provide(ServerSettings.layerTest(settings, policy)),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
         getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
@@ -185,6 +188,56 @@ it.layer(
       const allowed = yield* resolve("auto-accept-edits");
       assert.equal(allowed.runtimeMode, "auto-accept-edits");
       assert.equal(allowed.maxRuntimeMode, "auto-accept-edits");
+    }),
+  );
+});
+
+it.layer(
+  layerWithPolicy(undefined, {
+    standingInstructions: "Ask before restarting shared services.",
+    projectSettingsOverrides: {
+      [projectId]: { standingInstructions: "Merge when checks pass." },
+    },
+  }),
+)("RuntimePolicyV2 with standing instructions", (it) => {
+  it.effect("gives the project's standing instructions to its root threads and children", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const root = makeThread({ now, worktreePath: null });
+      const child: OrchestrationV2AppThread = {
+        ...root,
+        id: ThreadId.make("thread:runtime-policy-child"),
+        createdBy: "agent",
+        lineage: {
+          parentThreadId: root.id,
+          relationshipToParent: "subagent",
+          rootThreadId: root.id,
+        },
+      };
+      for (const thread of [root, child]) {
+        const resolved = yield* policy.resolve({ thread, modelSelection });
+        assert.equal(resolved.standingInstructions, "Merge when checks pass.");
+      }
+      const otherProject = yield* policy.resolve({
+        thread: { ...root, projectId: ProjectId.make("project:other") },
+        modelSelection,
+      });
+      assert.equal(otherProject.standingInstructions, "Ask before restarting shared services.");
+    }),
+  );
+});
+
+it.layer(layerTest)("RuntimePolicyV2 without standing instructions", (it) => {
+  it.effect("adds nothing to the policy", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const resolved = yield* policy.resolve({
+        thread: makeThread({ now, worktreePath: null }),
+        modelSelection,
+      });
+      assert.notProperty(resolved, "standingInstructions");
     }),
   );
 });

@@ -88,6 +88,7 @@ import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
+import { standingInstructionsBlock } from "@t3tools/provider-core/server/runtimeInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
 import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
@@ -880,7 +881,11 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
 });
 
 describe("ClaudeAdapterV2 device instructions", () => {
-  const options = (input: { readonly mcp: boolean; readonly deviceToolsAvailable: boolean }) =>
+  const options = (input: {
+    readonly mcp: boolean;
+    readonly deviceToolsAvailable: boolean;
+    readonly standingInstructions?: string;
+  }) =>
     ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: {
         instanceId: ProviderInstanceId.make("claudeAgent"),
@@ -893,9 +898,12 @@ describe("ClaudeAdapterV2 device instructions", () => {
         ? { mcpServers: { "t3-code": { type: "http" as const, url: "http://127.0.0.1/mcp" } } }
         : {}),
       deviceToolsAvailable: input.deviceToolsAvailable,
+      ...(input.standingInstructions === undefined
+        ? {}
+        : { standingInstructions: input.standingInstructions }),
       environment: {},
     });
-  const append = (input: { readonly mcp: boolean; readonly deviceToolsAvailable: boolean }) =>
+  const append = (input: Parameters<typeof options>[0]) =>
     (options(input).systemPrompt as { readonly append?: string }).append ?? "";
 
   it("gives a session with device access the device block and the ToolSearch line to load it", () => {
@@ -909,30 +917,28 @@ describe("ClaudeAdapterV2 device instructions", () => {
     assert.notInclude(append({ mcp: false, deviceToolsAvailable: true }), "## T3 Code devices");
   });
 
-  it("gives native subagents the device block only in a session with device access", async () => {
-    // Subagents start from their task prompt, not the parent's system prompt.
-    const subagentContext = (input: {
-      readonly mcp: boolean;
-      readonly deviceToolsAvailable: boolean;
-    }) =>
-      Promise.all(
-        (options(input).hooks?.SubagentStart ?? []).flatMap((matcher) =>
-          matcher.hooks.map((hook) =>
-            hook(
-              {
-                hook_event_name: "SubagentStart",
-                agent_id: "agent-1",
-                agent_type: "general-purpose",
-                session_id: "native-thread-claude-devices",
-                transcript_path: "/transcript.jsonl",
-                cwd: "/workspace",
-              },
-              undefined,
-              { signal: new AbortController().signal },
-            ),
+  // Subagents start from their task prompt, not the parent's system prompt.
+  const subagentContext = (input: Parameters<typeof options>[0]) =>
+    Promise.all(
+      (options(input).hooks?.SubagentStart ?? []).flatMap((matcher) =>
+        matcher.hooks.map((hook) =>
+          hook(
+            {
+              hook_event_name: "SubagentStart",
+              agent_id: "agent-1",
+              agent_type: "general-purpose",
+              session_id: "native-thread-claude-devices",
+              transcript_path: "/transcript.jsonl",
+              cwd: "/workspace",
+            },
+            undefined,
+            { signal: new AbortController().signal },
           ),
         ),
-      );
+      ),
+    );
+
+  it("gives native subagents the device block only in a session with device access", async () => {
     assert.deepEqual(await subagentContext({ mcp: true, deviceToolsAvailable: true }), [
       {
         hookSpecificOutput: {
@@ -943,6 +949,46 @@ describe("ClaudeAdapterV2 device instructions", () => {
     ]);
     assert.deepEqual(await subagentContext({ mcp: true, deviceToolsAvailable: false }), []);
     assert.deepEqual(await subagentContext({ mcp: false, deviceToolsAvailable: true }), []);
+  });
+
+  it("gives the session and its native subagents the project's standing instructions", async () => {
+    const standing = standingInstructionsBlock("Merge when checks pass.") ?? "";
+    assert.include(append({ mcp: false, deviceToolsAvailable: false }), "<runtime_info>");
+    assert.notInclude(
+      append({ mcp: false, deviceToolsAvailable: false }),
+      "<project_standing_instructions>",
+    );
+    assert.include(
+      append({
+        mcp: false,
+        deviceToolsAvailable: false,
+        standingInstructions: "Merge when checks pass.",
+      }),
+      standing,
+    );
+    assert.deepEqual(
+      await subagentContext({
+        mcp: true,
+        deviceToolsAvailable: true,
+        standingInstructions: "Merge when checks pass.",
+      }),
+      [
+        {
+          hookSpecificOutput: {
+            hookEventName: "SubagentStart",
+            additionalContext: `${T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH}\n\n${standing}`,
+          },
+        },
+      ],
+    );
+    assert.deepEqual(
+      await subagentContext({
+        mcp: false,
+        deviceToolsAvailable: false,
+        standingInstructions: "Merge when checks pass.",
+      }),
+      [{ hookSpecificOutput: { hookEventName: "SubagentStart", additionalContext: standing } }],
+    );
   });
 });
 
