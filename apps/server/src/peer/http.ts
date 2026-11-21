@@ -15,6 +15,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerClientPairing from "./PeerClientPairing.ts";
+import * as PeerWorktreeBase from "./PeerWorktreeBase.ts";
 
 const parentDoneEnvironment = (client: EnvironmentAuth.McpClientSession) =>
   client.peerLink ? client.peerEnvironmentId : undefined;
@@ -38,6 +39,7 @@ export const layer = HttpApiBuilder.group(
     const issuer = yield* PeerClientPairing.PeerClientPairingIssuer;
     const threads = yield* ThreadManagement.ThreadManagementService;
     const random = yield* SecureRandom.SecureRandom;
+    const worktreeBases = yield* PeerWorktreeBase.PeerWorktreeBase;
 
     const linkCaller = Effect.fnUntraced(function* (
       renewsIf?: (client: EnvironmentAuth.McpClientSession) => boolean,
@@ -139,6 +141,25 @@ export const layer = HttpApiBuilder.group(
               ),
             );
           return { outcome: "marked" as const };
+        }),
+      )
+      .handle(
+        "worktreeBase",
+        Effect.fn("environment.peerLink.worktreeBase")(function* ({ payload }) {
+          const caller = yield* linkCaller(yield* worktreeBases.admits);
+          if (!caller.peerLink) {
+            return yield* new EnvironmentHttpUnauthorizedError({
+              message: "Only a linked environment's session is accepted here.",
+            });
+          }
+          return yield* worktreeBases.resolve(caller, payload).pipe(
+            Effect.catchTags({
+              PeerWorktreeBaseRefused: (error) =>
+                Effect.fail(new EnvironmentHttpForbiddenError({ message: error.message })),
+              PeerWorktreeBaseUnavailable: (error) =>
+                Effect.fail(new EnvironmentHttpInternalServerError({ message: error.message })),
+            }),
+          );
         }),
       );
   }),

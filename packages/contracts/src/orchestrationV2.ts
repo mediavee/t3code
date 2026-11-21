@@ -1013,6 +1013,13 @@ const DedupedBodyMarker = Schema.optionalKey(Schema.Literal(true));
  * of in a child thread here: that environment and the ordinary thread it runs
  * as there. Such a task has no `childThreadId`.
  */
+/** A remote task's own checkout there. */
+export const OrchestrationV2RemoteTaskWorktree = Schema.Struct({
+  path: Schema.String,
+  branch: Schema.NullOr(Schema.String),
+});
+export type OrchestrationV2RemoteTaskWorktree = typeof OrchestrationV2RemoteTaskWorktree.Type;
+
 export const OrchestrationV2RemoteTaskChild = Schema.Struct({
   environmentId: EnvironmentId,
   threadId: ThreadId,
@@ -1035,6 +1042,8 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
   stopCount: Schema.optional(NonNegativeInt),
   /** The thread there knows this task's parent here is done, so it settles there as a subagent would. */
   parentDoneThere: Schema.optional(Schema.Boolean),
+  /** Its own checkout there when its result was read; absent when it shared the project's. */
+  worktree: Schema.optional(OrchestrationV2RemoteTaskWorktree),
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
@@ -3981,6 +3990,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     status: Schema.Literals(["completed", "failed", "cancelled", "interrupted"]),
     result: Schema.String,
     executedModel: Schema.optional(Schema.String),
+    worktree: Schema.optional(OrchestrationV2RemoteTaskWorktree),
     /**
      * `ran-out`: the run there ended by itself; `stopped`: a stop from here reached it. Either
      * sets `remoteChild.stoppedThere` on a task this report completes. On a task already
