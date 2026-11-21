@@ -101,8 +101,17 @@ vi.mock("./components/SettingsEnvironmentFilterHeader", () => ({
 }));
 vi.mock("./components/DatabaseStorageNotice", () => ({ DatabaseStorageNotice: () => null }));
 vi.mock("./components/SettingsSection", () => ({
-  SettingsSection: ({ children, footer }: { children?: ReactNode; footer?: ReactNode }) => (
+  SettingsSection: ({
+    children,
+    footer,
+    trailing,
+  }: {
+    children?: ReactNode;
+    footer?: ReactNode;
+    trailing?: ReactNode;
+  }) => (
     <>
+      {trailing}
       {children}
       {footer}
     </>
@@ -207,6 +216,15 @@ function environment(environmentId: string, label: string, os = "linux") {
 
 let root: Root;
 let container: HTMLDivElement;
+
+const maskSwitch = () =>
+  [...container.querySelectorAll<HTMLButtonElement>('[role="switch"]')].find(
+    (button) => button.textContent === "Mask secrets in tool output",
+  )!;
+const resetButton = () =>
+  [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent === "Reset",
+  );
 
 beforeEach(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -337,6 +355,7 @@ describe("SettingsServerControlsRouteScreen", () => {
     const ceilings = [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
     expect(ceilings.length).toBeGreaterThan(0);
     expect(ceilings.every((button) => button.disabled)).toBe(true);
+    expect(maskSwitch().disabled).toBe(true);
     expect(container.textContent).toContain(
       "Environment-wide setting. Select All projects to change it.",
     );
@@ -355,6 +374,32 @@ describe("SettingsServerControlsRouteScreen", () => {
     const ceilings = [...container.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
     expect(ceilings.length).toBeGreaterThan(0);
     expect(ceilings.every((button) => button.disabled)).toBe(true);
+    expect(maskSwitch().disabled).toBe(true);
+  });
+
+  it("turns secret masking off for the environment and resets it to default", () => {
+    act(() => root.render(<SettingsEnvironmentMaintenanceRouteScreen />));
+    expect(maskSwitch().getAttribute("aria-checked")).toBe("true");
+    expect(resetButton()).toBeUndefined();
+    act(() => maskSwitch().click());
+    expect(mocks.updateSettings).toHaveBeenLastCalledWith({
+      environmentId: "local",
+      input: { patch: { maskSecretsInToolOutput: false } },
+    });
+
+    const off = environment("local", "Local");
+    off.serverConfig.settings.maskSecretsInToolOutput = false;
+    mocks.targets = [off];
+    // A fresh root: the compiled screen memoizes on its props, and these did not change.
+    act(() => root.unmount());
+    root = createRoot(container);
+    act(() => root.render(<SettingsEnvironmentMaintenanceRouteScreen />));
+    expect(maskSwitch().getAttribute("aria-checked")).toBe("false");
+    act(() => resetButton()!.click());
+    expect(mocks.updateSettings).toHaveBeenLastCalledWith({
+      environmentId: "local",
+      input: { patch: { maskSecretsInToolOutput: true } },
+    });
   });
 
   it("sets the agent memory ceiling on Linux", () => {
