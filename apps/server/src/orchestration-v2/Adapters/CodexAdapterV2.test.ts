@@ -29,6 +29,7 @@ import {
   ProviderTurnId,
   RunAttemptId,
   RunId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
   type ServerProviderModel,
@@ -2057,19 +2058,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   );
 
   it.effect.each([
-    { createdBy: "user", approvalPolicy: "granular" },
-    { createdBy: "agent", approvalPolicy: "never" },
+    { createdBy: "user", scheduled: false, approvalPolicy: "granular" },
+    { createdBy: "agent", scheduled: false, approvalPolicy: "never" },
+    { createdBy: "user", scheduled: true, approvalPolicy: "never" },
   ] as const)(
-    "starts a full-access turn in a $createdBy-created thread with $approvalPolicy approvals",
-    ({ createdBy, approvalPolicy }) =>
+    "starts a full-access turn in a $createdBy-created thread (scheduled: $scheduled) with $approvalPolicy approvals",
+    ({ createdBy, scheduled, approvalPolicy }) =>
       Effect.gen(function* () {
-        const nativeThreadId = `full-access-${createdBy}-thread`;
-        const nativeTurnId = `full-access-${createdBy}-turn`;
+        const nativeThreadId = `full-access-${createdBy}-${scheduled}-thread`;
+        const nativeTurnId = `full-access-${createdBy}-${scheduled}-turn`;
         const prompt = "Run the tests.";
         const starts: Array<unknown> = [];
         const harness = yield* makeCodexReplayHarness(
           makeCodexReplayTranscript({
-            scenario: `full-access-${createdBy}`,
+            scenario: `full-access-${createdBy}-${scheduled}`,
             entries: [
               ...codexReplayPreamble({ nativeThreadId, nativeTurnId, prompt }),
               {
@@ -2094,12 +2096,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           threadId: harness.threadId,
           providerThread: harness.providerThread,
           now: yield* DateTime.now,
-          attemptId: RunAttemptId.make(`full-access-${createdBy}-attempt`),
+          attemptId: RunAttemptId.make(`full-access-${createdBy}-${scheduled}-attempt`),
           text: prompt,
         });
         yield* harness.runtime.startTurn({
           ...turnInput,
           appThread: { ...turnInput.appThread, createdBy, creationSource: "mcp" },
+          ...(scheduled
+            ? {
+                message: {
+                  ...turnInput.message,
+                  scheduledTaskId: ScheduledTaskId.make("nightly-task"),
+                },
+              }
+            : {}),
         });
         yield* harness.firstTerminal;
         const policy = (starts[0] as { approvalPolicy?: unknown } | undefined)?.approvalPolicy;
