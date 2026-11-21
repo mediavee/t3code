@@ -5744,5 +5744,13 @@
   "67d4a779cd49a863": "{count, plural, one {{count} fertig} other {{count} fertig}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} offener PR} other {{count} offene PRs}}",
   "5c73b69a42cb7616": "Untergeordnete Threads",
-  "fa97f7ae0f746034": "{count, plural, one {{count} wartet auf eine Antwort} other {{count} warten auf eine Antwort}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} wartet auf eine Antwort} other {{count} warten auf eine Antwort}}",
+  "3e69738f0839ab45": "Geheimnisse in der Werkzeugausgabe",
+  "abaacba7b0f79fe8": "Zurücksetzen",
+  "a8783c8c12d1d275": "Maskierung von Geheimnissen in der Werkzeugausgabe auf Standard zurücksetzen",
+  "9d4bf2d6201e724e": "Geheimnisse in der Werkzeugausgabe maskieren",
+  "037a6649ca73c4dd": "Ersetzt Geheimnisse, die T3 kennt, private Schlüssel und Passwörter in URLs in der gespeicherten und angezeigten Befehls- und Werkzeugausgabe durch [redacted].",
+  "947dbea939be4ff5": "Geheimnisse",
+  "514b87e667c4b9b7": "maskieren",
+  "47fe19186c911efd": "schwärzen"
 }

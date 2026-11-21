@@ -5738,5 +5738,13 @@
   "67d4a779cd49a863": "{count, plural, one {{count} terminé} other {{count} terminés}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} PR ouverte} other {{count} PR ouvertes}}",
   "5c73b69a42cb7616": "Fils enfants",
-  "fa97f7ae0f746034": "{count, plural, one {{count} attend une réponse} other {{count} attendent une réponse}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} attend une réponse} other {{count} attendent une réponse}}",
+  "3e69738f0839ab45": "Secrets dans la sortie des outils",
+  "abaacba7b0f79fe8": "Réinitialiser",
+  "a8783c8c12d1d275": "Réinitialiser le masquage des secrets dans la sortie des outils à la valeur par défaut",
+  "9d4bf2d6201e724e": "Masquer les secrets dans la sortie des outils",
+  "037a6649ca73c4dd": "Remplace par [redacted] les secrets que T3 connaît, les clés privées et les mots de passe dans les URL, dans la sortie des commandes et des outils qu’il stocke et affiche.",
+  "947dbea939be4ff5": "secrets",
+  "514b87e667c4b9b7": "masquer",
+  "47fe19186c911efd": "caviarder"
 }

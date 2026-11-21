@@ -5722,5 +5722,13 @@
   "67d4a779cd49a863": "{count, plural, other {완료 {count}개}}",
   "5c412fd3159e13f3": "{count, plural, other {열린 PR {count}개}}",
   "5c73b69a42cb7616": "하위 스레드",
-  "fa97f7ae0f746034": "{count, plural, other {답변 대기 {count}개}}"
+  "fa97f7ae0f746034": "{count, plural, other {답변 대기 {count}개}}",
+  "3e69738f0839ab45": "도구 출력의 비밀",
+  "abaacba7b0f79fe8": "재설정",
+  "a8783c8c12d1d275": "도구 출력의 비밀 가리기를 기본값으로 재설정",
+  "9d4bf2d6201e724e": "도구 출력의 비밀 가리기",
+  "037a6649ca73c4dd": "T3가 아는 비밀, 개인 키, URL의 비밀번호를 저장하고 표시하는 명령 및 도구 출력에서 [redacted]로 바꿉니다.",
+  "947dbea939be4ff5": "비밀",
+  "514b87e667c4b9b7": "가리기",
+  "47fe19186c911efd": "삭제 처리"
 }
