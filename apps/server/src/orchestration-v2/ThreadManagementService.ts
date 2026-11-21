@@ -1353,21 +1353,9 @@ const make = Effect.gen(function* () {
     if (initial.current.settled || pendingRequestsChanged(initial.requests))
       return settledResult(initial.current, initial.requests);
 
-    // A command hold running out records no event, so the wait looks again
-    // when the latest look's bound passes.
-    const commandHoldEndsAt = yield* SubscriptionRef.make(initial.current.commandHoldEndsAt);
-    const commandHoldEnded = SubscriptionRef.changes(commandHoldEndsAt).pipe(
-      Stream.switchMap((endsAt) =>
-        endsAt === undefined
-          ? Stream.empty
-          : Stream.fromEffect(
-              Effect.flatMap(DateTime.now, (now) => Effect.sleep(DateTime.distance(now, endsAt))),
-            ),
-      ),
-    );
     // A declined continuation records no event, so its effect settling wakes
     // the wait too.
-    const wait = Stream.merge(
+    const changes = Stream.merge(
       Stream.mergeAll(
         (
           [
@@ -1402,13 +1390,39 @@ const make = Effect.gen(function* () {
       initial.current.pending
         ? Stream.fromEffect(orchestrator.awaitRestartContinuation(initial.current.run))
         : Stream.empty,
+    );
+    // A command hold running out records no event, so a wait on delegated
+    // work looks again when the latest look's bound passes.
+    const commandHoldEndsAt = untilDelegatedWorkSettled
+      ? yield* SubscriptionRef.make(initial.current.commandHoldEndsAt)
+      : undefined;
+    const wait = (
+      commandHoldEndsAt === undefined
+        ? changes
+        : changes.pipe(
+            Stream.merge(
+              SubscriptionRef.changes(commandHoldEndsAt).pipe(
+                Stream.switchMap((endsAt) =>
+                  endsAt === undefined
+                    ? Stream.empty
+                    : Stream.fromEffect(
+                        Effect.flatMap(DateTime.now, (now) =>
+                          Effect.sleep(DateTime.distance(now, endsAt)),
+                        ),
+                      ),
+                ),
+              ),
+              { haltStrategy: "left" },
+            ),
+          )
     ).pipe(
-      Stream.merge(commandHoldEnded),
       Stream.mapEffect(() =>
         getProjectThreadRecords(input, ["runs"]).pipe(
           Effect.flatMap((current) => evaluateAll(current.runs)),
           Effect.tap(({ current }) =>
-            SubscriptionRef.set(commandHoldEndsAt, current.commandHoldEndsAt),
+            commandHoldEndsAt === undefined
+              ? Effect.void
+              : SubscriptionRef.set(commandHoldEndsAt, current.commandHoldEndsAt),
           ),
         ),
       ),
