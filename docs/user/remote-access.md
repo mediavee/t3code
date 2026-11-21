@@ -78,7 +78,7 @@ Link two T3 Code machines (beta) so agents on one can launch, message, delegate 
 3. Links are one-way (tick **Also link … back** for two-way) and do not chain. Links expire after 30 days of inactivity and can be revoked in **Settings → Sharing & access** or **Forget**.
 
 - **Access boundary**: Agents never get more permissions on the target than the link's access level or their own thread mode. Below Full access, linked agents can only modify threads they started and skip project setup scripts.
-- **Delegation**: Agents can target a linked machine with `delegate_task`, or ask you to link an unlinked machine via an in-thread approval card.
+- **Delegation**: Agents can target a linked machine with `delegate_task`, or ask you to link an unlinked machine via an in-thread approval card. With worktree isolation, a delegated task gets its own checkout there, from that project's default branch or from a base the agent names; commits that exist only on this machine have to be pushed first.
 
 ### Read a linked machine's threads
 

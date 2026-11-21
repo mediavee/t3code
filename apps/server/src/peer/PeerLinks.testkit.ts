@@ -31,11 +31,15 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as ServerHttp from "../http.ts";
 import * as McpHttpServer from "../mcp/McpHttpServer.ts";
 import * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
+import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectService from "../project/ProjectService.ts";
+import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
 import * as PeerHttp from "./http.ts";
 import * as PeerClientPairing from "./PeerClientPairing.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import * as PeerWorktreeBase from "./PeerWorktreeBase.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
@@ -90,6 +94,14 @@ export const servePeer = <E, R, E2 = never, R2 = never>(
   threads: Layer.Layer<ThreadManagement.ThreadManagementService> = Layer.mock(
     ThreadManagement.ThreadManagementService,
   )({}),
+  /** Its projects, launches and Git, as its worktree-base route sees them. */
+  worktrees: Layer.Layer<
+    ProjectService.ProjectService | ThreadLaunch.ThreadLaunchService | GitVcsDriver.GitVcsDriver
+  > = Layer.mergeAll(
+    Layer.mock(ProjectService.ProjectService)({}),
+    Layer.mock(ThreadLaunch.ThreadLaunchService)({}),
+    Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+  ),
 ) =>
   Effect.gen(function* () {
     const descriptor = yield* Ref.make(initial);
@@ -143,7 +155,11 @@ export const servePeer = <E, R, E2 = never, R2 = never>(
           ),
         ),
         Layer.provide(
-          PeerHttp.layer.pipe(Layer.provide(PeerClientPairing.layerIssuer), Layer.provide(threads)),
+          PeerHttp.layer.pipe(
+            Layer.provide(PeerClientPairing.layerIssuer),
+            Layer.provide(threads),
+            Layer.provide(PeerWorktreeBase.layer.pipe(Layer.provide(worktrees))),
+          ),
         ),
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
