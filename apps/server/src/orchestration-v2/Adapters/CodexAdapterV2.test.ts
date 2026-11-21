@@ -7675,7 +7675,10 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           ),
           ["interrupted"],
         );
-        assert.equal(projection.runs.at(-1)?.status, "completed");
+        const [run, continuation] = projection.runs;
+        assert.equal(run?.status, "completed");
+        // The command was the thread's background work, so its loss wakes the run that left it.
+        assert.equal(continuation?.restartContinuationOfRunId, run?.id);
         assert.deepEqual(
           (yield* orchestrator.getThreadShell(threadId))?.pendingBackgroundTasks,
           [],
