@@ -1317,7 +1317,7 @@ it.effect(
               getThreadShell: (id) =>
                 Effect.succeed(McpToolAccessTestkit.liveThreadShell(id, { activeRunId: null })),
               awaitBackgroundTasks: ({ taskIds }) =>
-                Effect.succeed({ matched: taskIds, unmatched: [] }),
+                Effect.succeed({ matched: taskIds ?? [], unmatched: [] }),
             }),
           ),
           Layer.provide(ServerSettings.layerTest()),
