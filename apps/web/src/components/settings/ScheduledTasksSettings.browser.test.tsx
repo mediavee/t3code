@@ -115,9 +115,21 @@ const unboundTask: ScheduledTask = {
   },
 };
 
+const gatedTask: ScheduledTask = {
+  ...unboundTask,
+  gate: { command: "git ls-remote --tags origin | tail -1", timeoutMs: 60_000 },
+  gateResult: {
+    at: "2026-09-17T00:05:00.000Z",
+    outcome: "failed",
+    exitCode: 128,
+    detail: "fatal: could not read from remote",
+  },
+};
+
 const state = vi.hoisted(() => ({
   connected: true,
   tasksLoaded: true,
+  terminal: true,
   remove: vi.fn(),
   tasks: [] as ScheduledTask[],
   secondary: false,
@@ -134,6 +146,7 @@ function setup() {
   state.remove.mockReset().mockReturnValue(Effect.succeed({ id: task.id }));
   state.tasks = [task];
   state.secondary = false;
+  state.terminal = true;
   state.providers = Atom.make<ReadonlyArray<ServerProvider>>([]);
   state.settings = DEFAULT_UNIFIED_SETTINGS;
   state.upsert.mockReset().mockReturnValue(Effect.succeed({ id: task.id }));
@@ -150,6 +163,7 @@ function secondaryEnvironment() {
 vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
   readEnvironmentScope: () => true,
+  useEnvironmentScope: () => state.terminal,
 }));
 
 function environment() {
@@ -484,6 +498,61 @@ describe("ScheduledTasksSettings", () => {
         interactionMode: "plan",
       },
     });
+  });
+
+  it("adds a gate command with a timeout to a task", async () => {
+    setup();
+    state.tasks = [unboundTask];
+    state.providers = Atom.make<ReadonlyArray<ServerProvider>>(providers);
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    await userEvent.fill(dialog.getByLabelText(/Gate command/), "  ./new-nightly.sh ");
+    await userEvent.fill(dialog.getByLabelText(/Gate timeout/), "45");
+    await userEvent.click(dialog.getByRole("button", { name: "Save task" }));
+
+    await vi.waitFor(() => expect(state.upsert).toHaveBeenCalledOnce());
+    expect(state.upsert.mock.calls[0]?.[1].input.gate).toEqual({
+      command: "./new-nightly.sh",
+      timeoutMs: 45_000,
+    });
+  });
+
+  it("edits a gate and shows its last result", async () => {
+    setup();
+    state.tasks = [gatedTask];
+    state.providers = Atom.make<ReadonlyArray<ServerProvider>>(providers);
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    const result = dialog.getByTestId("scheduled-task-gate-result");
+    await vi.waitFor(() =>
+      expect(result.element().textContent).toMatch(
+        /^Last gate: Failed, .+fatal: could not read from remote$/,
+      ),
+    );
+    await expect.element(dialog.getByLabelText(/Gate timeout/)).toHaveValue(60);
+    await userEvent.fill(dialog.getByLabelText(/Gate folder/), "scripts");
+    await userEvent.click(dialog.getByRole("button", { name: "Save task" }));
+
+    await vi.waitFor(() => expect(state.upsert).toHaveBeenCalledOnce());
+    expect(state.upsert.mock.calls[0]?.[1].input.gate).toEqual({
+      ...gatedTask.gate,
+      cwd: "scripts",
+    });
+  });
+
+  it("keeps the stored gate when a client without terminal access saves", async () => {
+    setup();
+    state.tasks = [gatedTask];
+    state.providers = Atom.make<ReadonlyArray<ServerProvider>>(providers);
+    state.terminal = false;
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    await expect.element(dialog.getByLabelText(/Gate command/)).toBeDisabled();
+    await userEvent.fill(dialog.getByRole("textbox", { name: "Name" }), "Nightly");
+    await userEvent.click(dialog.getByRole("button", { name: "Save task" }));
+
+    await vi.waitFor(() => expect(state.upsert).toHaveBeenCalledOnce());
+    expect(state.upsert.mock.calls[0]?.[1].input).not.toHaveProperty("gate");
   });
 
   it("keeps an editor the user opened when the linked task loads later", async () => {

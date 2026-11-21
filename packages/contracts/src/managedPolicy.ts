@@ -78,6 +78,8 @@ export const ManagedPolicyLimits = Schema.Struct({
   /** `false` turns T3 Connect off and unlinks this machine. */
   connect: Schema.optionalKey(Schema.Boolean),
   webhookTasks: Schema.optionalKey(Schema.Boolean),
+  /** `false` stops scheduled tasks from running gate commands; gated tasks then do not run. */
+  taskGates: Schema.optionalKey(Schema.Boolean),
   /** Can only turn product analytics off, never force it on. */
   telemetry: Schema.optionalKey(Schema.Boolean),
   browserCookieImport: Schema.optionalKey(Schema.Boolean),
@@ -97,6 +99,7 @@ export const ManagedPolicySummaryLimits = Schema.Struct({
   /** `false` also when `clients` leaves out `remote`, since Connect is remote access. */
   connect: Schema.optionalKey(Schema.Boolean),
   webhookTasks: Schema.optionalKey(Schema.Boolean),
+  taskGates: Schema.optionalKey(Schema.Boolean),
   telemetry: Schema.optionalKey(Schema.Boolean),
   browserCookieImport: Schema.optionalKey(Schema.Boolean),
   previewTunnel: Schema.optionalKey(Schema.Boolean),
@@ -214,6 +217,7 @@ const CAPABILITY_LABELS = {
   remoteClients: "connecting from other devices",
   connect: "T3 Connect",
   webhookTasks: "webhook tasks",
+  taskGates: "scheduled task gate commands",
   browserCookieImport: "importing browser cookies",
   previewTunnel: "opening this machine's local servers on other devices",
   worktreeLayoutCommands: "project worktree layout commands",

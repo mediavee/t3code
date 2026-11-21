@@ -961,6 +961,8 @@ export const OrchestratorMcpScheduleTaskInput = Schema.Struct({
   runtimeMode: Schema.optional(
     RuntimeMode.annotate({ description: "Default: yours. Above yours is rejected." }),
   ),
+  // Listed, without advertising a shape, so passing one gets a clear refusal instead of being dropped.
+  gate: Schema.optional(Schema.Unknown),
   clientRequestId: Schema.optional(OrchestratorMcpClientRequestId),
 });
 export type OrchestratorMcpScheduleTaskInput = typeof OrchestratorMcpScheduleTaskInput.Type;
@@ -1030,6 +1032,7 @@ export const OrchestratorMcpUpdateScheduledTaskInput = Schema.Struct({
   modelSelection: OrchestratorMcpScheduleTaskInput.fields.modelSelection,
   workspaceStrategy: OrchestratorMcpScheduleTaskInput.fields.workspaceStrategy,
   runtimeMode: OrchestratorMcpScheduleTaskInput.fields.runtimeMode,
+  gate: OrchestratorMcpScheduleTaskInput.fields.gate,
 });
 export type OrchestratorMcpUpdateScheduledTaskInput =
   typeof OrchestratorMcpUpdateScheduledTaskInput.Type;
