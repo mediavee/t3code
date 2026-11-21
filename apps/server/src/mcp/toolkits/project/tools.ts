@@ -21,6 +21,7 @@ import {
   OrchestratorMcpLaunchModelSelection,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
+  OrchestratorMcpRuntimeModeSteppedDown,
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
 } from "@t3tools/contracts";
@@ -179,6 +180,7 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     modelSelection: ModelSelection,
     runId: Schema.NullOr(RunId),
     status: Schema.NullOr(OrchestrationV2RunStatus),
+    runtimeModeSteppedDown: OrchestratorMcpRuntimeModeSteppedDown,
   }),
   dependencies: [
     ...shared.dependencies,

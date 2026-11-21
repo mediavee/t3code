@@ -30,6 +30,7 @@ import {
   type OrchestrationV2CreationSource,
   type OrchestrationV2LinkedSender,
   OrchestrationV2Run,
+  type OrchestrationV2RuntimeRequest,
   type OrchestrationV2ThreadShellSnapshot,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2ThreadTranscript,
@@ -40,9 +41,11 @@ import {
   type ProviderSessionId,
   resolveProjectProviderInstanceEnabled,
   RunId,
+  type RuntimeRequestId,
   type ScheduledTaskId,
   ThreadId,
   type TurnItemId,
+  isParentWakeRequestKind,
 } from "@t3tools/contracts";
 import { delegatedTaskProgress } from "@t3tools/provider-core/server/subagentProjection";
 import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
@@ -205,6 +208,18 @@ export interface ThreadManagementWaitInput {
   readonly untilOutput?: boolean;
   /** Return early, unsettled, once a message for this thread, the caller's, arrives. */
   readonly interruptOnMessageTo?: ThreadId;
+  /**
+   * Also end the wait, unsettled, once the thread's pending questions and approvals are no longer
+   * these, so a linked environment's parent hears of its task's requests; `pendingRequests` lists them.
+   */
+  readonly untilPendingRequestsChangeFrom?: ReadonlyArray<RuntimeRequestId>;
+}
+
+/** A pending question or approval, with what an approval asks for. */
+export interface ThreadManagementPendingRequest {
+  readonly request: OrchestrationV2RuntimeRequest;
+  readonly prompt?: string | undefined;
+  readonly reason?: string | undefined;
 }
 
 export interface ThreadManagementWaitResult {
@@ -215,6 +230,8 @@ export interface ThreadManagementWaitResult {
   readonly resultRun?: OrchestrationV2Run;
   /** Set when a message for `interruptOnMessageTo` ended the wait: how many wait there. */
   readonly waitingMessages?: number;
+  /** With `untilPendingRequestsChangeFrom`: the thread's pending questions and approvals. */
+  readonly pendingRequests?: ReadonlyArray<ThreadManagementPendingRequest>;
 }
 
 export interface ThreadManagementInterruptInput {
@@ -1285,14 +1302,55 @@ const make = Effect.gen(function* () {
       const resultRun = yield* delegatedWorkResult;
       return { ...current, settled: resultRun !== undefined, resultRun };
     });
-    const settledResult = (current: Effect.Success<ReturnType<typeof evaluate>>) => ({
+    const knownRequests =
+      input.untilPendingRequestsChangeFrom === undefined
+        ? undefined
+        : new Set(input.untilPendingRequestsChangeFrom);
+    const pendingRequests = Effect.gen(function* () {
+      if (knownRequests === undefined) return undefined;
+      const { runtimeRequests } = yield* getProjectThreadRecords(input, ["runtimeRequests"]);
+      const pending = runtimeRequests.filter(
+        (request) => request.status === "pending" && isParentWakeRequestKind(request.kind),
+      );
+      const approvals = pending.filter((request) => request.kind !== "user_input");
+      const { turnItems } =
+        approvals.length === 0
+          ? { turnItems: [] }
+          : yield* getProjectThreadRecords(input, ["turnItems"], {
+              turnItemTypes: ["approval_request"],
+              turnItemRequestIds: approvals.map((request) => request.id),
+            });
+      return pending.map((request): ThreadManagementPendingRequest => {
+        const item = turnItems.find(
+          (candidate) =>
+            candidate.type === "approval_request" && candidate.requestId === request.id,
+        );
+        return item?.type === "approval_request"
+          ? { request, prompt: item.prompt, reason: item.reason }
+          : { request };
+      });
+    });
+    const pendingRequestsChanged = (
+      pending: ReadonlyArray<ThreadManagementPendingRequest> | undefined,
+    ) =>
+      pending !== undefined &&
+      (pending.length !== knownRequests?.size ||
+        pending.some(({ request }) => !knownRequests.has(request.id)));
+    const settledResult = (
+      current: Effect.Success<ReturnType<typeof evaluate>>,
+      pending?: ReadonlyArray<ThreadManagementPendingRequest>,
+    ) => ({
       threadId: input.threadId,
       run: current.run,
       timedOut: !current.settled,
       ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
+      ...(pending === undefined ? {} : { pendingRequests: pending }),
     });
-    const initial = yield* evaluate(target.runs);
-    if (initial.settled) return settledResult(initial);
+    const evaluateAll = (runs: ReadonlyArray<OrchestrationV2Run>) =>
+      Effect.all({ current: evaluate(runs), requests: pendingRequests });
+    const initial = yield* evaluateAll(target.runs);
+    if (initial.current.settled || pendingRequestsChanged(initial.requests))
+      return settledResult(initial.current, initial.requests);
 
     // A declined continuation records no event, so its effect settling wakes
     // the wait too.
@@ -1308,6 +1366,7 @@ const make = Effect.gen(function* () {
             ...(untilDelegatedWorkSettled
               ? (["subagent.updated", "provider-thread.updated"] as const)
               : []),
+            ...(knownRequests === undefined ? [] : (["runtime-request.updated"] as const)),
           ] as const
         ).map((eventType) =>
           orchestrator.streamStoredEventsFrom({
@@ -1327,16 +1386,16 @@ const make = Effect.gen(function* () {
             stored.event.payload.restartContinuationOfRunId !== undefined,
         ),
       ),
-      initial.pending
-        ? Stream.fromEffect(orchestrator.awaitRestartContinuation(initial.run))
+      initial.current.pending
+        ? Stream.fromEffect(orchestrator.awaitRestartContinuation(initial.current.run))
         : Stream.empty,
     ).pipe(
       Stream.mapEffect(() =>
         getProjectThreadRecords(input, ["runs"]).pipe(
-          Effect.flatMap((current) => evaluate(current.runs)),
+          Effect.flatMap((current) => evaluateAll(current.runs)),
         ),
       ),
-      Stream.filter((current) => current.settled),
+      Stream.filter(({ current, requests }) => current.settled || pendingRequestsChanged(requests)),
       Stream.runHead,
       Effect.map((settled) => ({ settled, waitingMessages: undefined })),
     );
@@ -1354,7 +1413,7 @@ const make = Effect.gen(function* () {
       Effect.timeoutOption(Duration.millis(Math.max(1, input.timeoutMs))),
     );
     const waited = Option.flatMap(ended, ({ settled }) => settled);
-    if (Option.isSome(waited)) return settledResult(waited.value);
+    if (Option.isSome(waited)) return settledResult(waited.value.current, waited.value.requests);
     const waitingMessages = Option.getOrUndefined(ended)?.waitingMessages;
     if (waitingMessages !== undefined) {
       const current = yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs);
@@ -1365,7 +1424,8 @@ const make = Effect.gen(function* () {
     // The run may have reached a terminal status while the timeout was
     // winning the race; the final projection read decides what actually
     // happened, so only a still-active run counts as timed out.
-    return settledResult(yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs));
+    const last = yield* evaluateAll((yield* getProjectThreadRecords(input, ["runs"])).runs);
+    return settledResult(last.current, last.requests);
   });
 
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
