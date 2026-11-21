@@ -482,6 +482,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("usage quota rate limit reset recover continue")],
   },
   {
+    id: "auto-retry-transient-failures",
+    title: msg("Resume after provider errors"),
+    to: "/settings/threads",
+    searchTerms: [msg("retry failed error 502 503 gateway connection recover continue")],
+  },
+  {
     id: "working-shelf",
     title: msg("Working section"),
     to: "/settings/general",

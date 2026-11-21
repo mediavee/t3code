@@ -8834,6 +8834,83 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
     }),
   );
 
+  it.effect("lists only recent transient failures as resume candidates", () =>
+    Effect.gen(function* () {
+      const store = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const failWith = Effect.fnUntraced(function* (
+        suffix: string,
+        failure: {
+          readonly class: "provider_error" | "transport_error";
+          readonly code: string;
+          readonly retryable: boolean | null;
+        },
+      ) {
+        const threadId = yield* addRolledBackRecoveryCandidate(suffix);
+        const run = (yield* store.getThreadProjection(threadId)).runs[0]!;
+        yield* store.apply({
+          id: EventId.make(`event:${suffix}:error`),
+          type: "turn-item.updated",
+          threadId,
+          occurredAt: now,
+          payload: {
+            id: TurnItemId.make(`${suffix}:error`),
+            threadId,
+            runId: run.id,
+            nodeId: run.rootNodeId,
+            providerThreadId: null,
+            providerTurnId: null,
+            nativeItemRef: null,
+            parentItemId: null,
+            ordinal: 2,
+            status: "failed",
+            title: "Provider error",
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+            type: "error",
+            failure: { ...failure, message: "Provider failed." },
+          },
+        });
+        yield* store.apply({
+          id: EventId.make(`event:${suffix}:run-failed`),
+          type: "run.updated",
+          threadId,
+          occurredAt: now,
+          payload: { ...run, status: "failed", completedAt: now },
+        });
+        return { threadId, runId: run.id, userMessageId: run.userMessageId };
+      });
+      const gateway = yield* failWith("transient-502", {
+        class: "provider_error",
+        code: "api_error_502",
+        retryable: true,
+      });
+      yield* failWith("transient-cyber", {
+        class: "provider_error",
+        code: "cyberPolicy",
+        retryable: false,
+      });
+      yield* failWith("transient-unclassified", {
+        class: "provider_error",
+        code: "other",
+        retryable: null,
+      });
+
+      assert.deepEqual(yield* store.getTransientFailureCandidates(now), [
+        { ...gateway, completedAt: now },
+      ]);
+      assert.deepEqual(
+        yield* store.getTransientFailureCandidates(DateTime.add(now, { milliseconds: 1 })),
+        [],
+      );
+      const shell = (yield* store.getShellSnapshot()).threads.find(
+        (row) => row.id === gateway.threadId,
+      );
+      assert.isTrue(shell?.lastErrorRetryable);
+    }),
+  );
+
   it.effect("projects only the latest failed root turn's limit into SQL and memory shells", () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;

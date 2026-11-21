@@ -12374,5 +12374,12 @@
   "b7df38b7d8792d78": "Ouvrir le guide",
   "9e91e9a77b664e4e": "Impossible de démarrer un guide de revue",
   "3d4448e3c061f894": "Autre machine",
-  "349587beaf00ce5e": "{title}, délégué depuis {machine}, {count, plural, one {{count} tâche} other {{count} tâches}}"
+  "349587beaf00ce5e": "{title}, délégué depuis {machine}, {count, plural, one {{count} tâche} other {{count} tâches}}",
+  "bc34446a962cdcfe": "Reprendre après une erreur du fournisseur",
+  "079d0bd4815b5348": "Erreurs du fournisseur",
+  "bb9d9afd0523940a": "Reprend un tour qui a échoué sur une erreur de serveur ou de connexion du fournisseur, jusqu’à trois fois, après 15 secondes, 1 minute puis 3 minutes.",
+  "ae62ee82e0c146bb": "réessayer échec erreur 502 503 passerelle connexion reprise continuer",
+  "0d1c02eb9bb693c4": "Impossible de reprendre les sessions en échec",
+  "72516ad01a8e3386": "{count, plural, one {{count} session a échoué dans la dernière heure} other {{count} sessions ont échoué dans la dernière heure}}",
+  "253a12fc99873da8": "Tout reprendre"
 }
