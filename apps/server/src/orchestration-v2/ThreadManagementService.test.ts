@@ -309,6 +309,38 @@ it.effect.each([
   }).pipe(Effect.provide(layerTest));
 });
 
+it.effect("waitForThread on a run alone ends with its event source, holding no timer open", () =>
+  Effect.gen(function* () {
+    const projectId = ProjectId.make("project:thread-management:wait-finite");
+    const threadId = ThreadId.make("thread:thread-management:wait-finite");
+    const runId = RunId.make("run:thread-management:wait-finite");
+    const layerTest = ThreadManagementService.layer.pipe(
+      Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          getThreadEventSequence: () => Effect.succeed(0),
+          restartContinuationPending: () => Effect.succeed(false),
+          streamStoredEventsFrom: () => Stream.empty,
+          getThreadRecords: () =>
+            Effect.succeed({
+              thread: { id: threadId, projectId, deletedAt: null },
+              runs: [{ id: runId, status: "running" }],
+            } as unknown as OrchestrationV2ThreadProjection),
+        }),
+      ),
+      Layer.provide(ServerSettings.layerTest()),
+      Layer.provide(layerReceiptsTest),
+    );
+    const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+      Effect.provide(layerTest),
+    );
+    // The clock never moves, so only the ended source can end this wait.
+    const result = yield* service.waitForThread({ projectId, threadId, runId, timeoutMs: 60_000 });
+
+    expect(result).toMatchObject({ timedOut: true, run: { id: runId, status: "running" } });
+  }),
+);
+
 it.effect("waitForThread follows a restart continuation instead of the cut run", () =>
   Effect.gen(function* () {
     const projectId = ProjectId.make("project:thread-management:wait-restart");
