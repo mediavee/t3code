@@ -144,7 +144,8 @@ export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.T
 
 /**
  * `delegatedFrom` as a thread keeps it. `parentDoneAt`: that parent was settled, archived or
- * deleted there, so this thread settles here as a subagent of a done parent does.
+ * deleted there, so this thread settles here as a subagent of a done parent does, until that
+ * parent sends it a message again.
  */
 export const OrchestrationV2ThreadDelegatedFrom = Schema.Struct({
   ...OrchestrationV2DelegatedFrom.fields,
@@ -3852,20 +3853,19 @@ const OrchestrationV2InternalCommand = Schema.Union([
     taskId: NodeId,
   }),
   /**
-   * The thread there of this thread's remote tasks confirmed that this thread is done:
-   * sets `remoteChild.parentDoneThere` on each of them, even on a deleted thread.
+   * The thread there of this thread's remote task `taskId` confirmed that this thread is done:
+   * sets its `remoteChild.parentDoneThere`, even on a deleted thread.
    */
   Schema.Struct({
     type: Schema.Literal("delegated_task.remote.parent-done"),
     commandId: CommandId,
     threadId: ThreadId,
-    environmentId: EnvironmentId,
-    remoteThreadId: ThreadId,
+    taskId: NodeId,
   }),
   /**
    * The linked environment that delegated this thread says its parent there is done: sets
    * `delegatedFrom.parentDoneAt`, even while it runs. Refused unless `parent` is the one
-   * `delegatedFrom` names.
+   * `delegatedFrom` names; the link route names the environment from its session.
    */
   Schema.Struct({
     type: Schema.Literal("thread.delegated-from.parent-done"),

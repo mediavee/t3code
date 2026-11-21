@@ -1534,6 +1534,38 @@ it.effect("reads a delegated child's recent, unfinished and task runs without it
   }).pipe(Effect.provide(layerTest)),
 );
 
+it.effect("finds remote tasks owed their parent's end without scanning every subagent", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const sql = yield* SqlClient.SqlClient;
+    const traced = traceSqlStatements();
+    for (const filter of [
+      undefined,
+      { parentThreadId: ThreadId.make("thread:owed-parent-done") },
+      { environmentId: EnvironmentId.make("environment:owed-parent-done") },
+    ]) {
+      yield* store.getRemoteTasksOwedParentDone(filter).pipe(Effect.withTracer(traced.tracer));
+    }
+    const statements = traced.statements.filter((statement) =>
+      statement.includes("FROM orchestration_v2_projection_subagents"),
+    );
+    assert.lengthOf(statements, 3);
+    for (const statement of statements) {
+      const plan = (yield* sql.unsafe<{ readonly detail: string }>(
+        `EXPLAIN QUERY PLAN ${statement}`,
+      ))
+        .map((row) => row.detail)
+        .join("\n");
+      assert.match(
+        plan,
+        /^(SCAN|SEARCH) orchestration_v2_projection_subagents USING INDEX orchestration_v2_projection_subagents_remote_parent_done_idx/m,
+      );
+      assert.notInclude(plan, "TEMP B-TREE");
+      assert.match(plan, /SEARCH parent (EXISTS )?USING (INDEX \w+|PRIMARY KEY) \(thread_id=\?\)/);
+    }
+  }).pipe(Effect.provide(layerTest)),
+);
+
 it.effect("shells flag a latest run triggered by a provider background wake", () =>
   Effect.gen(function* () {
     const store = yield* ProjectionStore.ProjectionStoreV2;

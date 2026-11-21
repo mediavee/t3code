@@ -48,8 +48,6 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
       "mark_unread",
     ]),
     snoozedUntil: Schema.optional(IsoDateTime),
-    /** Sent with `settle` by the linked environment that delegated the thread, once its parent there is done. */
-    parentDone: Schema.optional(Schema.Literal(true)),
   }),
   success: Schema.Union([
     OrchestrationV2DispatchCommandResult,

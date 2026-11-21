@@ -243,40 +243,61 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       const projections = yield* ProjectionStore.ProjectionStoreV2;
       const sink = yield* EventSink.EventSinkV2;
       const parent = yield* seedLiveParent("parent-done");
-      // A follow-up shares the thread there, which is owed once.
-      for (const name of ["first", "follow-up"]) {
-        yield* orchestrator.dispatch({
-          type: "delegated_task.remote.request",
-          commandId: CommandId.make(`command:remote-delegate:parent-done:${name}`),
-          parentThreadId: parent.threadId,
-          parentRunId: parent.runId,
-          parentNodeId: parent.rootNodeId,
-          task: "Run the suite there.",
-          driver: ProviderDriverKind.make("remote"),
-          modelSelection,
-          remoteChild,
-        });
-      }
-      const owed = projections.getRemoteTasksOwedParentDone(parent.threadId);
-      const owedThere = [
+      const request = (name: string) =>
+        orchestrator
+          .dispatch({
+            type: "delegated_task.remote.request",
+            commandId: CommandId.make(`command:remote-delegate:parent-done:${name}`),
+            parentThreadId: parent.threadId,
+            parentRunId: parent.runId,
+            parentNodeId: parent.rootNodeId,
+            task: "Run the suite there.",
+            driver: ProviderDriverKind.make("remote"),
+            modelSelection,
+            remoteChild,
+          })
+          .pipe(
+            Effect.map(({ storedEvents }) =>
+              storedEvents.flatMap(({ event }) =>
+                event.type === "subagent.updated" ? [event.payload.id] : [],
+              ),
+            ),
+          );
+      const owed = projections.getRemoteTasksOwedParentDone({ parentThreadId: parent.threadId });
+      const owedThere = (taskId: NodeId) => [
         {
           parentThreadId: parent.threadId,
+          taskId,
           environmentId: remoteChild.environmentId,
           threadId: remoteChild.threadId,
         },
       ];
+      let changes = 0;
       const change = (
         type: "thread.archive" | "thread.unarchive" | "thread.settle" | "thread.delete",
       ) =>
         orchestrator.dispatch({
           type,
-          commandId: CommandId.make(`command:parent-done:${type}`),
+          commandId: CommandId.make(`command:parent-done:${type}:${(changes += 1)}`),
           threadId: parent.threadId,
         });
+      const confirm = (taskId: NodeId) =>
+        orchestrator.dispatch({
+          type: "delegated_task.remote.parent-done",
+          commandId: CommandId.make(`command:parent-done:confirmed:${taskId}`),
+          threadId: parent.threadId,
+          taskId,
+        });
+      const [first] = yield* request("first");
       assert.deepEqual(yield* owed, []);
       yield* change("thread.archive");
-      assert.deepEqual(yield* owed, owedThere);
+      assert.deepEqual(yield* owed, owedThere(first!));
+      yield* confirm(first!);
+      assert.deepEqual(yield* owed, []);
       yield* change("thread.unarchive");
+
+      // Reusing the thread there is a task of its own, owed again once the parent is done again.
+      const [followUp] = yield* request("follow-up");
       assert.deepEqual(yield* owed, []);
       const run = (yield* orchestrator.getThreadProjection(parent.threadId)).runs[0]!;
       const now = yield* DateTime.now;
@@ -294,7 +315,7 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
         ],
       });
       yield* change("thread.settle");
-      assert.deepEqual(yield* owed, owedThere);
+      assert.deepEqual(yield* owed, owedThere(followUp!));
       yield* orchestrator.dispatch({
         type: "thread.unsettle",
         commandId: CommandId.make("command:parent-done:unsettle"),
@@ -303,22 +324,16 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       });
       assert.deepEqual(yield* owed, []);
       yield* change("thread.delete");
-      assert.deepEqual(yield* owed, owedThere);
+      assert.deepEqual(yield* owed, owedThere(followUp!));
 
-      // Confirmed, even on the deleted parent, for every task on that thread there.
-      yield* orchestrator.dispatch({
-        type: "delegated_task.remote.parent-done",
-        commandId: CommandId.make("command:parent-done:confirmed"),
-        threadId: parent.threadId,
-        environmentId: remoteChild.environmentId,
-        remoteThreadId: remoteChild.threadId,
-      });
+      // Confirmed even on the deleted parent.
+      yield* confirm(followUp!);
+      assert.deepEqual(yield* owed, []);
       const { subagents } = yield* projections.getThreadRecords(parent.threadId, ["subagents"]);
       assert.deepEqual(
         subagents.map((task) => task.remoteChild?.parentDoneThere),
         [true, true],
       );
-      assert.deepEqual(yield* owed, []);
     }),
   );
 
@@ -387,6 +402,36 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
       assert.deepEqual(marked.updatedAt, before.updatedAt);
       const repeated = yield* mark(threadId, delegatedFrom, "parent-again");
       assert.deepEqual(repeated.storedEvents, []);
+
+      // A message from anyone else leaves the mark; one from that parent, reusing the task, clears it.
+      const send = (key: string, linkedSender?: typeof delegatedFrom) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          createdBy: "agent",
+          creationSource: "mcp",
+          ...(linkedSender === undefined ? {} : { linkedSender }),
+          commandId: CommandId.make(`command:parent-done-here:send:${key}`),
+          threadId,
+          messageId: MessageId.make(`message:parent-done-here:${key}`),
+          text: "One more thing.",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "queue_after_active" },
+        });
+      yield* send("other-sender", {
+        ...delegatedFrom,
+        threadId: ThreadId.make("thread:other-there"),
+      });
+      yield* send("no-sender");
+      assert.deepEqual((yield* orchestrator.getThreadShell(threadId))!.delegatedFrom, {
+        ...delegatedFrom,
+        parentDoneAt,
+      });
+      yield* send("parent", delegatedFrom);
+      assert.deepEqual(
+        (yield* orchestrator.getThreadShell(threadId))!.delegatedFrom,
+        delegatedFrom,
+      );
     }),
   );
 

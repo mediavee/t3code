@@ -400,76 +400,46 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       }),
     ),
   ),
-  t3_thread_organize: McpToolAccess.either(
-    (input) => input.parentDone === true,
-    // Its link may have been paired again since it delegated the thread, so the link's
-    // fence does not hold this; the thread must name the caller's thread as its parent.
-    McpToolAccess.writes(
-      (input) =>
-        Effect.gen(function* () {
-          const scope = yield* McpInvocationContext.McpInvocationContext;
-          const parent = scope.client?.linked === true ? scope.client.senderThread : undefined;
-          if (input.action !== "settle" || input.threadId === undefined || parent === undefined) {
+  t3_thread_organize: writesThread((input) =>
+    Effect.gen(function* () {
+      const { threads, projection, caller } = yield* readThread(input.threadId);
+      const common = { commandId: yield* newCommandId(), threadId: projection.thread.id };
+      if (input.action === "settle") {
+        return yield* threads
+          .settleThread({ ...common, byOwnAgent: caller?.id === projection.thread.id })
+          .pipe(Effect.mapError(dispatchFailure));
+      }
+      let command: OrchestrationV2Command;
+      switch (input.action) {
+        case "snooze":
+          if (input.snoozedUntil === undefined) {
             return yield* new OrchestratorMcpFailure({
               code: "invalid_request",
-              message:
-                "parentDone is only for the linked environment that delegated the thread, with action settle and its threadId.",
+              message: "snooze requires snoozedUntil.",
             });
           }
-          const { threads, projection } = yield* readThread(input.threadId);
-          const result = yield* threads
-            .dispatch({
-              type: "thread.delegated-from.parent-done",
-              commandId: yield* newCommandId(),
-              threadId: projection.thread.id,
-              parent: { environmentId: parent.environmentId, threadId: parent.threadId },
-            })
-            .pipe(Effect.mapError(dispatchFailure));
-          return { sequence: result.sequence };
-        }),
-      { linkedCallers: "allowed" },
-    ),
-    writesThread((input) =>
-      Effect.gen(function* () {
-        const { threads, projection, caller } = yield* readThread(input.threadId);
-        const common = { commandId: yield* newCommandId(), threadId: projection.thread.id };
-        if (input.action === "settle") {
-          return yield* threads
-            .settleThread({ ...common, byOwnAgent: caller?.id === projection.thread.id })
-            .pipe(Effect.mapError(dispatchFailure));
+          command = { ...common, type: "thread.snooze", snoozedUntil: input.snoozedUntil };
+          break;
+        case "unsnooze":
+        case "unsettle":
+          command = { ...common, type: `thread.${input.action}`, reason: "user" };
+          break;
+        case "mark_unread":
+          command = { ...common, type: "thread.mark-unread" };
+          break;
+        case "pin": {
+          // Always send a key, as the client does: the reducer ignores it for a
+          // thread that is already pinned, and a projection read before this
+          // command can be stale if an unpin commits in between.
+          const orderKey = yield* topOfPinnedRunKey(threads);
+          command = { ...common, type: "thread.pin", ...(orderKey ? { orderKey } : {}) };
+          break;
         }
-        let command: OrchestrationV2Command;
-        switch (input.action) {
-          case "snooze":
-            if (input.snoozedUntil === undefined) {
-              return yield* new OrchestratorMcpFailure({
-                code: "invalid_request",
-                message: "snooze requires snoozedUntil.",
-              });
-            }
-            command = { ...common, type: "thread.snooze", snoozedUntil: input.snoozedUntil };
-            break;
-          case "unsnooze":
-          case "unsettle":
-            command = { ...common, type: `thread.${input.action}`, reason: "user" };
-            break;
-          case "mark_unread":
-            command = { ...common, type: "thread.mark-unread" };
-            break;
-          case "pin": {
-            // Always send a key, as the client does: the reducer ignores it for a
-            // thread that is already pinned, and a projection read before this
-            // command can be stale if an unpin commits in between.
-            const orderKey = yield* topOfPinnedRunKey(threads);
-            command = { ...common, type: "thread.pin", ...(orderKey ? { orderKey } : {}) };
-            break;
-          }
-          default:
-            command = { ...common, type: `thread.${input.action}` };
-        }
-        const result = yield* threads.dispatch(command).pipe(Effect.mapError(dispatchFailure));
-        return { sequence: result.sequence };
-      }),
-    ),
+        default:
+          command = { ...common, type: `thread.${input.action}` };
+      }
+      const result = yield* threads.dispatch(command).pipe(Effect.mapError(dispatchFailure));
+      return { sequence: result.sequence };
+    }),
   ),
 });

@@ -572,7 +572,7 @@ const make = Effect.gen(function* () {
    */
   const followScope = (
     parent: { readonly threadId: ThreadId; readonly providerInstanceId: ProviderInstanceId },
-    remote: Pick<OrchestrationV2RemoteTaskChild, "threadId">,
+    remote: OrchestrationV2RemoteTaskChild,
   ): ThreadScope => ({
     environmentId: hereId,
     requestNamespace: `remote-task:${parent.threadId}`,
@@ -956,76 +956,81 @@ const make = Effect.gen(function* () {
     });
 
   /**
-   * One attempt to tell the thread there of a done parent's tasks that the parent is done,
-   * so it settles there as a subagent here would. A parent active again since is owed
-   * nothing; a thread gone there has nothing left to settle.
+   * Tells each thread there, one at a time, that its task's parent here is done, so it settles
+   * as a subagent would. A parent active again is owed nothing; a thread gone there counts as
+   * told. A failing link ends the pass: one attempt per retry however much it is owed.
    */
-  const tellParentDoneOnce = Effect.fn("RemoteDelegation.tellParentDoneOnce")(function* (
-    parentThreadId: ThreadId,
+  const tellParentDonePass = Effect.fn("RemoteDelegation.tellParentDonePass")(function* (
     environmentId: EnvironmentId,
-    threadId: ThreadId,
   ) {
-    const owed = (yield* projections.getRemoteTasksOwedParentDone(parentThreadId)).some(
-      (row) => row.environmentId === environmentId && row.threadId === threadId,
-    );
-    // Read as stored: a deleted parent still owes it, and shells leave deleted threads out.
-    const parent = owed ? yield* projections.findThread(parentThreadId) : null;
-    if (parent === null) {
-      yield* Effect.logDebug("remote-delegation.parent-done-not-owed", {
-        parentThreadId,
-        threadId,
+    const owed = yield* projections.getRemoteTasksOwedParentDone({ environmentId });
+    const told = new Set<string>();
+    let refused = false;
+    for (const { parentThreadId, taskId, threadId } of owed) {
+      const key = `${parentThreadId}\0${threadId}`;
+      if (!told.has(key)) {
+        const stillOwed = (yield* projections.getRemoteTasksOwedParentDone({
+          parentThreadId,
+        })).some((row) => row.taskId === taskId);
+        if (!stillOwed) {
+          yield* Effect.logDebug("remote-delegation.parent-done-not-owed", {
+            parentThreadId,
+            threadId,
+          });
+          continue;
+        }
+        if (
+          (yield* links.tellParentDone(environmentId, { threadId, parentThreadId })) === "refused"
+        ) {
+          yield* Effect.logWarning("remote-delegation.parent-done-refused", {
+            parentThreadId,
+            environmentId,
+            threadId,
+          });
+          refused = true;
+          continue;
+        }
+        told.add(key);
+      }
+      yield* threads.dispatch({
+        type: "delegated_task.remote.parent-done",
+        commandId: CommandId.make(
+          `command:remote-parent-done:${parentThreadId}:${taskId}:${yield* random.uuidV4()}`,
+        ),
+        threadId: parentThreadId,
+        taskId,
       });
-      return;
     }
-    yield* forwarding
-      .tellParentDone(
-        followScope(
-          { threadId: parentThreadId, providerInstanceId: parent.providerInstanceId },
-          { threadId },
-        ),
-        parent,
-        environmentId,
-        threadId,
-      )
-      .pipe(
-        Effect.catchIf(
-          (error) => error.code === "thread_not_found",
-          () => Effect.void,
-        ),
+    if (refused) {
+      return yield* new Cause.UnknownError(
+        undefined,
+        "A linked environment refused a parent's end.",
       );
-    yield* threads.dispatch({
-      type: "delegated_task.remote.parent-done",
-      commandId: CommandId.make(
-        `command:remote-parent-done:${parentThreadId}:${threadId}:${yield* random.uuidV4()}`,
-      ),
-      threadId: parentThreadId,
+    }
+    yield* Effect.logDebug("remote-delegation.parent-done-told", {
       environmentId,
-      remoteThreadId: threadId,
+      owed: owed.length,
+      told: told.size,
     });
   });
 
-  const tellingParentDone = new Map<string, { again: boolean }>();
+  const tellingParentDone = new Map<EnvironmentId, { again: boolean }>();
 
   /**
-   * `tellParentDoneOnce` until it gets there, at most once per parent and thread there.
-   * An unreachable machine, or a link that expired until it is linked again, is retried
-   * with back-off; nothing is recorded until the thread there has it.
+   * `tellParentDonePass` until it gets there, with at most one pass per environment, retried
+   * with back-off. Work owed meanwhile runs one more pass; nothing is recorded until the thread
+   * there has it.
    */
-  const tellParentDone = (
-    parentThreadId: ThreadId,
-    environmentId: EnvironmentId,
-    threadId: ThreadId,
-  ) =>
+  const tellParentDone = (environmentId: EnvironmentId) =>
     Effect.suspend(() => {
-      const key = `${parentThreadId}\0${environmentId}\0${threadId}`;
-      const running = tellingParentDone.get(key);
+      const running = tellingParentDone.get(environmentId);
       if (running !== undefined) {
         running.again = true;
         return Effect.void;
       }
       const state = { again: false };
-      tellingParentDone.set(key, state);
-      return tellParentDoneOnce(parentThreadId, environmentId, threadId).pipe(
+      tellingParentDone.set(environmentId, state);
+      return tellParentDonePass(environmentId).pipe(
         failOnDefect,
         Effect.retry(followRetry),
         Effect.ignoreCause({ log: true }),
@@ -1035,33 +1040,34 @@ const make = Effect.gen(function* () {
               state.again = false;
               return true;
             }
-            tellingParentDone.delete(key);
+            tellingParentDone.delete(environmentId);
             return false;
           },
         }),
         Effect.ensuring(
           Effect.sync(() => {
-            if (tellingParentDone.get(key) === state) tellingParentDone.delete(key);
+            if (tellingParentDone.get(environmentId) === state) {
+              tellingParentDone.delete(environmentId);
+            }
           }),
         ),
       );
     });
 
-  /** Tells the threads there of the tasks `parentThreadId` (or every done parent) still owes. */
+  /** Tells each environment the tasks of `parentThreadId` (or of every done parent) owe it. */
   const tellOwedParentDone = (parentThreadId?: ThreadId) =>
-    projections.getRemoteTasksOwedParentDone(parentThreadId).pipe(
-      Effect.flatMap((owed) =>
-        Effect.forEach(
-          owed,
-          (row) =>
-            tellParentDone(row.parentThreadId, row.environmentId, row.threadId).pipe(
-              Effect.forkIn(followers),
-            ),
-          { discard: true },
+    projections
+      .getRemoteTasksOwedParentDone(parentThreadId === undefined ? undefined : { parentThreadId })
+      .pipe(
+        Effect.flatMap((owed) =>
+          Effect.forEach(
+            new Set(owed.map((row) => row.environmentId)),
+            (environmentId) => tellParentDone(environmentId).pipe(Effect.forkIn(followers)),
+            { discard: true },
+          ),
         ),
-      ),
-      Effect.ignoreCause({ log: true }),
-    );
+        Effect.ignoreCause({ log: true }),
+      );
 
   const cancel: RemoteDelegation["Service"]["cancel"] = Effect.fn("RemoteDelegation.cancel")(
     function* (scope, task, input) {
@@ -1162,13 +1168,13 @@ const make = Effect.gen(function* () {
             : event.type === "thread.settled" ||
                 event.type === "thread.archived" ||
                 event.type === "thread.deleted"
-              ? tellOwedParentDone(event.threadId)
+              ? tellOwedParentDone(event.threadId).pipe(Effect.forkIn(followers))
               : Effect.void,
         ).pipe(
           Effect.ignoreCause({ log: true }),
           Effect.forkIn(followers, { startImmediately: true }),
         );
-        yield* tellOwedParentDone();
+        yield* tellOwedParentDone().pipe(Effect.forkIn(followers));
         const open = yield* projections.getOpenRemoteDelegatedTasks;
         yield* Effect.forEach(
           open,

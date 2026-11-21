@@ -7325,6 +7325,29 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       projection = applyToProjection(projection, event);
     }
+    // The parent that delegated this thread is working with it again, so it no longer settles
+    // as that parent's done task.
+    const delegatedFrom = projection.thread.delegatedFrom;
+    if (
+      delegatedFrom?.parentDoneAt !== undefined &&
+      command.linkedSender?.environmentId === delegatedFrom.environmentId &&
+      command.linkedSender.threadId === delegatedFrom.threadId
+    ) {
+      const event = yield* emit(
+        events,
+        command,
+      )({
+        type: "thread.metadata-updated",
+        threadId: command.threadId,
+        providerInstanceId: projection.thread.providerInstanceId,
+        occurredAt: yield* DateTime.now,
+        payload: {
+          ...projection.thread,
+          delegatedFrom: { ...delegatedFrom, parentDoneAt: undefined },
+        },
+      });
+      projection = applyToProjection(projection, event);
+    }
     // Background wakes and delegated completions continue work the user already snoozed, so
     // only a message someone actually sent ends the snooze.
     const automaticWake =
@@ -10675,41 +10698,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
   ) {
     const { subagents } = yield* projectionStore
-      .getThreadRecords(command.threadId, ["subagents"])
+      .getThreadRecords(command.threadId, ["subagents"], { subagentIds: [command.taskId] })
       .pipe(
         Effect.mapError(
           (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
         ),
       );
-    const now = yield* DateTime.now;
-    for (const task of subagents) {
-      const remoteChild = task.remoteChild;
-      if (
-        task.origin !== "app_owned" ||
-        remoteChild === undefined ||
-        remoteChild.environmentId !== command.environmentId ||
-        remoteChild.threadId !== command.remoteThreadId ||
-        remoteChild.parentDoneThere === true
-      ) {
-        continue;
-      }
-      yield* emit(
-        events,
-        command,
-      )({
-        type: "subagent.updated",
-        threadId: command.threadId,
-        ...(task.runId === null ? {} : { runId: task.runId }),
-        nodeId: task.id,
-        driver: task.driver,
-        occurredAt: now,
-        payload: {
-          ...task,
-          remoteChild: { ...remoteChild, parentDoneThere: true },
-          updatedAt: now,
-        },
-      });
+    const task = subagents[0];
+    const remoteChild = task?.remoteChild;
+    if (
+      task === undefined ||
+      task.origin !== "app_owned" ||
+      remoteChild === undefined ||
+      remoteChild.parentDoneThere === true
+    ) {
+      return;
     }
+    const now = yield* DateTime.now;
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "subagent.updated",
+      threadId: command.threadId,
+      ...(task.runId === null ? {} : { runId: task.runId }),
+      nodeId: task.id,
+      driver: task.driver,
+      occurredAt: now,
+      payload: {
+        ...task,
+        remoteChild: { ...remoteChild, parentDoneThere: true },
+        updatedAt: now,
+      },
+    });
   });
 
   const dispatchDelegatedFromParentDone = Effect.fn(

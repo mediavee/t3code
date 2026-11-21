@@ -56,7 +56,6 @@ import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterReg
 import * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
 import * as ThreadLaunch from "../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import * as ThreadSearch from "../orchestration-v2/ThreadSearch.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
@@ -82,7 +81,7 @@ import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 // would for a local child.
 
 const laptop = descriptorOf("environment-laptop", "Laptop");
-const box = descriptorOf("environment-box", "Box");
+const box = descriptorOf("environment-box", "Box", { linkParentDone: true });
 const boxProject = ProjectId.make("project:box");
 const instanceId = ProviderInstanceId.make("codex");
 const driver = ProviderDriverKind.make("codex");
@@ -163,6 +162,8 @@ interface BoxThread {
     ReadonlyArray<{ readonly threadId: ThreadId; readonly parent: unknown }>
   >;
   readonly parentDoneOnce: Deferred.Deferred<void>;
+  /** Runs as each parent-done request reaches it, before it reads the thread. */
+  readonly onParentDone: Ref.Ref<Effect.Effect<void>>;
 }
 
 const makeBoxThread = Effect.gen(function* () {
@@ -209,6 +210,7 @@ const makeBoxThread = Effect.gen(function* () {
       ReadonlyArray<{ readonly threadId: ThreadId; readonly parent: unknown }>
     >([]),
     parentDoneOnce: yield* Deferred.make<void>(),
+    onParentDone: yield* Ref.make<Effect.Effect<void>>(Effect.void),
   } satisfies BoxThread;
 });
 
@@ -246,7 +248,8 @@ const boxProjects: ReadonlyArray<Project> = [
 ];
 
 const serveBox = (thread: BoxThread) => {
-  return servePeer(box, boxToolkitLayer(thread));
+  const { tools, threads } = boxToolkitLayer(thread);
+  return servePeer(box, tools, Layer.empty, threads);
 };
 
 const boxRunId = RunId.make("run:box");
@@ -530,13 +533,26 @@ const boxToolkitLayer = (thread: BoxThread) => {
             Effect.as({ sequence: 0, storedEvents: [] } as never),
           )
         : command.type === "thread.delegated-from.parent-done"
-          ? Ref.update(thread.parentDone, (seen) => [
-              ...seen,
-              { threadId: command.threadId, parent: command.parent },
-            ]).pipe(
-              Effect.andThen(Deferred.succeed(thread.parentDoneOnce, undefined)),
-              Effect.as({ sequence: 0, storedEvents: [] } as never),
-            )
+          ? Effect.gen(function* () {
+              // As its orchestrator does, it takes only the parent the thread names.
+              const from = yield* Ref.get(thread.delegatedFrom);
+              if (
+                from?.environmentId !== command.parent.environmentId ||
+                from.threadId !== command.parent.threadId
+              ) {
+                return yield* new Orchestrator.OrchestratorDispatchError({
+                  commandId: command.commandId,
+                  commandType: command.type,
+                  cause: "Not this thread's parent.",
+                });
+              }
+              yield* Ref.update(thread.parentDone, (seen) => [
+                ...seen,
+                { threadId: command.threadId, parent: command.parent },
+              ]);
+              yield* Deferred.succeed(thread.parentDoneOnce, undefined);
+              return { sequence: 0, storedEvents: [] } as never;
+            })
           : Effect.die(`The box does not expect ${command.type}`),
     stopDelegatedTasks: (input) => recordStop(input.commandId, "delegated-tasks"),
     sendToThread: (input) =>
@@ -590,10 +606,9 @@ const boxToolkitLayer = (thread: BoxThread) => {
         ),
       ),
   });
-  return Layer.mergeAll(
+  const tools = Layer.merge(
     McpHttpServer.layerOrchestratorToolkit,
     McpHttpServer.layerProjectRegistration,
-    McpHttpServer.layerThreadToolkit.pipe(Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({}))),
   ).pipe(
     Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     Layer.provide(NodeCrypto.layer),
@@ -641,6 +656,22 @@ const boxToolkitLayer = (thread: BoxThread) => {
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(NodeServices.layer),
   );
+  // Its link route reads threads as its tools do, and reports each request it gets.
+  const layerRouteThreads = Layer.effect(
+    ThreadManagement.ThreadManagementService,
+    Effect.gen(function* () {
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      return {
+        ...threads,
+        getThreadShell: (threadId: ThreadId) =>
+          Ref.get(thread.onParentDone).pipe(
+            Effect.flatten,
+            Effect.andThen(threads.getThreadShell(threadId)),
+          ),
+      };
+    }),
+  ).pipe(Layer.provide(layerBoxThreads));
+  return { tools, threads: layerRouteThreads };
 };
 
 const mcpClient = McpSchema.McpServerClient.of({
@@ -2873,7 +2904,12 @@ it.effect("a parent settled while the box sleeps tells it once it answers, acros
       const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
       const retries = yield* steppedRetries;
       const owed = [
-        { parentThreadId, environmentId: box.environmentId, threadId: expect.any(String) },
+        {
+          parentThreadId,
+          taskId: expect.any(String),
+          environmentId: box.environmentId,
+          threadId: expect.any(String),
+        },
       ];
       // The parent settles while the box sleeps, then the laptop restarts.
       const delegated = yield* Effect.scoped(
@@ -2910,6 +2946,137 @@ it.effect("a parent settled while the box sleeps tells it once it answers, acros
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect(
+  "a backlog owed to an unreachable box costs one probe per retry, then reaches it task by task",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const linking = yield* layerLinkingEnvironment(laptop).pipe(Layer.build);
+        const retries = yield* steppedRetries;
+        const probed = Ref.get(b.probes);
+        const taskIds = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const before = yield* makeLaptop(database, offers, linking).pipe(
+              Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+            );
+            yield* linkTo(before.links, b, "full-access");
+            yield* seedParent(before);
+            yield* before.remote.start();
+            const delegated = yield* finishedOnBox(before, thread);
+            // Two more finished tasks of the parent, whose threads the box no longer has.
+            const task = (yield* before.orchestrator.getThreadProjection(
+              parentThreadId,
+            )).subagents.find((candidate) => candidate.id === delegated.taskId)!;
+            const now = yield* DateTime.now;
+            const gone = [1, 2].map((index) => NodeId.make(`${task.id}:gone-${index}`));
+            yield* before.sink.write({
+              commandId: CommandId.make("command:seed:tasks-gone-there"),
+              events: gone.map((id, index) => ({
+                id: EventId.make(`event:seed:task-gone-there:${index}`),
+                type: "subagent.updated" as const,
+                threadId: parentThreadId,
+                ...(task.runId === null ? {} : { runId: task.runId }),
+                nodeId: id,
+                driver: task.driver,
+                occurredAt: now,
+                payload: {
+                  ...task,
+                  id,
+                  remoteChild: {
+                    ...task.remoteChild!,
+                    threadId: ThreadId.make(`thread:box-gone-${index}`),
+                  },
+                },
+              })),
+            });
+            yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
+            const probes = yield* probed;
+            yield* doneParent(before, "settle");
+            yield* Queue.take(retries.failed);
+            expect(yield* probed).toBe(probes + 1);
+            return [delegated.taskId, ...gone];
+          }),
+        );
+
+        // The backlog is all there at the next start, and still costs one probe per retry.
+        const after = yield* makeLaptop(database, offers, linking).pipe(
+          Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
+        );
+        expect(yield* after.projections.getRemoteTasksOwedParentDone()).toHaveLength(3);
+        const probes = yield* probed;
+        yield* after.remote.start();
+        yield* Queue.take(retries.failed);
+        expect(yield* probed).toBe(probes + 1);
+        yield* Queue.offer(retries.retry, undefined);
+        yield* Queue.take(retries.failed);
+        expect(yield* probed).toBe(probes + 2);
+
+        // Back, it gets one request at a time, each after the one before was recorded here.
+        const owedAtEachRequest = yield* Ref.make<ReadonlyArray<number>>([]);
+        yield* Ref.set(
+          thread.onParentDone,
+          after.projections.getRemoteTasksOwedParentDone().pipe(
+            Effect.orDie,
+            Effect.flatMap((owed) =>
+              Ref.update(owedAtEachRequest, (seen) => [...seen, owed.length]),
+            ),
+          ),
+        );
+        yield* Ref.set(b.descriptor, box);
+        yield* Queue.offer(retries.retry, undefined);
+        for (const taskId of taskIds) yield* parentDoneThere(after, taskId);
+        expect(yield* Ref.get(owedAtEachRequest)).toEqual([3, 2, 1]);
+        // Only the thread it still has is marked; the ones gone there count as told.
+        expect((yield* Ref.get(thread.parentDone)).map((seen) => seen.threadId)).toEqual([
+          (yield* Ref.get(thread.launched))!,
+        ]);
+        expect(yield* after.projections.getRemoteTasksOwedParentDone()).toEqual([]);
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("only the environment that delegated a task can tell it its parent is done", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* finishedOnBox(a, thread);
+      const request = { threadId: delegated.remoteChild.threadId, parentThreadId };
+
+      // Another environment linked to the box names the same parent thread: its link speaks for it.
+      const desk = descriptorOf("environment-desk", "Desk");
+      const deskLinks = Context.get(
+        yield* layerLinkingEnvironment(desk).pipe(Layer.build),
+        PeerLinks.PeerLinks,
+      );
+      yield* linkTo(deskLinks, b, "full-access");
+      expect(yield* deskLinks.tellParentDone(box.environmentId, request)).toBe("refused");
+      expect(yield* Ref.get(thread.parentDone)).toEqual([]);
+
+      expect(yield* a.links.tellParentDone(box.environmentId, request)).toBe("marked");
+      expect(yield* Ref.get(thread.parentDone)).toEqual([
+        {
+          threadId: request.threadId,
+          parent: { environmentId: laptop.environmentId, threadId: parentThreadId },
+        },
+      ]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
 it.effect("an expired link holds the parent's end until it is linked again", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -2923,7 +3090,8 @@ it.effect("an expired link holds the parent's end until it is linked again", () 
       const a = yield* makeLaptop(database, offers).pipe(
         Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
       );
-      yield* linkTo(a.links, b, "full-access");
+      // A link below full access, whose fence holds the work it started to its own session.
+      yield* linkTo(a.links, b, "auto");
       yield* seedParent(a);
       yield* a.remote.start();
       const delegated = yield* finishedOnBox(a, thread);
@@ -2935,7 +3103,7 @@ it.effect("an expired link holds the parent's end until it is linked again", () 
       expect(yield* a.projections.getRemoteTasksOwedParentDone()).toHaveLength(1);
 
       // Linked again with a new pairing code, under a new session there.
-      yield* linkTo(a.links, b, "full-access");
+      yield* linkTo(a.links, b, "auto");
       yield* Queue.offer(retries.retry, undefined);
       yield* Deferred.await(thread.parentDoneOnce);
       yield* parentDoneThere(a, delegated.taskId);
@@ -2953,11 +3121,10 @@ it.effect("a parent unsettled before the box hears of it tells it nothing", () =
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
       const retries = yield* steppedRetries;
-      const notOwed = yield* Queue.unbounded<void>();
+      const passes = yield* Queue.unbounded<unknown>();
       const logger = Logger.make(({ message }) => {
-        const [text] = Array.isArray(message) ? message : [message];
-        if (text === "remote-delegation.parent-done-not-owed")
-          Queue.offerUnsafe(notOwed, undefined);
+        const [text, detail] = Array.isArray(message) ? message : [message];
+        if (text === "remote-delegation.parent-done-told") Queue.offerUnsafe(passes, detail);
       });
       const a = yield* makeLaptop(database, offers).pipe(
         Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
@@ -2983,7 +3150,11 @@ it.effect("a parent unsettled before the box hears of it tells it nothing", () =
       });
       yield* Ref.set(b.descriptor, box);
       yield* Queue.offer(retries.retry, undefined);
-      yield* Queue.take(notOwed);
+      expect(yield* Queue.take(passes)).toEqual({
+        environmentId: box.environmentId,
+        owed: 0,
+        told: 0,
+      });
       expect(yield* Ref.get(thread.parentDone)).toEqual([]);
       expect(yield* a.projections.getRemoteTasksOwedParentDone()).toEqual([]);
     }),
