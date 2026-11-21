@@ -2460,7 +2460,13 @@ const make = Effect.gen(function* () {
 
   const scheduledTaskRunModes = Effect.fn("OrchestratorMcpService.scheduledTaskRunModes")(
     function* (task: ScheduledTask) {
-      const modes = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
+      const modes: Array<{
+        readonly runtimeMode: RuntimeMode;
+        readonly interactionMode: ProviderInteractionMode;
+      }> = [{ runtimeMode: task.runtimeMode, interactionMode: task.interactionMode }];
+      // A gate runs its command as the server user, so only a full-access caller may steer it.
+      if (task.gate !== undefined)
+        modes.push({ runtimeMode: "full-access", interactionMode: "default" });
       if (task.threadId === null) return modes;
       const bound = yield* threadManagement
         .getThreadShell(task.threadId)
@@ -2539,8 +2545,21 @@ const make = Effect.gen(function* () {
     return task;
   });
 
+  // A gate runs a shell command as the server user, so only the user's own editor sets one.
+  // Upserts built here never carry a gate, which keeps a stored one.
+  const refuseGate = (gate: unknown) =>
+    gate === undefined
+      ? Effect.void
+      : Effect.fail(
+          failure(
+            "invalid_request",
+            "Agents cannot set or change a scheduled task's gate command. The user sets it in Settings > Scheduled tasks; updates without `gate` keep it.",
+          ),
+        );
+
   return OrchestratorMcpService.of({
     scheduleTask: Effect.fn("OrchestratorMcpService.scheduleTask")(function* (scope, input) {
+      yield* refuseGate(input.gate);
       const { parent, limits } = yield* loadCaller(scope, ["runs"]);
       const projectId = yield* resolveProjectTarget(parent, input.projectId);
       yield* assertLiveCallerForOtherProject(scope, parent, projectId);
@@ -2634,6 +2653,7 @@ const make = Effect.gen(function* () {
     ),
     updateScheduledTask: Effect.fn("OrchestratorMcpService.updateScheduledTask")(
       function* (scope, input) {
+        yield* refuseGate(input.gate);
         const { parent, limits } = yield* loadCaller(scope, ["runs"]);
         const existing = yield* loadScheduledTask(input.scheduledTaskId, limits);
         yield* assertLiveCallerForOtherProject(scope, parent, existing.projectId);

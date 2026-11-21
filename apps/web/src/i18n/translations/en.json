@@ -12839,5 +12839,35 @@
   "67d4a779cd49a863": "{count, plural, one {{count} done} other {{count} done}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} open PR} other {{count} open PRs}}",
   "5c73b69a42cb7616": "Child threads",
-  "fa97f7ae0f746034": "{count, plural, one {{count} waiting for an answer} other {{count} waiting for an answer}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} waiting for an answer} other {{count} waiting for an answer}}",
+  "acaf4e0d74541a20": "Started the run",
+  "1297caf1422b5f9a": "Skipped: the command exited with 78",
+  "7a0bdd4a31f25e60": "Skipped: same output as the last run",
+  "f8f43e1550ea3ae4": "Failed",
+  "fa891300374ac336": "Blocked by policy",
+  "a5099ec6e691530a": "Gate command",
+  "253f645e9911c794": "optional",
+  "8d07b99e1775d2fa": "Runs in a shell as this server's user before each scheduled run. Exit 0 starts the run with the command's output; exit 78, or the same output as the last started run, skips it; anything else fails it.",
+  "472cff2d538f1cf1": "Only a device with terminal access can change the gate.",
+  "430b587cb8d53ffe": "Gate folder",
+  "09f7ae8cca9b68b7": "default: the project folder",
+  "3e2b4d1001bb2d02": "Gate timeout",
+  "fe38d9981aeea3f1": "seconds, default 30",
+  "73c3680625b8c71f": [
+    "Last gate: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ",",
+    " ",
+    {
+      "t": "ScheduledRelativeLabel",
+      "i": 2
+    }
+  ],
+  "fe3927cdd40da07b": "Invalid gate",
+  "74ff2ebf21a05651": "A webhook task cannot have a gate command.",
+  "ceb3cbae8957e562": "Enter whole seconds from 1 to {max}, or leave it blank."
 }
