@@ -208,6 +208,10 @@ export function createOrchestrationEnvironmentAtoms<R, E>(
       label: "environment-data:orchestration:force-stop-thread",
       tag: ORCHESTRATION_V2_WS_METHODS.forceStopThread,
     }),
+    resumeFailedThreads: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:orchestration:resume-failed-threads",
+      tag: ORCHESTRATION_V2_WS_METHODS.resumeFailedThreads,
+    }),
     turnItem: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: OrchestrationV2GetTurnItemInput;

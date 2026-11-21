@@ -67,6 +67,12 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("keeps Resume all, which sends a message to every resumed thread, behind operate scope", () => {
+    expect(requiredScopeForRpcMethod(ORCHESTRATION_V2_WS_METHODS.resumeFailedThreads)).toBe(
+      AuthOrchestrationOperateScope,
+    );
+  });
+
   it("separates passive terminal observation from operations that can change a shell", () => {
     for (const method of [WS_METHODS.terminalObserve, WS_METHODS.subscribeTerminalMetadata]) {
       expect(requiredScopeForRpcMethod(method)).toBe(AuthTerminalReadScope);

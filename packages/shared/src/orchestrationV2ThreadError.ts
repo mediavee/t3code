@@ -56,7 +56,16 @@ export function threadErrorSummary(
     lastError: sessionError ?? failure?.message ?? null,
     lastErrorClass: currentFailure?.class ?? null,
     lastErrorCode: currentFailure?.code ?? null,
+    lastErrorRetryable: currentFailure?.retryable ?? null,
   };
+}
+
+/** A failure that resuming the same work can get past; usage limits have their own recovery. */
+export function isTransientProviderFailure(failure: {
+  readonly class: OrchestrationV2ProviderFailure["class"] | null | undefined;
+  readonly retryable: boolean | null | undefined;
+}): boolean {
+  return failure.retryable === true && failure.class != null && failure.class !== "usage_limit";
 }
 
 export function latestExecutedRun(
