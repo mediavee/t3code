@@ -14275,15 +14275,15 @@ it.layer(layerTest)("transient-failure continuation", (it) => {
     }),
   );
 
-  it.effect("gives a run that spent the provider's retry budget only the last try", () =>
+  it.effect("marks the try of a run that spent the provider's retry budget", () =>
     Effect.gen(function* () {
       const now = yield* DateTime.now;
       const seeded = yield* seedFailedRun("stalled", gateway502, undefined, {
         retry: { attempt: 7, maxAttempts: null, retryDelayMs: 30_000 },
         startedAt: DateTime.subtract(now, { minutes: 10 }),
       });
-      const lastTry = yield* resumeAll(seeded);
-      assert.equal(lastTry.userMessageId, `message:transient-retry:${seeded.run.id}:3`);
+      const budgetTry = yield* resumeAll(seeded);
+      assert.equal(budgetTry.userMessageId, `message:transient-retry:${seeded.run.id}:1:budget`);
     }),
   );
 });
