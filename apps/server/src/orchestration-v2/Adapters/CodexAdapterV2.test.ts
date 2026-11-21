@@ -7255,6 +7255,31 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         ["running", "always"],
         ["completed", "always"],
       ]);
+      // The settled turn lists the command before its terminal, so the run stamps it, and keeps
+      // it listed once it ends until the wake's turn starts.
+      const rosterUpdates = harness.events.flatMap((event, index) =>
+        event.type === "provider_thread.updated" &&
+        event.providerThread.id === harness.providerThread.id &&
+        event.providerThread.pendingBackgroundTasks !== undefined
+          ? [{ index, tasks: event.providerThread.pendingBackgroundTasks }]
+          : [],
+      );
+      assert.deepEqual(
+        rosterUpdates.map(({ tasks }) => tasks),
+        [
+          [
+            {
+              taskId: "call-codex-bg-command",
+              kind: "command",
+              description: "sleep 20 && echo CODEX_BG_WAKE_DONE",
+            },
+          ],
+        ],
+      );
+      assert.isBelow(
+        rosterUpdates[0]!.index,
+        harness.events.findIndex((event) => event.type === "turn.terminal"),
+      );
     }).pipe(
       Effect.scoped,
       Effect.provide(
@@ -7752,6 +7777,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           worktreePath: cwd,
           createdBy: "user",
           creationSource: "web",
+          // A linked environment's task, so its lead waits on what it leaves running.
+          linkOrigin: { sessionId: "background-stop-lead-link", label: "Lead" },
+          delegatedFrom: {
+            environmentId: EnvironmentId.make("environment:background-stop-lead"),
+            threadId: ThreadId.make("thread:background-stop-lead"),
+            title: "Lead",
+          },
         });
         const completed = yield* orchestrator.streamDomainEvents.pipe(
           Stream.filter(
@@ -7782,6 +7814,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           (yield* orchestrator.getThreadShell(threadId))?.pendingBackgroundTasks?.length,
           1,
         );
+        // The settled turn's command is the thread's background work, not awaited, from its run.
+        assert.deepEqual(
+          projection.providerThreads.flatMap((thread) => thread.pendingBackgroundTasks ?? []),
+          [
+            {
+              taskId: "call-codex-bg-command",
+              kind: "command",
+              description: "sleep 20 && echo CODEX_BG_WAKE_DONE",
+              runId: run.id,
+            },
+          ],
+        );
+        assert.isTrue(yield* orchestrator.delegatedTaskResultPending(threadId));
         const stopped = yield* orchestrator.streamDomainEvents.pipe(
           Stream.filter(
             (event) =>
@@ -7807,6 +7852,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           (yield* orchestrator.getThreadShell(threadId))?.pendingBackgroundTasks,
           [],
         );
+        // The stopped command no longer holds the task.
+        assert.isFalse(yield* orchestrator.delegatedTaskResultPending(threadId));
       }).pipe(
         Effect.provide(
           ProviderReplayHarness.layerWithRegistry(

@@ -382,6 +382,8 @@ export class ThreadManagementBackgroundWaitError extends Schema.TaggedError<Thre
   {
     threadId: ThreadId,
     reason: Schema.Literals(["unsupported", "unavailable", "failed", "unmatched"]),
+    /** With `unmatched`: the background work running on this thread, which the agent can pass. */
+    runningTaskIds: Schema.optional(Schema.Array(Schema.String)),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
@@ -393,8 +395,14 @@ export class ThreadManagementBackgroundWaitError extends Schema.TaggedError<Thre
         return "This thread has no live provider session.";
       case "failed":
         return "Failed to update the awaited background work.";
-      case "unmatched":
-        return "None of these IDs is running background work on this thread, so this request registers no wait for them. If the task already finished, read its output now. Otherwise pass the task ID of a background command or Monitor you started. Subagent, Agent tool, and delegate_task IDs don't go here.";
+      case "unmatched": {
+        const running = this.runningTaskIds ?? [];
+        return `None of these IDs is running background work on this thread, so this request registers no wait for them. If the task already finished, read its output now. ${
+          running.length === 0
+            ? "No background command or Monitor is running on this thread."
+            : `Running here: ${running.join(", ")}.`
+        } Subagent, Agent tool, and delegate_task IDs don't go here.`;
+      }
     }
   }
 }
@@ -542,7 +550,8 @@ export interface ThreadManagementServiceShape {
   ) => Effect.Effect<OrchestrationV2ForceStopThreadResult, OrchestrationV2ForceStopThreadError>;
   readonly awaitBackgroundTasks: (input: {
     readonly threadId: ThreadId;
-    readonly taskIds: ReadonlyArray<string>;
+    /** Omitted: every background command and Monitor running on the thread. */
+    readonly taskIds?: ReadonlyArray<string> | undefined;
     readonly awaited: boolean;
   }) => Effect.Effect<
     { readonly matched: ReadonlyArray<string>; readonly unmatched: ReadonlyArray<string> },
@@ -1159,7 +1168,7 @@ const make = Effect.gen(function* () {
         ["runs", "messages", "subagents", "providerThreads"],
         { messageRoles: ["user"], monitorNotificationsOnly: true },
       );
-      const progress = delegatedTaskProgress(records);
+      const progress = delegatedTaskProgress(records, yield* DateTime.now);
       // A thread rolled back past all its work, with nothing left running, has no answer to wait for.
       if (
         progress.resultRun === undefined &&
@@ -1720,27 +1729,34 @@ const make = Effect.gen(function* () {
         reason: "unsupported",
       });
     }
-    const { matched } = yield* runtime.value
-      .awaitBackgroundTasks({ providerThread, taskIds: input.taskIds, awaited: input.awaited })
-      .pipe(
-        Effect.timeout("15 seconds"),
-        Effect.mapError(
-          (cause) =>
-            new ThreadManagementBackgroundWaitError({
-              threadId: input.threadId,
-              reason: "failed",
-              cause,
-            }),
-        ),
-      );
+    const runningTaskIds = (providerThread.pendingBackgroundTasks ?? []).flatMap((task) =>
+      task.kind === "command" || task.kind === "monitor" ? [task.taskId] : [],
+    );
+    const taskIds = input.taskIds ?? runningTaskIds;
+    const { matched } = yield* (
+      taskIds.length === 0
+        ? Effect.succeed({ matched: [] })
+        : runtime.value.awaitBackgroundTasks({ providerThread, taskIds, awaited: input.awaited })
+    ).pipe(
+      Effect.timeout("15 seconds"),
+      Effect.mapError(
+        (cause) =>
+          new ThreadManagementBackgroundWaitError({
+            threadId: input.threadId,
+            reason: "failed",
+            cause,
+          }),
+      ),
+    );
     if (input.awaited && matched.length === 0) {
       return yield* new ThreadManagementBackgroundWaitError({
         threadId: input.threadId,
         reason: "unmatched",
+        runningTaskIds,
       });
     }
     const matchedIds = new Set(matched);
-    return { matched, unmatched: input.taskIds.filter((taskId) => !matchedIds.has(taskId)) };
+    return { matched, unmatched: taskIds.filter((taskId) => !matchedIds.has(taskId)) };
   });
 
   // Mirrors what Orchestrator's thread.stop would change; a clause missing here leaves that work running.
