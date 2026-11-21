@@ -6500,16 +6500,17 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             driver,
             node,
           });
+          // The card first: whoever the request wakes reads what it asks from it.
+          yield* emitProviderEvent({
+            type: "turn_item.updated",
+            driver,
+            turnItem,
+          });
           yield* emitProviderEvent({
             type: "runtime_request.updated",
             driver,
             threadId: context.input.threadId,
             runtimeRequest,
-          });
-          yield* emitProviderEvent({
-            type: "turn_item.updated",
-            driver,
-            turnItem,
           });
           return {
             context,
