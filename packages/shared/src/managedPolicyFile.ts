@@ -112,6 +112,7 @@ export const WINDOWS_POLICY_VALUES = {
   MaxRuntimeMode: { type: "string", path: ["limits", "maxRuntimeMode"] },
   Connect: { type: "boolean", path: ["limits", "connect"] },
   WebhookTasks: { type: "boolean", path: ["limits", "webhookTasks"] },
+  TaskGates: { type: "boolean", path: ["limits", "taskGates"] },
   Telemetry: { type: "boolean", path: ["limits", "telemetry"] },
   BrowserCookieImport: { type: "boolean", path: ["limits", "browserCookieImport"] },
   PreviewTunnel: { type: "boolean", path: ["limits", "previewTunnel"] },

@@ -12422,5 +12422,35 @@
   "67d4a779cd49a863": "{count, plural, one {{count} klar} other {{count} klara}}",
   "5c412fd3159e13f3": "{count, plural, one {{count} öppen PR} other {{count} öppna PR}}",
   "5c73b69a42cb7616": "Undertrådar",
-  "fa97f7ae0f746034": "{count, plural, one {{count} väntar på svar} other {{count} väntar på svar}}"
+  "fa97f7ae0f746034": "{count, plural, one {{count} väntar på svar} other {{count} väntar på svar}}",
+  "acaf4e0d74541a20": "Körningen startade",
+  "1297caf1422b5f9a": "Hoppades över: kommandot avslutades med 78",
+  "7a0bdd4a31f25e60": "Hoppades över: samma utdata som senaste körningen",
+  "f8f43e1550ea3ae4": "Misslyckades",
+  "fa891300374ac336": "Blockerad av policy",
+  "a5099ec6e691530a": "Kontrollkommando",
+  "253f645e9911c794": "valfritt",
+  "8d07b99e1775d2fa": "Körs i ett skal som serverns användare före varje schemalagd körning. Slutkod 0 startar körningen med kommandots utdata; 78, eller samma utdata som senast startade körning, hoppar över den; allt annat gör att den misslyckas.",
+  "472cff2d538f1cf1": "Bara en enhet med terminalåtkomst kan ändra kontrollen.",
+  "430b587cb8d53ffe": "Kontrollens mapp",
+  "09f7ae8cca9b68b7": "standard: projektmappen",
+  "3e2b4d1001bb2d02": "Kontrollens tidsgräns",
+  "fe38d9981aeea3f1": "sekunder, standard 30",
+  "73c3680625b8c71f": [
+    "Senaste kontroll: ",
+    {
+      "i": 1,
+      "k": "_gt_value_1",
+      "v": "v"
+    },
+    ",",
+    " ",
+    {
+      "t": "ScheduledRelativeLabel",
+      "i": 2
+    }
+  ],
+  "fe3927cdd40da07b": "Ogiltig kontroll",
+  "74ff2ebf21a05651": "En webhook-uppgift kan inte ha ett kontrollkommando.",
+  "ceb3cbae8957e562": "Ange hela sekunder från 1 till {max}, eller lämna tomt."
 }

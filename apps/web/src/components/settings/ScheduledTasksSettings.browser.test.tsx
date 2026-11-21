@@ -113,11 +113,24 @@ const unboundTask: ScheduledTask = {
   },
 };
 
+const gatedTask: ScheduledTask = {
+  ...unboundTask,
+  gate: { command: "git ls-remote --tags origin | tail -1", timeoutMs: 60_000 },
+  gateResult: {
+    at: "2026-09-17T00:05:00.000Z",
+    outcome: "failed",
+    exitCode: 128,
+    detail: "fatal: could not read from remote",
+  },
+};
+
 const state = vi.hoisted(() => ({
   connected: true,
   tasksLoaded: true,
   secondary: false,
   unbound: false,
+  gated: false,
+  terminal: true,
   remove: vi.fn(),
   upsert: vi.fn(),
 }));
@@ -130,6 +143,8 @@ function setup() {
   state.remove.mockReset().mockReturnValue(Effect.succeed({ id: task.id }));
   state.secondary = false;
   state.unbound = false;
+  state.gated = false;
+  state.terminal = true;
   state.upsert.mockReset().mockImplementation(() => Effect.succeed({ task: unboundTask }));
   permissions.clear();
   permissions.set(environmentId, Atom.make(true));
@@ -144,6 +159,7 @@ function secondaryEnvironment() {
 vi.mock(import("../../state/session"), async (original) => ({
   ...(await original()),
   readEnvironmentScope: () => true,
+  useEnvironmentScope: () => state.terminal,
 }));
 
 function environment() {
@@ -212,7 +228,11 @@ vi.mock(import("../../state/query"), async (original) => ({
     data:
       request === null || request === threadFamilyRead
         ? request
-        : { tasks: state.tasksLoaded ? [state.unbound ? unboundTask : task] : [] },
+        : {
+            tasks: state.tasksLoaded
+              ? [state.gated ? gatedTask : state.unbound ? unboundTask : task]
+              : [],
+          },
     error: null,
     isPending: false,
     refresh: vi.fn(),
@@ -361,6 +381,60 @@ describe("ScheduledTasksSettings", () => {
         interactionMode: "plan",
       },
     });
+  });
+
+  it("adds a gate command with a timeout to a task", async () => {
+    setup();
+    state.unbound = true;
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    await userEvent.fill(dialog.getByLabelText(/Gate command/), "  ./new-nightly.sh ");
+    await userEvent.fill(dialog.getByLabelText(/Gate timeout/), "45");
+    await userEvent.click(dialog.getByRole("button", { name: "Save task" }));
+
+    await vi.waitFor(() => expect(state.upsert).toHaveBeenCalledOnce());
+    expect(state.upsert.mock.calls[0]?.[1].input.gate).toEqual({
+      command: "./new-nightly.sh",
+      timeoutMs: 45_000,
+    });
+  });
+
+  it("edits a gate and shows its last result", async () => {
+    setup();
+    state.unbound = true;
+    state.gated = true;
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    const result = dialog.getByTestId("scheduled-task-gate-result");
+    await vi.waitFor(() =>
+      expect(result.element().textContent).toMatch(
+        /^Last gate: Failed, .+fatal: could not read from remote$/,
+      ),
+    );
+    await expect.element(dialog.getByLabelText(/Gate timeout/)).toHaveValue(60);
+    await userEvent.fill(dialog.getByLabelText(/Gate folder/), "scripts");
+    await userEvent.click(dialog.getByRole("button", { name: "Save task" }));
+
+    await vi.waitFor(() => expect(state.upsert).toHaveBeenCalledOnce());
+    expect(state.upsert.mock.calls[0]?.[1].input.gate).toEqual({
+      ...gatedTask.gate,
+      cwd: "scripts",
+    });
+  });
+
+  it("keeps the stored gate when a client without terminal access saves", async () => {
+    setup();
+    state.unbound = true;
+    state.gated = true;
+    state.terminal = false;
+    await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+    const dialog = page.getByRole("dialog");
+    await expect.element(dialog.getByLabelText(/Gate command/)).toBeDisabled();
+    await userEvent.fill(dialog.getByRole("textbox", { name: "Name" }), "Nightly");
+    await userEvent.click(dialog.getByRole("button", { name: "Save task" }));
+
+    await vi.waitFor(() => expect(state.upsert).toHaveBeenCalledOnce());
+    expect(state.upsert.mock.calls[0]?.[1].input).not.toHaveProperty("gate");
   });
 
   it("keeps an editor the user opened when the linked task loads later", async () => {

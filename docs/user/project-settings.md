@@ -101,6 +101,17 @@ waiting for you: that occurrence is skipped, the task shows why, and it runs aga
 at its next time. A task that continues one conversation queues the run in its
 thread instead.
 
+A task can also have a **Gate command**, which you set in the web or desktop
+editor from a device with terminal access. Before each scheduled run, the
+environment runs it in a shell as its own user, in the project folder unless you
+name another, for 30 seconds unless you set another timeout (5 minutes at most).
+Exit 0 starts the run and adds the command's output to the prompt, marked as
+untrusted data. Exit 78 skips the run without starting a thread, and so does the
+same output as the last run it started. Any other exit, or a timeout, fails that
+run and shows the error. For example, `git ls-remote --tags origin 'v*' | sort -V
+| tail -1` runs a task only when a new tag appears. **Run now** does not run the
+gate, and agents cannot set or change one.
+
 Deleting a thread also deletes tasks that post into that thread. Tasks that start
 a new thread on each run survive deletion of their previous threads.
 
