@@ -143,6 +143,15 @@ export const OrchestrationV2DelegatedFrom = Schema.Struct({
 export type OrchestrationV2DelegatedFrom = typeof OrchestrationV2DelegatedFrom.Type;
 
 /**
+ * `delegatedFrom` as a thread keeps it. `parentDoneAt`: that parent was settled, archived or
+ * deleted there, so this thread settles here as a subagent of a done parent does.
+ */
+export const OrchestrationV2ThreadDelegatedFrom = Schema.Struct({
+  ...OrchestrationV2DelegatedFrom.fields,
+  parentDoneAt: Schema.optional(IsoDateTime),
+});
+
+/**
  * The thread in a linked environment whose agent sent this message here, and its title
  * then, for a client that cannot reach that environment. `senderThreadId` names only a
  * thread in this environment.
@@ -490,7 +499,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
-  delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  delegatedFrom: Schema.optional(OrchestrationV2ThreadDelegatedFrom),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -980,6 +989,8 @@ export const OrchestrationV2RemoteTaskChild = Schema.Struct({
    * one owed, so each reaches the thread there once however often it is sent.
    */
   stopCount: Schema.optional(NonNegativeInt),
+  /** The thread there knows this task's parent here is done, so it settles there as a subagent would. */
+  parentDoneThere: Schema.optional(Schema.Boolean),
 });
 export type OrchestrationV2RemoteTaskChild = typeof OrchestrationV2RemoteTaskChild.Type;
 
@@ -2297,7 +2308,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   activeProviderThreadId: Schema.NullOr(ProviderThreadId),
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
-  delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  delegatedFrom: Schema.optional(OrchestrationV2ThreadDelegatedFrom),
   latestRunId: Schema.NullOr(RunId),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
@@ -3839,6 +3850,28 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     parentThreadId: ThreadId,
     taskId: NodeId,
+  }),
+  /**
+   * The thread there of this thread's remote tasks confirmed that this thread is done:
+   * sets `remoteChild.parentDoneThere` on each of them, even on a deleted thread.
+   */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.parent-done"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    environmentId: EnvironmentId,
+    remoteThreadId: ThreadId,
+  }),
+  /**
+   * The linked environment that delegated this thread says its parent there is done: sets
+   * `delegatedFrom.parentDoneAt`, even while it runs. Refused unless `parent` is the one
+   * `delegatedFrom` names.
+   */
+  Schema.Struct({
+    type: Schema.Literal("thread.delegated-from.parent-done"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    parent: Schema.Struct({ environmentId: EnvironmentId, threadId: ThreadId }),
   }),
   Schema.Struct({
     type: Schema.Literal("checkpoint.rollback.fail"),

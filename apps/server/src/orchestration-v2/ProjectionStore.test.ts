@@ -8891,6 +8891,38 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       });
       yield* applyRun("failed");
       yield* assertSummary("Plan limit reached.", "usage_limit");
+      // A task a linked environment delegated is resumed until its parent there is done.
+      const undelegated = yield* store.getThread(threadId);
+      const delegatedFrom = {
+        environmentId: EnvironmentId.make("environment:limit-shell-parent"),
+        threadId: ThreadId.make("thread:limit-shell-parent"),
+        title: "Parent there",
+      };
+      const limitCandidate = store
+        .getLimitRecoveryCandidates({ now, autoResume: true, snooze: false })
+        .pipe(Effect.map((candidates) => candidates.find((row) => row.id === threadId)));
+      for (const [key, payload] of [
+        ["delegated", { ...undelegated, delegatedFrom }],
+        [
+          "parent-done",
+          {
+            ...undelegated,
+            delegatedFrom: { ...delegatedFrom, parentDoneAt: DateTime.formatIso(now) },
+          },
+        ],
+        ["undelegated", undelegated],
+      ] as const) {
+        yield* store.apply({
+          id: EventId.make(`event:limit-shell:${key}`),
+          type: "thread.metadata-updated",
+          threadId,
+          occurredAt: now,
+          payload,
+        });
+        if (key === "parent-done") assert.isUndefined(yield* limitCandidate);
+        else assert.isDefined(yield* limitCandidate);
+      }
+      yield* assertSummary("Plan limit reached.", "usage_limit");
       const queuedRunId = RunId.make("run:limit-shell:queued");
       yield* store.apply({
         id: EventId.make("event:limit-shell:queued"),

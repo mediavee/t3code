@@ -221,6 +221,7 @@ export type ProjectionSettlementCandidate = Pick<
   | "branch"
   | "worktreePath"
   | "lineage"
+  | "delegatedFrom"
   | "pullRequests"
   | "linkedPullRequest"
   | "branchPullRequest"
@@ -695,6 +696,18 @@ export interface ProjectionStoreV2Shape {
    */
   readonly getOpenRemoteDelegatedTasks: Effect.Effect<
     ReadonlyArray<{ readonly parentThreadId: ThreadId; readonly taskId: NodeId }>,
+    ProjectionStoreV2Error
+  >;
+  /**
+   * The threads there of delegated tasks whose parent here is settled, archived or deleted,
+   * and which have not confirmed it, once per parent and thread there.
+   */
+  readonly getRemoteTasksOwedParentDone: (parentThreadId?: ThreadId) => Effect.Effect<
+    ReadonlyArray<{
+      readonly parentThreadId: ThreadId;
+      readonly environmentId: EnvironmentId;
+      readonly threadId: ThreadId;
+    }>,
     ProjectionStoreV2Error
   >;
   readonly getTurnStartContext: (
@@ -5017,7 +5030,9 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                   ${booleanInt(options.autoResume)}
                   OR (${booleanInt(options.snooze)} AND julianday(json_extract(item.payload_json, '$.failure.resetAt')) > julianday(${DateTime.formatIso(options.now)}))
                 )
-                -- A subagent of a settled, archived or deleted parent is abandoned work.
+                -- A subagent of a settled, archived or deleted parent is abandoned work,
+                -- and so is a task whose parent in a linked environment is done.
+                AND json_extract(t.payload_json, '$.delegatedFrom.parentDoneAt') IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM orchestration_v2_projection_threads parent
                   WHERE json_extract(t.payload_json, '$.lineage.relationshipToParent') = 'subagent'
@@ -8919,6 +8934,39 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
     );
 
+    const getRemoteTasksOwedParentDone: ProjectionStoreV2Shape["getRemoteTasksOwedParentDone"] = (
+      parentThreadId,
+    ) =>
+      sql<{
+        readonly thread_id: string;
+        readonly environment_id: string;
+        readonly remote_thread_id: string;
+      }>`
+        SELECT DISTINCT task.thread_id,
+          json_extract(task.payload_json, '$.remoteChild.environmentId') AS environment_id,
+          json_extract(task.payload_json, '$.remoteChild.threadId') AS remote_thread_id
+        FROM orchestration_v2_projection_subagents task
+        JOIN orchestration_v2_projection_threads parent ON parent.thread_id = task.thread_id
+        WHERE task.origin = 'app_owned'
+          AND task.child_thread_id IS NULL${parentThreadId === undefined ? sql`` : sql` AND task.thread_id = ${parentThreadId}`}
+          AND json_type(task.payload_json, '$.remoteChild') = 'object'
+          AND json_type(task.payload_json, '$.remoteChild.parentDoneThere') IS NOT 'true'
+          AND (
+            parent.deleted_at IS NOT NULL
+            OR json_extract(parent.payload_json, '$.archivedAt') IS NOT NULL
+            OR json_extract(parent.payload_json, '$.settledOverride') IS 'settled'
+          )
+      `.pipe(
+        Effect.map((rows) =>
+          rows.map((row) => ({
+            parentThreadId: ThreadId.make(row.thread_id),
+            environmentId: EnvironmentId.make(row.environment_id),
+            threadId: ThreadId.make(row.remote_thread_id),
+          })),
+        ),
+        Effect.mapError((cause) => new ProjectionStoreSetupError({ cause })),
+      );
+
     const getThreadsWithPullRequests: ProjectionStoreV2Shape["getThreadsWithPullRequests"] =
       Effect.fn("ProjectionStore.getThreadsWithPullRequests")(
         function* (threadId) {
@@ -9794,6 +9842,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       getThreadLinkMetadata: readOnReader(getThreadLinkMetadata),
       getThreadWorktreePaths: readOnReader(getThreadWorktreePaths),
       getOpenRemoteDelegatedTasks: getOpenRemoteDelegatedTasks.pipe(NodeSqliteClient.readOnly),
+      getRemoteTasksOwedParentDone: (parentThreadId) =>
+        getRemoteTasksOwedParentDone(parentThreadId).pipe(NodeSqliteClient.readOnly),
       getThreadProjection: readOnReader(getThreadProjection),
       getTurnStartContext: readOnReader(getTurnStartContext),
       getTurnStartHistory: readOnReader(getTurnStartHistory),

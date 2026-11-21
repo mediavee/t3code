@@ -132,6 +132,8 @@ export class RemoteDelegation extends Context.Service<
     /**
      * Follows every open remote task until it ends, including after a
      * restart, and a finished one again when a Stop here owes it a stop there.
+     * Tells the thread there of each task a settled, archived or deleted parent
+     * here delegated that the parent is done, until it has it.
      */
     readonly start: () => Effect.Effect<void, never, Scope.Scope>;
   }
@@ -570,7 +572,7 @@ const make = Effect.gen(function* () {
    */
   const followScope = (
     parent: { readonly threadId: ThreadId; readonly providerInstanceId: ProviderInstanceId },
-    remote: OrchestrationV2RemoteTaskChild,
+    remote: Pick<OrchestrationV2RemoteTaskChild, "threadId">,
   ): ThreadScope => ({
     environmentId: hereId,
     requestNamespace: `remote-task:${parent.threadId}`,
@@ -953,6 +955,114 @@ const make = Effect.gen(function* () {
       );
     });
 
+  /**
+   * One attempt to tell the thread there of a done parent's tasks that the parent is done,
+   * so it settles there as a subagent here would. A parent active again since is owed
+   * nothing; a thread gone there has nothing left to settle.
+   */
+  const tellParentDoneOnce = Effect.fn("RemoteDelegation.tellParentDoneOnce")(function* (
+    parentThreadId: ThreadId,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  ) {
+    const owed = (yield* projections.getRemoteTasksOwedParentDone(parentThreadId)).some(
+      (row) => row.environmentId === environmentId && row.threadId === threadId,
+    );
+    // Read as stored: a deleted parent still owes it, and shells leave deleted threads out.
+    const parent = owed ? yield* projections.findThread(parentThreadId) : null;
+    if (parent === null) {
+      yield* Effect.logDebug("remote-delegation.parent-done-not-owed", {
+        parentThreadId,
+        threadId,
+      });
+      return;
+    }
+    yield* forwarding
+      .tellParentDone(
+        followScope(
+          { threadId: parentThreadId, providerInstanceId: parent.providerInstanceId },
+          { threadId },
+        ),
+        parent,
+        environmentId,
+        threadId,
+      )
+      .pipe(
+        Effect.catchIf(
+          (error) => error.code === "thread_not_found",
+          () => Effect.void,
+        ),
+      );
+    yield* threads.dispatch({
+      type: "delegated_task.remote.parent-done",
+      commandId: CommandId.make(
+        `command:remote-parent-done:${parentThreadId}:${threadId}:${yield* random.uuidV4()}`,
+      ),
+      threadId: parentThreadId,
+      environmentId,
+      remoteThreadId: threadId,
+    });
+  });
+
+  const tellingParentDone = new Map<string, { again: boolean }>();
+
+  /**
+   * `tellParentDoneOnce` until it gets there, at most once per parent and thread there.
+   * An unreachable machine, or a link that expired until it is linked again, is retried
+   * with back-off; nothing is recorded until the thread there has it.
+   */
+  const tellParentDone = (
+    parentThreadId: ThreadId,
+    environmentId: EnvironmentId,
+    threadId: ThreadId,
+  ) =>
+    Effect.suspend(() => {
+      const key = `${parentThreadId}\0${environmentId}\0${threadId}`;
+      const running = tellingParentDone.get(key);
+      if (running !== undefined) {
+        running.again = true;
+        return Effect.void;
+      }
+      const state = { again: false };
+      tellingParentDone.set(key, state);
+      return tellParentDoneOnce(parentThreadId, environmentId, threadId).pipe(
+        failOnDefect,
+        Effect.retry(followRetry),
+        Effect.ignoreCause({ log: true }),
+        Effect.repeat({
+          while: () => {
+            if (state.again) {
+              state.again = false;
+              return true;
+            }
+            tellingParentDone.delete(key);
+            return false;
+          },
+        }),
+        Effect.ensuring(
+          Effect.sync(() => {
+            if (tellingParentDone.get(key) === state) tellingParentDone.delete(key);
+          }),
+        ),
+      );
+    });
+
+  /** Tells the threads there of the tasks `parentThreadId` (or every done parent) still owes. */
+  const tellOwedParentDone = (parentThreadId?: ThreadId) =>
+    projections.getRemoteTasksOwedParentDone(parentThreadId).pipe(
+      Effect.flatMap((owed) =>
+        Effect.forEach(
+          owed,
+          (row) =>
+            tellParentDone(row.parentThreadId, row.environmentId, row.threadId).pipe(
+              Effect.forkIn(followers),
+            ),
+          { discard: true },
+        ),
+      ),
+      Effect.ignoreCause({ log: true }),
+    );
+
   const cancel: RemoteDelegation["Service"]["cancel"] = Effect.fn("RemoteDelegation.cancel")(
     function* (scope, task, input) {
       const remote = task.remoteChild;
@@ -1049,11 +1159,16 @@ const make = Effect.gen(function* () {
         yield* Stream.runForEach(threads.streamDomainEvents, (event) =>
           event.type === "subagent.updated" && event.payload.remoteChild?.stoppedThere === false
             ? followOne(event.threadId, event.payload.id).pipe(Effect.forkIn(followers))
-            : Effect.void,
+            : event.type === "thread.settled" ||
+                event.type === "thread.archived" ||
+                event.type === "thread.deleted"
+              ? tellOwedParentDone(event.threadId)
+              : Effect.void,
         ).pipe(
           Effect.ignoreCause({ log: true }),
           Effect.forkIn(followers, { startImmediately: true }),
         );
+        yield* tellOwedParentDone();
         const open = yield* projections.getOpenRemoteDelegatedTasks;
         yield* Effect.forEach(
           open,

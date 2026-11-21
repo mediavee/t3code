@@ -8,8 +8,11 @@ import {
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadWaitInput,
   OrchestratorMcpThreadWaitResult,
+  linkOriginIsFenced,
+  type OrchestrationV2AppThread,
   type PeerLinkError,
   RuntimeMode,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
@@ -24,7 +27,8 @@ import type * as Tool from "effect/ai/Tool";
 import { runtimeModeRank } from "../mcp/delegatedTaskModes.ts";
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { readCaller, unavailable } from "../mcp/threadAccess.ts";
+import { type Caller, readCaller, unavailable } from "../mcp/threadAccess.ts";
+import { ThreadToolkit } from "../mcp/toolkits/thread/tools.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import * as PeerMcpClient from "./PeerMcpClient.ts";
@@ -72,6 +76,19 @@ export class PeerForwarding extends Context.Service<
       environmentId: EnvironmentId,
       input: OrchestratorMcpThreadWaitInput,
     ) => Effect.Effect<OrchestratorMcpThreadWaitResult, OrchestratorMcpFailure>;
+    /**
+     * Tells `threadId` there, a task `parent` delegated, that `parent` is done. The parent
+     * may be deleted, so it comes as stored rather than as a live caller.
+     */
+    readonly tellParentDone: (
+      scope: Scope,
+      parent: Pick<
+        OrchestrationV2AppThread,
+        "id" | "title" | "runtimeMode" | "interactionMode" | "linkOrigin"
+      >,
+      environmentId: EnvironmentId,
+      threadId: ThreadId,
+    ) => Effect.Effect<void, OrchestratorMcpFailure>;
     /** The environments this one links to, as an agent sees them. */
     readonly links: (
       scope: Scope,
@@ -148,7 +165,28 @@ const make = Effect.gen(function* () {
   });
 
   /** Tool and contract schemas are plain data: they encode and decode without services. */
-  const forward = Effect.fn("PeerForwarding.forward")(function* <A>(
+  const forward = <A>(
+    scope: Scope,
+    toolName: string,
+    parameters: Schema.Top,
+    success: Schema.Top,
+    environmentId: EnvironmentId,
+    params: unknown,
+  ) =>
+    forwardingCaller(scope).pipe(
+      Effect.flatMap((caller) =>
+        forwardAs<A>(caller, scope, toolName, parameters, success, environmentId, params),
+      ),
+    );
+
+  const forwardAs = Effect.fn("PeerForwarding.forward")(function* <A>(
+    {
+      caller,
+      limits,
+    }: {
+      readonly caller: Pick<OrchestrationV2AppThread, "id" | "title"> | undefined;
+      readonly limits: Caller["limits"];
+    },
     scope: Scope,
     toolName: string,
     parameters: Schema.Top,
@@ -156,7 +194,6 @@ const make = Effect.gen(function* () {
     environmentId: EnvironmentId,
     params: unknown,
   ) {
-    const { caller, limits } = yield* forwardingCaller(scope);
     const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
       params,
     ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
@@ -231,6 +268,30 @@ const make = Effect.gen(function* () {
       },
     );
 
+  const tellParentDone: PeerForwarding["Service"]["tellParentDone"] = Effect.fn(
+    "PeerForwarding.tellParentDone",
+  )(function* (scope, parent, environmentId, threadId) {
+    if (parent.linkOrigin !== undefined && linkOriginIsFenced(parent.linkOrigin)) {
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "Work a link started never uses this environment's links.",
+      });
+    }
+    const organize = ThreadToolkit.tools.t3_thread_organize;
+    yield* forwardAs(
+      {
+        caller: parent,
+        limits: { runtimeMode: parent.runtimeMode, interactionMode: parent.interactionMode },
+      },
+      scope,
+      organize.name,
+      organize.parametersSchema,
+      organize.successSchema,
+      environmentId,
+      { threadId, action: "settle", parentDone: true },
+    );
+  });
+
   // While the beta is off, agents start nothing over links. Tasks already running there keep
   // following through readThread, waitForThread and interruptThread, so they still finish.
   const requireEnabled = links.enabled.pipe(
@@ -283,6 +344,7 @@ const make = Effect.gen(function* () {
     readThread,
     interruptThread,
     waitForThread,
+    tellParentDone,
     links: listLinks,
   });
 });

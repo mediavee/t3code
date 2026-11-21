@@ -237,6 +237,159 @@ it.layer(layerTest)("a delegated task in a linked environment", (it) => {
     }),
   );
 
+  it.effect("is owed its parent's end there while the parent is done, until it is confirmed", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const parent = yield* seedLiveParent("parent-done");
+      // A follow-up shares the thread there, which is owed once.
+      for (const name of ["first", "follow-up"]) {
+        yield* orchestrator.dispatch({
+          type: "delegated_task.remote.request",
+          commandId: CommandId.make(`command:remote-delegate:parent-done:${name}`),
+          parentThreadId: parent.threadId,
+          parentRunId: parent.runId,
+          parentNodeId: parent.rootNodeId,
+          task: "Run the suite there.",
+          driver: ProviderDriverKind.make("remote"),
+          modelSelection,
+          remoteChild,
+        });
+      }
+      const owed = projections.getRemoteTasksOwedParentDone(parent.threadId);
+      const owedThere = [
+        {
+          parentThreadId: parent.threadId,
+          environmentId: remoteChild.environmentId,
+          threadId: remoteChild.threadId,
+        },
+      ];
+      const change = (
+        type: "thread.archive" | "thread.unarchive" | "thread.settle" | "thread.delete",
+      ) =>
+        orchestrator.dispatch({
+          type,
+          commandId: CommandId.make(`command:parent-done:${type}`),
+          threadId: parent.threadId,
+        });
+      assert.deepEqual(yield* owed, []);
+      yield* change("thread.archive");
+      assert.deepEqual(yield* owed, owedThere);
+      yield* change("thread.unarchive");
+      assert.deepEqual(yield* owed, []);
+      const run = (yield* orchestrator.getThreadProjection(parent.threadId)).runs[0]!;
+      const now = yield* DateTime.now;
+      yield* sink.write({
+        commandId: CommandId.make("command:parent-done:run-ended"),
+        events: [
+          {
+            id: EventId.make("event:parent-done:run-ended"),
+            type: "run.updated",
+            threadId: parent.threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      yield* change("thread.settle");
+      assert.deepEqual(yield* owed, owedThere);
+      yield* orchestrator.dispatch({
+        type: "thread.unsettle",
+        commandId: CommandId.make("command:parent-done:unsettle"),
+        threadId: parent.threadId,
+        reason: "user",
+      });
+      assert.deepEqual(yield* owed, []);
+      yield* change("thread.delete");
+      assert.deepEqual(yield* owed, owedThere);
+
+      // Confirmed, even on the deleted parent, for every task on that thread there.
+      yield* orchestrator.dispatch({
+        type: "delegated_task.remote.parent-done",
+        commandId: CommandId.make("command:parent-done:confirmed"),
+        threadId: parent.threadId,
+        environmentId: remoteChild.environmentId,
+        remoteThreadId: remoteChild.threadId,
+      });
+      const { subagents } = yield* projections.getThreadRecords(parent.threadId, ["subagents"]);
+      assert.deepEqual(
+        subagents.map((task) => task.remoteChild?.parentDoneThere),
+        [true, true],
+      );
+      assert.deepEqual(yield* owed, []);
+    }),
+  );
+
+  it.effect("marks a thread delegated here done only for the parent that delegated it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("thread:delegated-here");
+      const delegatedFrom = {
+        environmentId: EnvironmentId.make("environment:laptop"),
+        threadId: ThreadId.make("thread:parent-there"),
+        title: "Parent there",
+      };
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "agent",
+        creationSource: "mcp",
+        commandId: CommandId.make("command:create:delegated-here"),
+        threadId,
+        projectId: ProjectId.make("project:remote-delegated-task"),
+        title: "Delegated here",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        linkOrigin: { sessionId: "session:laptop-link", label: "Laptop", access: "full-access" },
+        delegatedFrom,
+      });
+      const own = yield* seedLiveParent("not-delegated");
+      const mark = (
+        target: ThreadId,
+        parent: { environmentId: EnvironmentId; threadId: ThreadId },
+        key: string,
+      ) =>
+        orchestrator.dispatch({
+          type: "thread.delegated-from.parent-done",
+          commandId: CommandId.make(`command:parent-done-here:${key}`),
+          threadId: target,
+          parent,
+        });
+      for (const [target, parent, key] of [
+        [
+          threadId,
+          { ...delegatedFrom, threadId: ThreadId.make("thread:other-there") },
+          "other-parent",
+        ],
+        [
+          threadId,
+          { ...delegatedFrom, environmentId: EnvironmentId.make("environment:elsewhere") },
+          "other-environment",
+        ],
+        [own.threadId, delegatedFrom, "not-delegated"],
+      ] as const) {
+        const refused = yield* mark(target, parent, key).pipe(Effect.flip);
+        assert.equal(refused._tag, "OrchestratorDispatchError", key);
+      }
+      const before = (yield* orchestrator.getThreadShell(threadId))!;
+      assert.isUndefined(before.delegatedFrom?.parentDoneAt);
+
+      yield* mark(threadId, delegatedFrom, "parent");
+      const marked = (yield* orchestrator.getThreadShell(threadId))!;
+      const parentDoneAt = marked.delegatedFrom?.parentDoneAt;
+      assert.isString(parentDoneAt);
+      assert.deepEqual(marked.delegatedFrom, { ...delegatedFrom, parentDoneAt });
+      // Not activity: the thread keeps its place, and a repeat changes nothing.
+      assert.deepEqual(marked.updatedAt, before.updatedAt);
+      const repeated = yield* mark(threadId, delegatedFrom, "parent-again");
+      assert.deepEqual(repeated.storedEvents, []);
+    }),
+  );
+
   it.effect("keeps a newer stop recoverable after an older acknowledgement", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
