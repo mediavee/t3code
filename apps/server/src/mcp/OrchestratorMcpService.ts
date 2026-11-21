@@ -25,6 +25,9 @@ import {
   type OrchestratorMcpDelegateTaskInput,
   type OrchestratorMcpDelegateTaskResult,
   type OrchestratorMcpDeleteScheduledTaskInput,
+  type OrchestratorMcpFleetChild,
+  type OrchestratorMcpFleetInput,
+  type OrchestratorMcpFleetResult,
   type OrchestratorMcpRequestSecretInput,
   type OrchestratorMcpRequestSecretResult,
   type OrchestratorMcpDeleteScheduledTaskResult,
@@ -64,6 +67,7 @@ import {
   type ServerProvider,
   type ServerProviderModel,
   ThreadId,
+  fleetWorkState,
   isOrchestrationV2WorkActive,
   latestProviderTurnForAttempt,
   literalTemplateRefusal,
@@ -168,6 +172,8 @@ const DEFAULT_THREAD_READ_LIMIT = 10;
 const DEFAULT_THREAD_RUN_LIMIT = 10;
 const DEFAULT_THREAD_ITEM_MAX_CHARS = 500;
 const THREAD_PULL_REQUEST_PREVIEW_LIMIT = 5;
+const DEFAULT_FLEET_LIMIT = 20;
+const FLEET_PROGRESS_MAX_CHARS = 200;
 // Claude Code saves MCP results over ~25k tokens to a file instead of showing them. Bytes, not
 // chars: CJK text runs near one token per char, which a char budget lets through at 30k tokens.
 const THREAD_READ_RESULT_MAX_BYTES = 30_000;
@@ -228,6 +234,10 @@ export interface OrchestratorMcpServiceShape {
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadListInput,
   ) => Effect.Effect<OrchestratorMcpThreadListResult, OrchestratorMcpFailure>;
+  readonly fleet: (
+    scope: McpInvocationScope,
+    input: OrchestratorMcpFleetInput,
+  ) => Effect.Effect<OrchestratorMcpFleetResult, OrchestratorMcpFailure>;
   readonly readThread: (
     scope: McpInvocationScope,
     input: OrchestratorMcpThreadReadInput,
@@ -1018,6 +1028,68 @@ function threadPullRequests(
     pullRequestCount: visible.length,
     openPullRequestCount: open.length,
   };
+}
+
+const FLEET_STATE_ORDER: Readonly<Record<OrchestratorMcpFleetChild["workState"], number>> = {
+  needs_answer: 0,
+  failed: 1,
+  working: 2,
+  waiting_for_children: 3,
+  done: 4,
+};
+
+function fleetProgress(text: string | null | undefined): string | null {
+  const line = text?.trim().replace(/\s+/g, " ");
+  if (!line) return null;
+  return line.length <= FLEET_PROGRESS_MAX_CHARS
+    ? line
+    : `${line.slice(0, FLEET_PROGRESS_MAX_CHARS - 1)}…`;
+}
+
+function fleetPullRequests(
+  links: OrchestrationV2ThreadShell["pullRequests"],
+): OrchestratorMcpFleetChild["pullRequests"] {
+  return visibleThreadPullRequests(links ?? []).map((link) => ({
+    url: link.url,
+    repository: link.repository,
+    number: link.number,
+    state: link.snapshot?.state ?? null,
+  }));
+}
+
+/** A child in a linked environment, read from what its task record here knows. */
+function remoteFleetChild(
+  task: OrchestrationV2Subagent,
+  remote: NonNullable<OrchestrationV2Subagent["remoteChild"]>,
+): OrchestratorMcpFleetChild {
+  const title = remote.title ?? task.title ?? remote.threadId;
+  return {
+    taskId: task.id,
+    threadId: remote.threadId,
+    title,
+    link: formatThreadLink(remote, title),
+    environmentLabel: remote.label,
+    model: task.executedModel ?? task.model,
+    workState:
+      // As task_status reads it: a remote task runs until its result lands here.
+      task.result === null
+        ? "working"
+        : task.status === "failed" || task.status === "interrupted"
+          ? "failed"
+          : "done",
+    pendingQuestions: null,
+    pendingApprovals: null,
+    pullRequests: [],
+    lastProgress: fleetProgress(task.progress ?? task.result),
+    lastActivityAt: DateTime.formatIso(task.updatedAt),
+  };
+}
+
+function nativeSubagentWorkState(
+  status: OrchestrationV2Subagent["status"],
+): OrchestratorMcpFleetChild["workState"] {
+  if (status === "pending" || status === "running" || status === "waiting") return "working";
+  return status === "failed" || status === "interrupted" ? "failed" : "done";
 }
 
 // Awaited background work keeps a thread live after its turn ends, as auto-settle and the sidebar treat it.
@@ -3737,6 +3809,170 @@ const make = Effect.gen(function* () {
         nextCursor,
         total,
       } satisfies OrchestratorMcpThreadListResult;
+    }),
+    fleet: Effect.fn("OrchestratorMcpService.fleet")(function* (callerScope, input) {
+      const scope = yield* requireThreadScope(callerScope, "t3_fleet");
+      yield* requireCapability(scope);
+      const fleetFailure = (error: unknown) =>
+        failure(
+          "orchestration_error",
+          `Unable to read this thread's children: ${errorMessage(error)}`,
+        );
+      const { subagents } = yield* threadManagement
+        .getThreadRecords(scope.thread.threadId, ["subagents"])
+        .pipe(Effect.mapError(fleetFailure));
+      // A follow-up sent to a child records another task on it; the newest one speaks for it.
+      const tasks = new Map<string, OrchestrationV2Subagent>();
+      for (const task of subagents) {
+        const key =
+          task.childThreadId ??
+          (task.remoteChild === undefined
+            ? null
+            : `${task.remoteChild.environmentId}/${task.remoteChild.threadId}`);
+        if (key === null) continue;
+        const seen = tasks.get(key);
+        if (
+          seen === undefined ||
+          DateTime.toEpochMillis(task.updatedAt) >= DateTime.toEpochMillis(seen.updatedAt)
+        ) {
+          tasks.set(key, task);
+        }
+      }
+      const localThreadOf = (task: OrchestrationV2Subagent) =>
+        task.childThreadId ??
+        (task.remoteChild?.environmentId === scope.environmentId
+          ? task.remoteChild.threadId
+          : null);
+      const localIds = [...tasks.values()].flatMap((task) => localThreadOf(task) ?? []);
+      const shells = new Map(
+        localIds.length === 0
+          ? []
+          : (yield* threadManagement
+              .getShellSnapshot({ location: "active", threadIds: localIds })
+              .pipe(Effect.mapError(fleetFailure))).threads.map(
+              (shell) => [shell.id, shell] as const,
+            ),
+      );
+      // Server shells carry no message text, so read the child's latest run's last reply.
+      const latestReply = Effect.fn("OrchestratorMcpService.fleetLatestReply")(function* (
+        threadId: ThreadId,
+      ) {
+        const { runs } = yield* threadManagement.getThreadRecords(threadId, ["runs"], {
+          latestRunLimit: 1,
+        });
+        const run = runs.toSorted((left, right) => right.ordinal - left.ordinal)[0];
+        if (run === undefined) return null;
+        const { messages } = yield* threadManagement.getThreadRecords(threadId, ["messages"], {
+          messageRunIds: [run.id],
+          messageRoles: ["assistant"],
+        });
+        return (
+          messages.toSorted(
+            (left, right) =>
+              DateTime.toEpochMillis(right.updatedAt) - DateTime.toEpochMillis(left.updatedAt),
+          )[0]?.text ?? null
+        );
+      }, Effect.mapError(fleetFailure));
+      const children = yield* Effect.forEach(
+        [...tasks.values()],
+        (task) =>
+          Effect.gen(function* () {
+            const localId = localThreadOf(task);
+            if (localId === null) {
+              return task.remoteChild === undefined
+                ? []
+                : [remoteFleetChild(task, task.remoteChild)];
+            }
+            const shell = shells.get(localId);
+            if (task.origin === "provider_native") {
+              // Its thread runs no run of its own and it asks on the parent: its record says where it is.
+              const title = shell?.title ?? task.title ?? localId;
+              return [
+                {
+                  taskId: task.id,
+                  threadId: localId,
+                  title,
+                  link: threadLinkFor(scope, localId, title),
+                  environmentLabel: null,
+                  model: task.executedModel ?? task.model,
+                  workState: nativeSubagentWorkState(task.status),
+                  pendingQuestions: 0,
+                  pendingApprovals: 0,
+                  pullRequests: fleetPullRequests(shell?.pullRequests),
+                  lastProgress: fleetProgress(task.progress ?? task.result),
+                  lastActivityAt: DateTime.formatIso(task.updatedAt),
+                } satisfies OrchestratorMcpFleetChild,
+              ];
+            }
+            // Archived or deleted here: it left the fleet, as it leaves the client's strip.
+            if (shell === undefined) return [];
+            // The shell names one open request; count them only where it shows one.
+            const pending =
+              shell.pendingRuntimeRequest === null
+                ? []
+                : (yield* threadManagement
+                    .getThreadRecords(shell.id, ["runtimeRequests"], {
+                      runtimeRequestStatuses: ["pending"],
+                    })
+                    .pipe(Effect.mapError(fleetFailure))).runtimeRequests;
+            // Secret and link cards wait as turn items, not runtime requests.
+            const pendingQuestions =
+              pending.filter((request) => request.kind === "user_input").length +
+              (shell.pendingRuntimeRequest?.userOnly === true ? 1 : 0);
+            const pendingApprovals = pending.filter((request) =>
+              isApprovalRequestKind(request.kind),
+            ).length;
+            return [
+              {
+                taskId: task.id,
+                threadId: shell.id,
+                title: shell.title,
+                link: threadLinkFor(scope, shell.id, shell.title),
+                environmentLabel: null,
+                model: shell.modelSelection.model,
+                workState: fleetWorkState(
+                  shell,
+                  pendingQuestions + pendingApprovals > 0,
+                  backgroundWorkHoldsCompletion(shell.pendingBackgroundTasks ?? []),
+                ),
+                pendingQuestions,
+                pendingApprovals,
+                pullRequests: fleetPullRequests(shell.pullRequests),
+                lastProgress: fleetProgress(
+                  (yield* latestReply(shell.id)) ?? task.progress ?? task.result,
+                ),
+                lastActivityAt: DateTime.formatIso(shell.updatedAt),
+              } satisfies OrchestratorMcpFleetChild,
+            ];
+          }),
+        { concurrency: 4 },
+      ).pipe(Effect.map((all) => all.flat()));
+      const counts = { working: 0, waitingForChildren: 0, needsAnswer: 0, failed: 0, done: 0 };
+      const openPullRequests = new Set<string>();
+      for (const child of children) {
+        if (child.workState === "working") counts.working += 1;
+        else if (child.workState === "waiting_for_children") counts.waitingForChildren += 1;
+        else if (child.workState === "needs_answer") counts.needsAnswer += 1;
+        else if (child.workState === "failed") counts.failed += 1;
+        else counts.done += 1;
+        for (const pullRequest of child.pullRequests) {
+          if (pullRequest.state !== "merged" && pullRequest.state !== "closed") {
+            openPullRequests.add(pullRequest.url);
+          }
+        }
+      }
+      return {
+        counts,
+        openPullRequestCount: openPullRequests.size,
+        children: children
+          .toSorted(
+            (left, right) =>
+              FLEET_STATE_ORDER[left.workState] - FLEET_STATE_ORDER[right.workState] ||
+              Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt),
+          )
+          .slice(0, input.limit ?? DEFAULT_FLEET_LIMIT),
+        total: children.length,
+      } satisfies OrchestratorMcpFleetResult;
     }),
     readThread: Effect.fn("OrchestratorMcpService.readThread")(function* (scope, input) {
       const runLimit = input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT;

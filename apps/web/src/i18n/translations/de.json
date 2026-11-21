@@ -12825,5 +12825,9 @@
   "f77cd905c392b357": "Verfügbar auf Linux-Servern, auf denen Agenten in systemd-Scopes laufen.",
   "633d27014d678cbf": "Speicherobergrenze für Agenten auf Standard zurücksetzen",
   "70957383caba7e76": "Speicherobergrenze für Agenten",
-  "b3be8f59fe52c268": "Speicher Limit RAM OOM Speichermangel cgroup systemd memorymax tmpdir temporär"
+  "b3be8f59fe52c268": "Speicher Limit RAM OOM Speichermangel cgroup systemd memorymax tmpdir temporär",
+  "67d4a779cd49a863": "{count, plural, one {{count} fertig} other {{count} fertig}}",
+  "5c412fd3159e13f3": "{count, plural, one {{count} offener PR} other {{count} offene PRs}}",
+  "5c73b69a42cb7616": "Untergeordnete Threads",
+  "fa97f7ae0f746034": "{count, plural, one {{count} wartet auf eine Antwort} other {{count} warten auf eine Antwort}}"
 }

@@ -12762,5 +12762,9 @@
   "f77cd905c392b357": "에이전트가 systemd 스코프에서 실행되는 Linux 서버에서 사용할 수 있습니다.",
   "633d27014d678cbf": "에이전트 메모리 상한 기본값으로 재설정",
   "70957383caba7e76": "에이전트 메모리 상한",
-  "b3be8f59fe52c268": "메모리 제한 RAM OOM 메모리 부족 cgroup systemd memorymax tmpdir 임시"
+  "b3be8f59fe52c268": "메모리 제한 RAM OOM 메모리 부족 cgroup systemd memorymax tmpdir 임시",
+  "67d4a779cd49a863": "{count, plural, other {완료 {count}개}}",
+  "5c412fd3159e13f3": "{count, plural, other {열린 PR {count}개}}",
+  "5c73b69a42cb7616": "하위 스레드",
+  "fa97f7ae0f746034": "{count, plural, other {답변 대기 {count}개}}"
 }
