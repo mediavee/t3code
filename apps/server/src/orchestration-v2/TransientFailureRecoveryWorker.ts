@@ -31,19 +31,19 @@ const TRANSIENT_RETRY_DELAYS_MS = [15_000, 60_000, 180_000] as const;
 // Covers every backoff, with room for a server that was down when a try fell due.
 const AUTO_RETRY_LOOKBACK_MS = 60 * 60 * 1_000;
 
-// Retries carry their chain's original run and try number in their ids, so a restart
-// re-derives the same next try instead of keeping a counter, and a replayed dispatch collides
-// with the first.
+// A try's message id names its chain's original run and try number, so a restart re-derives the
+// same next try instead of keeping a counter. `:budget` marks a chain that already retried a run
+// which spent the provider's own retry budget.
 const RETRY_MESSAGE_PREFIX = "message:transient-retry:";
-const RETRY_MESSAGE_ID = /^message:transient-retry:(.+):([1-9]\d*)$/u;
+const RETRY_MESSAGE_ID = /^message:transient-retry:(.+):([1-9]\d*)(:budget)?$/u;
 // Bounds the walk over restart and limit-resume runs back to the last try or original run.
 const MAX_CHAIN_HOPS = 64;
 
-const transientRetryTry = (originRunId: string, attempt: number) => ({
-  attempt,
-  messageId: MessageId.make(`${RETRY_MESSAGE_PREFIX}${originRunId}:${attempt}`),
-  commandId: CommandId.make(`command:transient-retry:${originRunId}:${attempt}`),
-});
+interface TransientRetryTry {
+  readonly messageId: MessageId;
+  readonly commandId: CommandId;
+  readonly dueAtMs: number | null;
+}
 
 const affectsTransientRecovery = (event: OrchestrationV2DomainEvent) =>
   event.type === "run.created" ||
@@ -77,19 +77,34 @@ const make = Effect.gen(function* () {
   /**
    * The next try of the chain this failed run ends. Restart and limit-resume runs continue the
    * same chain, so tries count from its original run. A run that spent the provider's own
-   * retry budget gets only the chain's last try.
+   * retry budget is retried once per chain, after the longest wait.
    */
   const nextTry = Effect.fn("TransientFailureRecovery.nextTry")(function* (
     candidate: ProjectionStore.ProjectionTransientFailureCandidate,
   ) {
-    const after = (originRunId: string, tries: number) => {
-      const attempt = candidate.spentRetryBudget
-        ? Math.max(tries + 1, TRANSIENT_RETRY_DELAYS_MS.length)
-        : tries + 1;
-      const delay = TRANSIENT_RETRY_DELAYS_MS[attempt - 1];
+    const after = (
+      originRunId: string,
+      tries: number,
+      budgetRetried: boolean,
+    ): TransientRetryTry => {
+      const attempt = tries + 1;
+      const budget = budgetRetried || candidate.spentRetryBudget;
+      const delay =
+        candidate.spentRetryBudget && budgetRetried
+          ? undefined
+          : candidate.spentRetryBudget
+            ? TRANSIENT_RETRY_DELAYS_MS.at(-1)
+            : TRANSIENT_RETRY_DELAYS_MS[attempt - 1];
       return {
-        ...transientRetryTry(originRunId, attempt),
-        dueAtMs: delay === undefined ? null : DateTime.toEpochMillis(candidate.completedAt) + delay,
+        messageId: MessageId.make(
+          `${RETRY_MESSAGE_PREFIX}${originRunId}:${attempt}${budget ? ":budget" : ""}`,
+        ),
+        // Keyed on the failed run: a try declined for one run must not answer for its successor.
+        commandId: CommandId.make(`command:transient-retry:${candidate.runId}:${attempt}`),
+        dueAtMs:
+          delay === undefined || attempt > TRANSIENT_RETRY_DELAYS_MS.length
+            ? null
+            : DateTime.toEpochMillis(candidate.completedAt) + delay,
       };
     };
     let runId = candidate.runId;
@@ -97,12 +112,12 @@ const make = Effect.gen(function* () {
     let run: OrchestrationV2Run | undefined;
     for (let hop = 0; hop < MAX_CHAIN_HOPS; hop += 1) {
       const match = RETRY_MESSAGE_ID.exec(messageId);
-      if (match !== null) return after(match[1]!, Number(match[2]));
+      if (match !== null) return after(match[1]!, Number(match[2]), match[3] !== undefined);
       run ??= yield* readRun(candidate.threadId, runId);
       const previousRunId = run?.restartContinuationOfRunId ?? run?.usageLimitContinuationOfRunId;
       const previous =
         previousRunId === undefined ? undefined : yield* readRun(candidate.threadId, previousRunId);
-      if (previous === undefined) return after(runId, 0);
+      if (previous === undefined) return after(runId, 0, false);
       run = previous;
       runId = previous.id;
       messageId = previous.userMessageId;
@@ -124,7 +139,7 @@ const make = Effect.gen(function* () {
   /** The orchestrator re-checks the run is still due under the thread lock; a stale try is a no-op. */
   const resumeRun = Effect.fn("TransientFailureRecovery.resumeRun")(function* (
     candidate: ProjectionStore.ProjectionTransientFailureCandidate,
-    next: ReturnType<typeof transientRetryTry>,
+    next: TransientRetryTry,
   ) {
     const { messages } = yield* threads.getThreadRecords(candidate.threadId, ["messages"], {
       messageIds: [next.messageId, candidate.userMessageId],
@@ -155,7 +170,7 @@ const make = Effect.gen(function* () {
 
   const tryResume = (
     candidate: ProjectionStore.ProjectionTransientFailureCandidate,
-    next: ReturnType<typeof transientRetryTry>,
+    next: TransientRetryTry,
   ) =>
     resumeRun(candidate, next).pipe(
       Effect.catchCause((cause) =>
