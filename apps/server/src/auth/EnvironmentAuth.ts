@@ -102,6 +102,8 @@ export interface McpClientSession {
   readonly access: AuthMcpClientAccess;
   /** Another T3 Code environment's link, whose work here stays within it. */
   readonly peerLink: boolean;
+  /** The environment a peer link said it is when it was paired. Absent on older links. */
+  readonly peerEnvironmentId?: string;
   /** When a peer link's session ends unless it is used again; the linking side keeps this. */
   readonly linkExpiresAt?: DateTime.Utc;
 }
@@ -652,6 +654,7 @@ export class EnvironmentAuth extends Context.Service<
       readonly label: string;
       readonly access: AuthMcpClientAccess;
       readonly peerLink: boolean;
+      readonly peerEnvironmentId?: string;
       readonly client: AuthClientMetadata;
       /**
        * `otherSessionRevocationCount` read before the sign-in was approved. The session is
@@ -1678,6 +1681,9 @@ export const make = Effect.gen(function* () {
               ? (session.runtimeModeCeiling ?? "approval-required")
               : "read-only",
             peerLink: session.peerLink === true,
+            ...(session.peerEnvironmentId === undefined
+              ? {}
+              : { peerEnvironmentId: session.peerEnvironmentId }),
           } satisfies McpClientSession;
           if (session.peerLink !== true || session.expiresAt === undefined) return client;
           return {
@@ -1717,6 +1723,9 @@ export const make = Effect.gen(function* () {
         ttl: MCP_CLIENT_SESSION_TTL,
         ...(input.access === "read-only" ? {} : { runtimeModeCeiling: input.access }),
         peerLink: input.peerLink,
+        ...(input.peerEnvironmentId === undefined
+          ? {}
+          : { peerEnvironmentId: input.peerEnvironmentId }),
         client: { ...input.client, label: input.label, deviceType: "bot" },
       })
       .pipe(
