@@ -711,6 +711,7 @@ const boxClaude: ServerProvider = {
 };
 
 const otherProject = ProjectId.make("project:other");
+const laptopProject = ProjectId.make("project:laptop");
 
 const codexProvider = {
   instanceId,
@@ -721,7 +722,10 @@ const codexProvider = {
   status: "ready",
   auth: { status: "authenticated" },
   checkedAt: "2026-01-01T00:00:00.000Z",
-  models: [{ slug: "gpt-5.4", name: "gpt-5.4", isCustom: false, capabilities: null }],
+  models: [
+    { slug: "gpt-5.4", name: "gpt-5.4", isCustom: false, capabilities: null },
+    { slug: "gpt-5.5", name: "gpt-5.5", isCustom: false, capabilities: null },
+  ],
   slashCommands: [],
   skills: [],
 } as ServerProvider;
@@ -738,6 +742,11 @@ const layerLaunchHere = Layer.effect(
       launch: (input: ThreadLaunch.ThreadLaunchInput) =>
         Effect.gen(function* () {
           const threadId = input.threadId!;
+          yield* threads.assertProviderInstanceEnabled({
+            projectId: input.projectId,
+            commandId: input.commandId,
+            instanceId: input.modelSelection.instanceId,
+          });
           yield* threads.dispatch({
             type: "thread.create",
             commandId: input.commandId,
@@ -770,7 +779,13 @@ const layerLaunchHere = Layer.effect(
           });
           const projection = yield* threads.getThreadRecords(threadId, ["runs"]);
           return { threadId, projection, resumed: false } as never;
-        }).pipe(Effect.orDie),
+        }).pipe(
+          // As ThreadLaunchService: a project-disabled instance is the caller's error.
+          Effect.catchIf(
+            (error) => error._tag !== "ThreadManagementProviderInstanceDisabledError",
+            Effect.die,
+          ),
+        ),
     } as never);
   }),
 );
@@ -820,7 +835,16 @@ const makeLaptop = (
     );
     const layerThreads = ThreadManagement.layer.pipe(
       Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-      Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
+      // One settings service, as in production, so project overrides reach every check.
+      Layer.provideMerge(
+        Layer.merge(
+          layerOrchestrator,
+          Layer.succeed(
+            ServerSettings.ServerSettingsService,
+            Context.get(linking, ServerSettings.ServerSettingsService),
+          ),
+        ),
+      ),
     );
     const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
       Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -949,7 +973,7 @@ const seedParent = (
       creationSource: "web",
       commandId: CommandId.make("command:create:laptop-parent"),
       threadId: parentThreadId,
-      projectId: ProjectId.make("project:laptop"),
+      projectId: laptopProject,
       title: "Laptop parent",
       modelSelection: parentModelSelection,
       runtimeMode: "full-access",
@@ -3585,6 +3609,105 @@ it.effect.each([
         expect(yield* wakes(offers)).toHaveLength(1);
       }),
     ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect.each([
+  ["routes its role by the target project's table", undefined, "gpt-5.5"],
+  ["keeps an explicit model over that table", "gpt-5.4", "gpt-5.4"],
+] as const)("a task in another project here %s", ([, model, expected]) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+      yield* a.settings.updateSettings({
+        projectSettingsOverrides: {
+          [otherProject]: { agentRoleModels: { review: { instanceId, model: "gpt-5.5" } } },
+        },
+      });
+
+      const result = yield* a.call("delegate_task", {
+        task: "Review the other project's build.",
+        role: "review",
+        target: { projectId: otherProject, ...(model === undefined ? {} : { model }) },
+        mode: "async",
+        clientRequestId: "review-here",
+      });
+      expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      const { remoteChild } = result.structuredContent as { remoteChild: { threadId: ThreadId } };
+      const child = yield* a.orchestrator.getThreadProjection(remoteChild.threadId);
+      expect(child.thread.modelSelection).toMatchObject({ instanceId, model: expected });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a task in the parent's own project still routes its role by that project's table", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+      yield* a.settings.updateSettings({
+        projectSettingsOverrides: {
+          [laptopProject]: { agentRoleModels: { review: { instanceId, model: "gpt-5.5" } } },
+          [otherProject]: { agentRoleModels: { review: { instanceId, model: "gpt-5.4" } } },
+        },
+      });
+
+      const result = yield* a.call("delegate_task", {
+        task: "Review this project's build.",
+        role: "review",
+        mode: "async",
+        clientRequestId: "review-own",
+      });
+      expect(result.isError, JSON.stringify(result.content)).toBe(false);
+      const parent = yield* a.orchestrator.getThreadProjection(parentThreadId);
+      expect(parent.subagents[0]).toMatchObject({
+        providerInstanceId: instanceId,
+        model: "gpt-5.5",
+      });
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect("a role row another project here cannot run names that project", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* seedParent(a);
+      yield* a.settings.updateSettings({
+        projectSettingsOverrides: {
+          [otherProject]: {
+            agentRoleModels: { review: { instanceId, model: "gpt-5.5" } },
+            providerInstances: { [instanceId]: { enabled: false } },
+          },
+        },
+      });
+
+      const result = yield* a.call("delegate_task", {
+        task: "Review the other project's build.",
+        role: "review",
+        target: { projectId: otherProject },
+        mode: "async",
+        clientRequestId: "review-gone",
+      });
+      expect(result.isError).toBe(true);
+      const [content] = result.content as ReadonlyArray<{ readonly text: string }>;
+      expect(JSON.parse(content!.text).message).toContain(
+        'Project "Other" settings route role "review" to codex model gpt-5.5',
+      );
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("stopping the parent stops its task in another project here", () =>
