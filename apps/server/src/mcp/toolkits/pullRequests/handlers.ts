@@ -1049,7 +1049,10 @@ const make = Effect.gen(function* () {
             cwd: thread.worktreePath ?? project.workspaceRoot,
             projectId: project.id,
             title: input.title,
-            body: input.body,
+            body: yield* pullRequests.withoutAgentCredits({
+              projectId: project.id,
+              body: input.body,
+            }),
             baseBranch: input.base,
             draft: input.draft,
             private: input.private,
@@ -1091,7 +1094,15 @@ const make = Effect.gen(function* () {
             .update({
               ...ref,
               ...(input.title === undefined ? {} : { title: input.title }),
-              ...(input.body === undefined ? {} : { body: input.body }),
+              // An agent's write, so its credit footer goes as on create; UI edits keep theirs.
+              ...(input.body === undefined
+                ? {}
+                : {
+                    body: yield* pullRequests.withoutAgentCredits({
+                      projectId: ref.projectId,
+                      body: input.body,
+                    }),
+                  }),
             })
             .pipe(Effect.mapError(forgeFailure));
         }

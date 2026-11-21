@@ -199,6 +199,7 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
   const shellSnapshotReads = yield* Ref.make(0);
   const syncCommands = yield* Ref.make<ReadonlyArray<SyncCommand>>([]);
   const linkCommands = yield* Ref.make<ReadonlyArray<LinkCommand>>([]);
+  const creditCleanups = yield* Ref.make<ReadonlyArray<PullRequestRef>>([]);
   const reopenCommands = yield* Queue.unbounded<ChecksReopenCommand>();
   const summaryCalls = yield* Ref.make<ReadonlyArray<PullRequestRef>>([]);
   const stackCalls = yield* Ref.make<ReadonlyArray<PullRequestRef>>([]);
@@ -231,6 +232,18 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
     }
     if (command.type === "thread.pull-request.link") {
       return Ref.update(linkCommands, (recorded) => [...recorded, command]).pipe(
+        Effect.andThen(
+          Ref.update(snapshots, (snapshot) => ({
+            ...snapshot,
+            threads: snapshot.threads.map((thread) =>
+              command.source !== "created" ||
+              thread.id !== command.threadId ||
+              thread.pullRequests.some((link) => link.number === command.number)
+                ? thread
+                : { ...thread, pullRequests: [...thread.pullRequests, makeLink(command.number)] },
+            ),
+          })),
+        ),
         Effect.as({ sequence: 1, storedEvents: [] }),
       );
     }
@@ -249,6 +262,8 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
       summary,
       stack,
       invalidate: options.invalidate ?? (() => Effect.void),
+      removeAgentCreditsFromBody: (ref) =>
+        Ref.update(creditCleanups, (calls) => [...calls, ref]).pipe(Effect.as(true)),
       subscribeStateChanges: Effect.succeed(Stream.fromQueue(stateChanges)),
     }),
     Layer.mock(GitManager.GitManager)({
@@ -300,6 +315,7 @@ const makeHarness = Effect.fn("makePullRequestSyncHarness")(function* (options: 
     shellSnapshotReads,
     syncCommands,
     linkCommands,
+    creditCleanups,
     reopenCommands,
     summaryCalls,
     stackCalls,
@@ -2365,6 +2381,46 @@ describe("PullRequestSyncReactor", () => {
           [124, 124],
         );
         assert.strictEqual(links[0]!.commandId, links[1]!.commandId);
+      }).pipe(Effect.provide(fixture.layer));
+    }),
+  );
+
+  it.effect("cleans a created PR's credit footer once linked, unless the thread listed it", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(NOW));
+      const fixture = yield* makeHarness({
+        snapshot: makeSnapshot([
+          ...mergingSnapshot().threads,
+          makeThread("first"),
+          makeThread("listed", { pullRequests: [makeLink(125)] }),
+        ]),
+      });
+
+      yield* Effect.gen(function* () {
+        const reactor = yield* startAndSweep(fixture);
+        const opened = (thread: string, number: number) =>
+          commandRan(
+            ThreadId.make(thread),
+            "gh pr create --fill",
+            `https://github.com/owner/repository/pull/${number}`,
+          );
+        const links = yield* linksFrom(fixture, reactor, [
+          opened("first", 124),
+          opened("listed", 125),
+        ]);
+
+        assert.deepStrictEqual(
+          links.map((command) => command.number),
+          [124, 125],
+        );
+        assert.deepStrictEqual(yield* Ref.get(fixture.creditCleanups), [
+          {
+            projectId: PROJECT_ID,
+            host: "github.com",
+            repository: "owner/repository",
+            number: 124,
+          },
+        ]);
       }).pipe(Effect.provide(fixture.layer));
     }),
   );

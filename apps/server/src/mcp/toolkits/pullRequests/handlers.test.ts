@@ -1191,6 +1191,7 @@ describe("source control tools", () => {
       const opened: Array<{
         readonly cwd: string;
         readonly draft: boolean | undefined;
+        readonly body: string;
         readonly private: boolean | undefined;
       }> = [];
       const harness = yield* makeHarness({
@@ -1198,10 +1199,19 @@ describe("source control tools", () => {
           ...makeThread([makeLink(43, { source: "stack-dismissed" })]),
           worktreePath: "/workspace/worktree",
         },
+        pullRequests: {
+          withoutAgentCredits: ({ body }) =>
+            Effect.succeed(body.replace("\n\nMade with Cursor", "")),
+        },
         git: {
           createPullRequest: (input) =>
             Effect.sync(() =>
-              opened.push({ cwd: input.cwd, draft: input.draft, private: input.private }),
+              opened.push({
+                cwd: input.cwd,
+                draft: input.draft,
+                body: input.body ?? "",
+                private: input.private,
+              }),
             ).pipe(
               Effect.as({
                 status: "created" as const,
@@ -1216,12 +1226,15 @@ describe("source control tools", () => {
       });
       const result = yield* harness.call("pull_request_create", {
         title: "Add tools",
-        body: "Adds tools.",
+        body: "Adds tools.\n\nMade with Cursor",
         draft: true,
         private: true,
       });
       expect(result).toMatchObject({ number: 43, created: true });
-      expect(opened).toEqual([{ cwd: "/workspace/worktree", draft: true, private: true }]);
+      // The body is opened as the project's credit setting leaves it.
+      expect(opened).toEqual([
+        { cwd: "/workspace/worktree", draft: true, body: "Adds tools.", private: true },
+      ]);
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.link", number: 43, source: "created" },
       ]);
@@ -1360,15 +1373,21 @@ describe("source control tools", () => {
           requestReviewers: (input) =>
             Effect.sync(() => void calls.push(["reviewers", input.reviewers])),
           runAction: (input) => Effect.sync(() => void calls.push(["action", input.action])),
+          withoutAgentCredits: ({ body }) =>
+            Effect.succeed(body.replace("\n\nMade with Cursor", "")),
+          update: (input) => Effect.sync(() => void calls.push(["body", input.body])),
         },
       });
       yield* harness.call("pull_request_update", {
+        body: "Fixes it.\n\nMade with Cursor",
         addLabels: ["bug"],
         removeLabels: ["wip"],
         requestReviewers: ["Octo", "acme/core"],
         state: "closed",
       });
       expect(calls).toEqual([
+        // An agent's body loses its credit footer as on create.
+        ["body", "Fixes it."],
         ["labels", ["bug"], true],
         ["labels", ["wip"], false],
         [
