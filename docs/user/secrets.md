@@ -62,3 +62,19 @@ The value never appears in the conversation. Most requests keep it from the agen
 passes it to the tool that needs it. When an agent has to run a command with the value, the card
 says so instead: the value goes into a private file that the agent's commands can read for about 24
 hours.
+
+## Secrets in tool output
+
+A command an agent runs can still print a secret, for example `cat .env`. T3 Code replaces these
+with `[redacted]` in the command and tool output it saves and shows, on every device, and in the
+result a task delegated to another environment sends back:
+
+- values you gave through a secret request card, from when you answer until the server restarts
+- values read from a secret reference, and provider environment variables marked sensitive
+- private key blocks (`-----BEGIN … PRIVATE KEY-----`)
+- the password in a URL, such as `mysql://user:password@host`
+
+Anything else is not masked. That includes a `password=` line in a config file, a token T3 Code was
+never given, the agent's own messages, and output saved before the secret was known or while the
+setting was off. The agent itself still sees the command's real output. Turn masking off in
+**Settings → Maintenance → Secrets in tool output**.

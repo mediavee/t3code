@@ -32,6 +32,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SecretRequests from "./SecretRequests.ts";
+import * as KnownSecrets from "./KnownSecrets.ts";
 
 const threadId = ThreadId.make("thread-orchestrator");
 const turnItemId = TurnItemId.make("turn-item:secret-request:1");
@@ -73,6 +74,7 @@ const withService = <A, E>(
     readonly service: SecretRequests.SecretRequests["Service"];
     readonly stored: Map<string, Uint8Array>;
     readonly dispatched: Array<OrchestrationV2ServerCommand>;
+    readonly known: KnownSecrets.KnownSecrets["Service"];
   }) => Effect.Effect<A, E>,
   options: {
     readonly threadId?: ThreadId;
@@ -96,6 +98,7 @@ const withService = <A, E>(
     const layerDependencies = Layer.mergeAll(
       NodeCrypto.layer,
       NodeServices.layer,
+      KnownSecrets.layerTest(),
       options.resolver ?? fakeVault().layer,
       Layer.succeed(
         ServerSecretStore.ServerSecretStore,
@@ -182,8 +185,9 @@ const withService = <A, E>(
     );
     return yield* Effect.gen(function* () {
       const service = yield* SecretRequests.SecretRequests;
-      return yield* body({ service, stored, dispatched });
-    }).pipe(Effect.provide(SecretRequests.layer.pipe(Layer.provide(layerDependencies))));
+      const known = yield* KnownSecrets.KnownSecrets;
+      return yield* body({ service, stored, dispatched, known });
+    }).pipe(Effect.provide(SecretRequests.layer.pipe(Layer.provideMerge(layerDependencies))));
   });
 
 const singleFile = (saved: { readonly file: string } | { readonly files: unknown }) =>
@@ -195,13 +199,15 @@ const valuesOf = (stored: Map<string, Uint8Array>) =>
     .map(([, bytes]) => new TextDecoder().decode(bytes));
 
 it.effect("a saved answer becomes a one-use ref, and the thread only learns it was saved", () =>
-  withService(({ service, stored, dispatched }) =>
+  withService(({ service, stored, dispatched, known }) =>
     Effect.gen(function* () {
       yield* service.answer({
         threadId,
         turnItemId,
         answer: { type: "save", secret: "ghp_secret" },
       });
+      // Tool output that prints it from now on is masked.
+      assert.include((yield* known.current) ?? [], "ghp_secret");
       assert.equal(dispatched.length, 1);
       assert.include(dispatched[0] as object, {
         type: "secret_request.record",

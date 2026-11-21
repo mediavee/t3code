@@ -28,6 +28,7 @@ import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as KnownSecrets from "./KnownSecrets.ts";
 import * as Metrics from "../observability/Metrics.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 
@@ -106,6 +107,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const resolver = yield* SecretResolver.SecretResolver;
+  const known = yield* KnownSecrets.KnownSecrets;
   // Beside the store's own files so the same owner-only directory and cleanup rules apply.
   const filesDir = store.directory === undefined ? undefined : path.join(store.directory, "files");
 
@@ -188,6 +190,7 @@ const make = Effect.gen(function* () {
           : (answerValues(item, input.answer) ??
             (yield* new SecretRequestError({ reason: "fields_mismatch" })));
     if (values !== undefined) {
+      yield* known.remember(values.map(([, value]) => value));
       const savedAt = yield* Clock.currentTimeMillis;
       // Cleared when interrupted too, or a retry would keep these values beside its own.
       yield* Effect.forEach(values, ([field, value]) =>
@@ -300,6 +303,8 @@ const make = Effect.gen(function* () {
       yield* removeLogged(storeName(input.ref));
       return yield* new SecretRequestError({ reason: "ref_expired" });
     }
+    // Answered before a restart, which forgot it.
+    yield* known.remember([decoded.value.value]);
     return decoded.value.value;
   });
 
@@ -384,6 +389,7 @@ const make = Effect.gen(function* () {
     "SecretRequests.savePasted",
   )(function* (input) {
     if (filesDir === undefined) return yield* new SecretRequestError({ reason: "store_failed" });
+    yield* known.remember([input.value]);
     const ref = yield* refFor(
       input.threadId,
       `pasted\u0000${input.requestNamespace}\u0000${input.requestKey}`,

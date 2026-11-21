@@ -51,6 +51,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import * as KnownSecrets from "../secrets/KnownSecrets.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { UsageLimitResetFallback } from "../usage/UsageLimitSources.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -81,6 +82,9 @@ const layerGit = GitVcsDriver.layer.pipe(
 const layerEmptyInstances = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
   getInstance: () => Effect.undefined,
 });
+const FAKE_SECRET = "fake-secret-0000";
+// One instance, so a value remembered in a test is the one the ingestor masks.
+const layerKnownSecrets = KnownSecrets.layerTest([FAKE_SECRET]);
 const makeLayerTest = <E>(
   ingestorEventSink: Layer.Layer<EventSink.EventSinkV2, E>,
   instances = layerEmptyInstances,
@@ -105,7 +109,7 @@ const makeLayerTest = <E>(
         ),
       ),
     ),
-  );
+  ).pipe(Layer.provideMerge(layerKnownSecrets));
 const layerTest = makeLayerTest(layerTestEventSink);
 
 // EventSink reports a lock that outlasted busy_timeout at BEGIN IMMEDIATE this way.
@@ -1792,6 +1796,91 @@ layer("ProviderEventIngestorV2", (it) => {
         ),
         [{ mimeType: "image/png", data: screenshotBase64 }],
       );
+    }),
+  );
+
+  it.effect("stores and serves command and tool output with known secrets masked", () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const eventStore = yield* EventStore.EventStoreV2;
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const knownSecrets = yield* KnownSecrets.KnownSecrets;
+      const threadEvent = yield* threadCreatedEvent(now);
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId: threadEvent.threadId,
+      });
+      // Answered through request_secret after the server started.
+      const answered = "fake-answer-1111";
+      yield* knownSecrets.remember([answered]);
+      const base = {
+        threadId: threadEvent.threadId,
+        runId: null,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        status: "completed",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      } as const;
+      const command: OrchestrationV2TurnItem = {
+        ...base,
+        id: TurnItemId.make("turn-item:cat-env"),
+        ordinal: 1,
+        title: "cat .env",
+        type: "command_execution",
+        input: "cat .env",
+        output: `TOKEN=${FAKE_SECRET}\nANSWER=${answered}\nDB=mysql://app:fake-db-pass@db/app\n`,
+      };
+      const tool: OrchestrationV2TurnItem = {
+        ...base,
+        id: TurnItemId.make("turn-item:read-config"),
+        ordinal: 2,
+        title: "Read",
+        type: "dynamic_tool",
+        toolName: "Read",
+        input: {},
+        output: { content: [{ type: "text", text: `api_key: ${FAKE_SECRET}` }] },
+      };
+
+      yield* eventSink.write({ events: [threadEvent] });
+      for (const turnItem of [command, tool]) {
+        yield* ingestor.ingestNormalized({
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          threadId: threadEvent.threadId,
+          event: { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem },
+        });
+      }
+
+      const storedEvents = yield* eventStore
+        .read({ threadId: threadEvent.threadId, eventType: "turn-item.updated" })
+        .pipe(Stream.runCollect);
+      const storedJson = JSON.stringify(Array.from(storedEvents, (stored) => stored.event));
+      for (const secret of [FAKE_SECRET, answered, "fake-db-pass"]) {
+        assert.equal(storedJson.includes(secret), false);
+      }
+      const readCommand = yield* projectionStore.getTurnItem({
+        threadId: threadEvent.threadId,
+        itemId: command.id,
+      });
+      const readTool = yield* projectionStore.getTurnItem({
+        threadId: threadEvent.threadId,
+        itemId: tool.id,
+      });
+      assert.equal(
+        readCommand?.type === "command_execution" ? readCommand.output : null,
+        "TOKEN=[redacted]\nANSWER=[redacted]\nDB=mysql://app:[redacted]@db/app\n",
+      );
+      assert.deepEqual(readTool?.type === "dynamic_tool" ? readTool.output : null, {
+        content: [{ type: "text", text: "api_key: [redacted]" }],
+      });
     }),
   );
 
