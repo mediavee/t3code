@@ -1119,6 +1119,25 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             awaited: boolean;
           }
         >();
+        // Finished shells whose wake is owed stay listed until a run starts, so the child they
+        // hold is not settled from its earlier reply in between.
+        const finishedShellsAwaitingWake = new Map<
+          string,
+          {
+            readonly providerThreadId: OrchestrationV2ProviderThread["id"];
+            readonly command: string;
+            readonly awaited: boolean;
+          }
+        >();
+        const dropFinishedShells = (providerThreadId?: OrchestrationV2ProviderThread["id"]) => {
+          let dropped = false;
+          for (const [taskId, shell] of finishedShellsAwaitingWake)
+            if (providerThreadId === undefined || shell.providerThreadId === providerThreadId) {
+              finishedShellsAwaitingWake.delete(taskId);
+              dropped = true;
+            }
+          return dropped;
+        };
         // Runs a Stop ended; a shell they started that is reported only afterwards is stopped too.
         const stoppedRuns = new Set<ProviderAdapter.ProviderAdapterV2TurnInput["runId"]>();
         let latestRunId: ProviderAdapter.ProviderAdapterV2TurnInput["runId"] | undefined;
@@ -1134,20 +1153,21 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           providerThread: OrchestrationV2ProviderThread,
         ): OrchestrationV2ProviderThread => ({
           ...providerThread,
-          pendingBackgroundTasks: [...backgroundShells].flatMap(([taskId, shell]) =>
-            shell.providerThreadId === providerThread.id
-              ? [
-                  {
-                    taskId,
-                    kind: "command" as const,
-                    command: shell.command,
-                    ...(shell.command.trim().length === 0
-                      ? {}
-                      : { description: shell.command.trim() }),
-                    ...(shell.awaited ? { awaited: true as const } : {}),
-                  },
-                ]
-              : [],
+          pendingBackgroundTasks: [...backgroundShells, ...finishedShellsAwaitingWake].flatMap(
+            ([taskId, shell]) =>
+              shell.providerThreadId === providerThread.id
+                ? [
+                    {
+                      taskId,
+                      kind: "command" as const,
+                      command: shell.command,
+                      ...(shell.command.trim().length === 0
+                        ? {}
+                        : { description: shell.command.trim() }),
+                      ...(shell.awaited ? { awaited: true as const } : {}),
+                    },
+                  ]
+                : [],
           ),
         });
 
@@ -1198,19 +1218,25 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           const started = backgroundShells.get(shell.id);
           if (started === undefined) return;
           backgroundShells.delete(shell.id);
-          yield* publishBackgroundShells(providerThreadId);
-          // Nobody waits to hear about a shell the agent or a Stop killed.
-          if (shell.stopped) return;
-          // The run that started it is still working, so the agent can read the result itself.
           const turn = yield* Ref.get(activeTurn);
-          if (
-            turn !== null &&
-            !turn.finalized &&
-            !turn.turnEnded &&
-            turn.input.runId === started.runId
-          ) {
-            return;
-          }
+          // Nobody waits to hear about a shell the agent or a Stop killed, and the run that
+          // started it, still working, reads the result itself.
+          const wakes =
+            !shell.stopped &&
+            !(
+              turn !== null &&
+              !turn.finalized &&
+              !turn.turnEnded &&
+              turn.input.runId === started.runId
+            );
+          if (wakes)
+            finishedShellsAwaitingWake.set(shell.id, {
+              providerThreadId,
+              command: started.command,
+              awaited: started.awaited,
+            });
+          yield* publishBackgroundShells(providerThreadId);
+          if (!wakes) return;
           const generation = wakeGeneration;
           yield* continuationRequests.offer({
             threadId: turnInput.threadId,
@@ -1243,6 +1269,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
         const stopBackgroundShells = (providerThreadId?: OrchestrationV2ProviderThread["id"]) =>
           Effect.sync(() => {
             wakeGeneration += 1;
+            dropFinishedShells(providerThreadId);
             for (const shell of backgroundShells.values()) {
               if (providerThreadId === undefined || shell.providerThreadId === providerThreadId) {
                 shell.stop();
@@ -3095,6 +3122,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             };
             yield* Ref.set(activeTurn, context);
             latestRunId = turnInput.runId;
+            if (dropFinishedShells(turnInput.providerThread.id))
+              yield* publishBackgroundShells(turnInput.providerThread.id);
             yield* emitProviderEvent({
               type: "provider_turn.updated",
               driver: CursorAgentSdk.CURSOR_PROVIDER,
