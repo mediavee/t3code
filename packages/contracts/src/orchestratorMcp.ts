@@ -168,7 +168,7 @@ export const OrchestratorMcpTarget = Schema.Struct({
   projectId: Schema.optional(
     ProjectId.annotate({
       description:
-        "With `environmentId`: its project to run in. Default: the one with this project's repository.",
+        "Project to run in: here, or with `environmentId` there. Default: this one, or there the one with its repository.",
     }),
   ),
 });
