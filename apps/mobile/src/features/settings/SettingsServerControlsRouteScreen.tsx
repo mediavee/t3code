@@ -1,7 +1,7 @@
 import { msg, T, useGT, useMessages, Var } from "gt-react-native";
 import { useNavigation } from "@react-navigation/native";
 import { SettingsRow } from "./components/SettingsRow";
-import { AuthSettingsWriteScope } from "@t3tools/contracts";
+import { AuthSettingsWriteScope, DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import { readEnvironmentScope, useEnvironmentsWithScope } from "../../state/session";
 import { ScreenScrollView as ScrollView } from "../../components/ui/ScreenScrollView";
 import { AppText as Text } from "../../components/ui/AppText";
@@ -22,6 +22,7 @@ import {
   RUNTIME_MODE_CHOICES,
   withManagedRuntimeModeLimits,
 } from "../threads/thread-settings-options";
+import { Button } from "../../components/ui/Button";
 import { SettingsScreen } from "./components/SettingsScreen";
 import { useSettingsEnvironmentMenu } from "./components/SettingsEnvironmentFilterHeader";
 import { BranchNamingSettings } from "./components/BranchNamingSettings";
@@ -633,6 +634,42 @@ function ServerSettingsDetail(props: { readonly page: SettingsPage }) {
                   disabled={disabledFor("agentMemoryMaxGiB")}
                   onChange={(agentMemoryMaxGiB) => write({ agentMemoryMaxGiB })}
                 />
+                <SettingsSection
+                  title={gt("Secrets in tool output")}
+                  trailing={
+                    uniform("maskSecretsInToolOutput") !==
+                      DEFAULT_SERVER_SETTINGS.maskSecretsInToolOutput &&
+                    !disabledFor("maskSecretsInToolOutput") ? (
+                      <Button
+                        label={gt("Reset")}
+                        accessibilityLabel={gt("Reset secret masking in tool output to default")}
+                        tone="text"
+                        onPress={() =>
+                          write({
+                            maskSecretsInToolOutput:
+                              DEFAULT_SERVER_SETTINGS.maskSecretsInToolOutput,
+                          })
+                        }
+                      />
+                    ) : undefined
+                  }
+                >
+                  <SettingsSwitchRow
+                    icon="eye.slash"
+                    label={gt("Mask secrets in tool output")}
+                    subtitle={managedSubtitle(
+                      "maskSecretsInToolOutput",
+                      projectSelected
+                        ? gt("Environment-wide setting. Select All projects to change it.")
+                        : gt(
+                            "Replace secrets T3 knows, private keys and passwords in URLs with [redacted] in the command and tool output it stores and shows.",
+                          ),
+                    )}
+                    value={uniform("maskSecretsInToolOutput")}
+                    disabled={disabledFor("maskSecretsInToolOutput")}
+                    onValueChange={(value) => write({ maskSecretsInToolOutput: value })}
+                  />
+                </SettingsSection>
               </>
             ) : null}
           </>
