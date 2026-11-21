@@ -387,6 +387,18 @@ export const make = Effect.gen(function* () {
               ),
             { discard: true },
           );
+          // A PR an agent opened outside T3 loses its credit lines once, when T3 first links it.
+          if (
+            detected?.state === "open" &&
+            detectedReference !== null &&
+            updates.some(
+              ({ thread, branchPullRequest }) =>
+                samePullRequest(branchPullRequest, detectedReference) &&
+                !samePullRequest(thread.branchPullRequest, detectedReference),
+            )
+          ) {
+            yield* pullRequests.removeAgentCreditsFromBody(detectedReference);
+          }
         }).pipe(
           Effect.catchCauseIf(
             (cause) => !Cause.hasInterruptsOnly(cause),

@@ -217,11 +217,14 @@ Previously loaded lists, review details, guides, and diff pages remain readable 
 without a connection, including after restarting the app. Saved content refreshes when the
 environment reconnects; submitting changes requires a connection.
 
-Enable **Remove agent credits when merging** in Settings → Source control & issues to remove recognized
-agent co-author and generated-by lines from GitHub merge and squash commit messages. Human
-co-authors stay credited. The setting is off by default and projects can override it. It also
-applies to auto-merge, but not merge queues or native stack merges. Original commits keep their
-messages, so merge and rebase can still retain agent credits in those commits.
+Enable **Remove agent credits from pull requests** in Settings → Source control & issues to remove
+recognized agent co-author, generated-by and "Made with Cursor" lines from GitHub merge and squash
+commit messages, and from pull request descriptions. Descriptions are cleaned when an agent opens or
+edits a pull request through T3, and once when T3 first links a pull request an agent opened another
+way; T3 needs write access to edit it. Human co-authors stay credited. The setting is off by default
+and projects can override it. It also applies to auto-merge, but not merge queues or native stack
+merges. Original commits keep their messages, so merge and rebase can still retain agent credits in
+those commits.
 
 On web and desktop, hold **Shift** in the GitHub pull request list for quick actions.
 To close several, press **Close**, drag across the rows in the same group, and release.

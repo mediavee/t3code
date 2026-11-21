@@ -10,6 +10,8 @@ const AGENT_EMAILS = new Set([
 
 const GENERATED_BY_AGENT =
   /^(?:🤖\s*)?generated (?:with|by)\s+(?:claude(?: code)?|codex|cursor|github copilot|copilot|opencode|grok|antigravity)[.!]?$/i;
+// Cursor's PR footer, plain or linked to cursor.com.
+const MADE_WITH_CURSOR = /^made with cursor[.!]?$/i;
 
 const CO_AUTHOR_PREFIX = /^co-authored-by:/i;
 
@@ -55,7 +57,7 @@ export function removeAgentCredits(message: string): string {
         /\[([^[\]\r\n]+)\]\(https:\/\/(?:claude\.ai|claude\.com|www\.anthropic\.com|chatgpt\.com|openai\.com|cursor\.com|github\.com|opencode\.ai|x\.ai|antigravity\.google)(?:\/[^\s)[\]]*)?\)/gi,
         "$1",
       );
-      if (!GENERATED_BY_AGENT.test(footer)) return true;
+      if (!GENERATED_BY_AGENT.test(footer) && !MADE_WITH_CURSOR.test(footer)) return true;
     }
     removed = true;
     return false;

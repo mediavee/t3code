@@ -1,5 +1,6 @@
 import { isSshRemoteUrl } from "@t3tools/shared/sourceControl";
 import { parseDiffFilePaths } from "@t3tools/source-control-core/server/diffFileRevisions";
+import { removeAgentCredits } from "@t3tools/source-control-core/server/mergeMessage";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -288,6 +289,16 @@ export class PullRequestService extends Context.Service<
       input: PullRequestRef & { readonly check?: string },
     ) => Effect.Effect<ReadonlyArray<ProviderCheckRerun>, PullRequestError>;
     readonly update: (input: PullRequestUpdateInput) => Effect.Effect<void, PullRequestError>;
+    /** `body` without agent credit lines when its project removes them, else unchanged. */
+    readonly withoutAgentCredits: (input: {
+      readonly projectId: ProjectId;
+      readonly body: string;
+    }) => Effect.Effect<string>;
+    /**
+     * Edits agent credit lines out of a change request's description when its project removes
+     * them. True when it edited; a read or edit the host refuses is logged, not failed.
+     */
+    readonly removeAgentCreditsFromBody: (input: PullRequestRef) => Effect.Effect<boolean>;
     readonly comment: (input: PullRequestCommentInput) => Effect.Effect<void, PullRequestError>;
     readonly updateComment: (
       input: PullRequestCommentUpdateInput,
@@ -2426,6 +2437,55 @@ export const make = Effect.gen(function* () {
       }),
     );
 
+  const removesAgentCredits = (projectId: ProjectId) =>
+    serverSettings.getSettings.pipe(
+      Effect.map(
+        (settings) =>
+          resolveProjectSettings(settings, projectId).settings.removeAgentCreditsOnMerge,
+      ),
+      Effect.orElseSucceed(() => false),
+    );
+
+  const withoutAgentCredits: PullRequestService["Service"]["withoutAgentCredits"] = (input) =>
+    removesAgentCredits(input.projectId).pipe(
+      Effect.map((removes) => (removes ? removeAgentCredits(input.body) : input.body)),
+    );
+
+  const removeAgentCreditsFromBody = Effect.fn("PullRequestService.removeAgentCreditsFromBody")(
+    function* (input: PullRequestRef) {
+      if (!(yield* removesAgentCredits(input.projectId))) return false;
+      const project = yield* requireProject(input);
+      const rewrite = project.api.updateChangeRequest;
+      if (project.api.capabilities.edit?.changeRequest !== true || rewrite === undefined) {
+        return false;
+      }
+      const ref = {
+        cwd: project.project.workspaceRoot,
+        repository: project.repository,
+        host: project.host,
+        number: input.number,
+      };
+      const { body } = yield* project.api
+        .getChangeRequest(ref)
+        .pipe(Effect.mapError(toPullRequestError("detail")));
+      const cleaned = removeAgentCredits(body);
+      if (cleaned === body) return false;
+      yield* rewrite({ ...ref, body: cleaned }).pipe(Effect.mapError(toPullRequestError("update")));
+      return true;
+    },
+    (effect, input) =>
+      effect.pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("pull request agent credits not removed", {
+            projectId: input.projectId,
+            repository: input.repository,
+            number: input.number,
+            error,
+          }).pipe(Effect.as(false)),
+        ),
+      ),
+  );
+
   // Hosts let authors edit without reporting that permission; checking it would wrongly deny access.
   const update: PullRequestService["Service"]["update"] = (input) =>
     requireProject(input).pipe(
@@ -2462,17 +2522,25 @@ export const make = Effect.gen(function* () {
             }),
           );
         }
-        return rewrite({
-          cwd: project.project.workspaceRoot,
-          repository: project.repository,
-          host: project.host,
-          number: input.number,
-          ...(input.maintainerCanModify === undefined
-            ? {}
-            : { maintainerCanModify: input.maintainerCanModify }),
-          ...(input.title === undefined ? {} : { title: input.title }),
-          ...(input.body === undefined ? {} : { body: input.body }),
-        }).pipe(Effect.mapError(toPullRequestError("update")));
+        const body: Effect.Effect<string | undefined> =
+          input.body === undefined
+            ? Effect.undefined
+            : withoutAgentCredits({ projectId: project.project.id, body: input.body });
+        return body.pipe(
+          Effect.flatMap((body) =>
+            rewrite({
+              cwd: project.project.workspaceRoot,
+              repository: project.repository,
+              host: project.host,
+              number: input.number,
+              ...(input.maintainerCanModify === undefined
+                ? {}
+                : { maintainerCanModify: input.maintainerCanModify }),
+              ...(input.title === undefined ? {} : { title: input.title }),
+              ...(body === undefined ? {} : { body }),
+            }).pipe(Effect.mapError(toPullRequestError("update"))),
+          ),
+        );
       }),
     );
 
@@ -3835,6 +3903,28 @@ export const make = Effect.gen(function* () {
     (revision) => revision + 1,
   );
 
+  const removeAgentCreditsFromBodyAndInvalidate = Effect.fn(
+    "PullRequestService.removeAgentCreditsFromBodyAndInvalidate",
+  )(function* (input: PullRequestRef) {
+    const edited = yield* removeAgentCreditsFromBody(input);
+    if (edited) {
+      yield* canonicalRef(input).pipe(
+        Effect.flatMap((ref) =>
+          readCache.invalidate(refScope(ref)).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                bumpRefEpoch(ref);
+                listingsEpoch = ++epochCounter;
+              }),
+            ),
+          ),
+        ),
+        Effect.ignore,
+      );
+    }
+    return edited;
+  });
+
   const invalidatedByMutation =
     <I extends PullRequestRef>(
       method: (input: I) => Effect.Effect<void, PullRequestError>,
@@ -4165,6 +4255,8 @@ export const make = Effect.gen(function* () {
     checkLogs,
     rerunChecks,
     update: invalidatedByMutation(update),
+    withoutAgentCredits,
+    removeAgentCreditsFromBody: removeAgentCreditsFromBodyAndInvalidate,
     comment: invalidatedByMutation(comment),
     updateComment: invalidatedByMutation(updateComment),
     submitReview: invalidatedByMutation(submitReview),

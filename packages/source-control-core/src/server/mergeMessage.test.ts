@@ -36,6 +36,16 @@ describe("removeAgentCredits", () => {
     ).toBe("Details");
   });
 
+  it.each(["Made with [Cursor](https://cursor.com)", "Made with Cursor"])(
+    "removes Cursor's PR footer: %s",
+    (footer) => {
+      expect(removeAgentCredits(["Details", "", footer].join("\n"))).toBe("Details");
+      expect(removeAgentCredits("Made with Cursor and a lot of coffee.")).toBe(
+        "Made with Cursor and a lot of coffee.",
+      );
+    },
+  );
+
   it("preserves unknown identities, humans named after agents, and ordinary prose", () => {
     const message = [
       "Co-authored-by: Claude <claude@example.com>",

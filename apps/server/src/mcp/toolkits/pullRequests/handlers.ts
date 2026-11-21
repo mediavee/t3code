@@ -1021,7 +1021,10 @@ const make = Effect.gen(function* () {
             cwd: thread.worktreePath ?? project.workspaceRoot,
             projectId: project.id,
             title: input.title,
-            body: input.body,
+            body: yield* pullRequests.withoutAgentCredits({
+              projectId: project.id,
+              body: input.body,
+            }),
             baseBranch: input.base,
             draft: input.draft,
           })

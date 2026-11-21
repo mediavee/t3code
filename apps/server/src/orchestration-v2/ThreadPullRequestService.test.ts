@@ -666,7 +666,7 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           mergedAt: state === "merged" ? terminalAt : null,
           repositoryKey: "github.com/acme/project",
         };
-        const threads = [
+        let threads = [
           { ...threadShell("older"), createdAt: DateTime.makeUnsafe("2026-09-18T00:00:00Z") },
           { ...threadShell("same-time"), createdAt: DateTime.makeUnsafe(terminalAt) },
           threadShell("new"),
@@ -682,9 +682,10 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           createdAt: "2026-08-01T00:00:00.000Z",
           updatedAt: "2026-08-01T00:00:00.000Z",
         };
-        const activation = yield* Deferred.make<void>();
-        const sweepStarted = yield* Deferred.make<void>();
+        let activation = yield* Deferred.make<void>();
+        let sweepStarted = yield* Deferred.make<void>();
         const commands: Array<OrchestrationV2ServerCommand> = [];
+        const creditCleanups: Array<unknown> = [];
         const dependencies = Layer.mergeAll(
           Layer.mock(Orchestrator.OrchestratorV2)({
             streamDomainEvents: Stream.never,
@@ -707,6 +708,8 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             checkedOutPullRequest: () => Effect.succeed(checkedOut),
           }),
           Layer.mock(PullRequestService.PullRequestService)({
+            removeAgentCreditsFromBody: (ref) =>
+              Effect.sync(() => creditCleanups.push(ref)).pipe(Effect.as(true)),
             summary: () =>
               Effect.succeed({
                 ...detected,
@@ -731,7 +734,10 @@ describe("ThreadPullRequestServiceV2 reads", () => {
               }),
           }),
           Layer.mock(BackgroundPolicy.BackgroundPolicy)({}),
-          Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
+          Layer.succeed(
+            ServerActivation.ServerActivation,
+            Effect.suspend(() => Deferred.await(activation)),
+          ),
           Layer.succeed(
             SecureRandom.SecureRandom,
             SecureRandom.make((size) => new Uint8Array(size).fill(1)),
@@ -739,13 +745,14 @@ describe("ThreadPullRequestServiceV2 reads", () => {
           FileSystem.layerNoop({}),
           Path.layer,
         );
-        yield* Effect.gen(function* () {
+        const sweep = Effect.gen(function* () {
           const service = yield* ThreadPullRequestService.make;
           yield* service.start();
           yield* Deferred.succeed(activation, undefined);
           yield* Deferred.await(sweepStarted);
           yield* service.drain;
         }).pipe(Effect.provide(dependencies));
+        yield* sweep;
 
         expect(
           commands.map((command) => {
@@ -759,6 +766,13 @@ describe("ThreadPullRequestServiceV2 reads", () => {
             : ["older", "same-time"]
           ).map((id) => [id, reference]),
         );
+        // An open PR T3 just linked loses its agent credit lines once; a saved one is not edited again.
+        expect(creditCleanups).toEqual(state === "open" ? [reference] : []);
+        threads = threads.map((thread) => ({ ...thread, branchPullRequest: reference }));
+        activation = yield* Deferred.make<void>();
+        sweepStarted = yield* Deferred.make<void>();
+        yield* sweep;
+        expect(creditCleanups).toEqual(state === "open" ? [reference] : []);
       }),
   );
 
