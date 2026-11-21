@@ -24,6 +24,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -419,7 +420,12 @@ it.effect("waitForThread can wait past an ended run for the thread's delegated w
             Effect.sync(
               () =>
                 ({
-                  thread: { id: threadId, projectId, deletedAt: null },
+                  thread: {
+                    id: threadId,
+                    projectId,
+                    deletedAt: null,
+                    lineage: { relationshipToParent: null },
+                  },
                   runs,
                   messages: [],
                   subagents,
@@ -489,7 +495,12 @@ it.effect("waitForThread settles delegated work on a thread rolled back past its
           streamStoredEventsFrom: () => Stream.never,
           getThreadRecords: () =>
             Effect.succeed({
-              thread: { id: threadId, projectId, deletedAt: null },
+              thread: {
+                id: threadId,
+                projectId,
+                deletedAt: null,
+                lineage: { relationshipToParent: null },
+              },
               runs: [rolledBack],
               messages: [],
               subagents: [],
@@ -522,6 +533,71 @@ it.effect("waitForThread settles delegated work on a thread rolled back past its
       resultRun: { id: runId, status: "rolled_back" },
     });
   }),
+);
+
+it.effect.each([
+  { name: "a top-level thread settles", lineage: null, settles: true },
+  { name: "a delegated child holds", lineage: "subagent", settles: false },
+] as const)(
+  "waitForThread on delegated work with a dev server left running: $name",
+  ({ lineage, settles }) =>
+    Effect.gen(function* () {
+      const projectId = ProjectId.make("project:thread-management:wait-dev-server");
+      const threadId = ThreadId.make("thread:thread-management:wait-dev-server");
+      const runId = RunId.make("run:thread-management:wait-dev-server");
+      const run = {
+        id: runId,
+        ordinal: 1,
+        status: "completed",
+        startedAt: DateTime.makeUnsafe(0),
+        completedAt: DateTime.makeUnsafe(0),
+      } as unknown as OrchestrationV2Run;
+      const layerTest = ThreadManagementService.layer.pipe(
+        Layer.provide(Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({})),
+        Layer.provide(
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadEventSequence: () => Effect.succeed(0),
+            restartContinuationPending: () => Effect.succeed(false),
+            delegatedTaskResultPending: () => Effect.succeed(false),
+            streamStoredEventsFrom: () => Stream.never,
+            getThreadRecords: () =>
+              Effect.succeed({
+                thread: {
+                  id: threadId,
+                  projectId,
+                  deletedAt: null,
+                  lineage: { relationshipToParent: lineage },
+                },
+                runs: [run],
+                messages: [],
+                subagents: [],
+                providerThreads: [
+                  { pendingBackgroundTasks: [{ taskId: "dev-server", kind: "command" }] },
+                ],
+              } as unknown as OrchestrationV2ThreadProjection),
+          }),
+        ),
+        Layer.provide(ServerSettings.layerTest()),
+        Layer.provide(layerReceiptsTest),
+      );
+      const service = yield* ThreadManagementService.ThreadManagementService.pipe(
+        Effect.provide(layerTest),
+      );
+      const fiber = yield* service
+        .waitForThread({
+          projectId,
+          threadId,
+          runId,
+          timeoutMs: 60_000,
+          untilDelegatedWorkSettled: true,
+        })
+        .pipe(Effect.forkChild);
+      yield* TestClock.adjust(Duration.millis(60_000));
+      const result = yield* Fiber.join(fiber);
+
+      expect(result.timedOut).toBe(!settles);
+      expect(result.resultRun?.id).toBe(settles ? runId : undefined);
+    }),
 );
 
 it.effect("waitForThread returns the cut run once its continuation is declined", () =>
@@ -573,6 +649,7 @@ it.effect("waitForThread returns the cut run once its continuation is declined",
 
 it.effect.each([
   "live",
+  "all-running",
   "no-match",
   "no-match-clear",
   "no-session",
@@ -600,13 +677,20 @@ it.effect.each([
         lastRunOrdinal: 1,
         handoffIds: [],
         forkedFrom: null,
-        pendingBackgroundTasks: [{ taskId: "tests", kind: "command" }],
+        pendingBackgroundTasks: [
+          { taskId: "tests", kind: "command" },
+          { taskId: "review", kind: "subagent" },
+        ],
         contextUsage: null,
         nativeMetadata: null,
         createdAt: now,
         updatedAt: now,
       };
-      const calls: Array<{ providerThreadId: ProviderThreadId; awaited: boolean }> = [];
+      const calls: Array<{
+        providerThreadId: ProviderThreadId;
+        taskIds: ReadonlyArray<string>;
+        awaited: boolean;
+      }> = [];
       const runtime = {
         driver,
         providerSessionId,
@@ -621,6 +705,7 @@ it.effect.each([
                 Effect.sync(() => {
                   calls.push({
                     providerThreadId: input.providerThread.id,
+                    taskIds: input.taskIds,
                     awaited: input.awaited,
                   });
                   return { matched: input.taskIds.filter((taskId) => taskId === "tests") };
@@ -655,7 +740,9 @@ it.effect.each([
         return yield* service
           .awaitBackgroundTasks({
             threadId,
-            taskIds: state.startsWith("no-match") ? ["finished"] : ["tests", "finished"],
+            ...(state === "all-running"
+              ? {}
+              : { taskIds: state.startsWith("no-match") ? ["finished"] : ["tests", "finished"] }),
             awaited: state !== "no-match-clear",
           })
           .pipe(Effect.result);
@@ -665,15 +752,28 @@ it.effect.each([
         expect(result).toMatchObject({
           success: { matched: ["tests"], unmatched: ["finished"] },
         });
-        expect(calls).toEqual([{ providerThreadId, awaited: true }]);
+        expect(calls).toEqual([
+          { providerThreadId, taskIds: ["tests", "finished"], awaited: true },
+        ]);
+      } else if (state === "all-running") {
+        // Without ids, every running command and Monitor, but no subagent.
+        expect(result).toMatchObject({ success: { matched: ["tests"], unmatched: [] } });
+        expect(calls).toEqual([{ providerThreadId, taskIds: ["tests"], awaited: true }]);
       } else if (state === "no-match") {
         expect(result).toMatchObject({
-          failure: { _tag: "ThreadManagementBackgroundWaitError", reason: "unmatched" },
+          failure: {
+            _tag: "ThreadManagementBackgroundWaitError",
+            reason: "unmatched",
+            runningTaskIds: ["tests"],
+          },
         });
-        expect(calls).toEqual([{ providerThreadId, awaited: true }]);
+        expect(Result.isFailure(result) ? result.failure.message : "").toContain(
+          "Running here: tests.",
+        );
+        expect(calls).toEqual([{ providerThreadId, taskIds: ["finished"], awaited: true }]);
       } else if (state === "no-match-clear") {
         expect(result).toMatchObject({ success: { matched: [], unmatched: ["finished"] } });
-        expect(calls).toEqual([{ providerThreadId, awaited: false }]);
+        expect(calls).toEqual([{ providerThreadId, taskIds: ["finished"], awaited: false }]);
       } else {
         expect(result).toMatchObject({
           failure: {

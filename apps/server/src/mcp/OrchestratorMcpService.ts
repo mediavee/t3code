@@ -70,7 +70,10 @@ import {
   SECRET_REQUEST_UNSAVED_NOTE,
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentValue, withLegacyUltracodeEffort } from "@t3tools/shared/model";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  backgroundWorkHoldsCompletion,
+  withDelegatedChildCommandsLeftRunning,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { runRanAfter } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
@@ -108,6 +111,7 @@ import type {
 } from "../orchestration-v2/ProjectionStore.ts";
 import {
   delegatedTaskAwaitsWork,
+  delegatedTaskOwnBackgroundTasks,
   delegatedTaskResultRun,
   delegatedTaskRuns,
   runOutcome,
@@ -1883,7 +1887,8 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(threadManagementFailure));
     const childRun = delegatedTaskRun(childControls, task);
-    const progress = delegatedTaskProgress(childControls);
+    const readAt = yield* DateTime.now;
+    const progress = delegatedTaskProgress(childControls, readAt);
     const followupRuns =
       childRun?.delegatedTaskId === task.id ? delegatedTaskRuns(childControls, task.id) : undefined;
     const taskResultRun =
@@ -1893,7 +1898,7 @@ const make = Effect.gen(function* () {
         ? progress.state
         : !isTerminalTaskStatus(taskStatusForRun(taskResultRun))
           ? "working"
-          : delegatedTaskAwaitsWork(followupRuns, childControls)
+          : delegatedTaskAwaitsWork(followupRuns, childControls, readAt)
             ? "waiting_for_children"
             : "result_available";
     const heldForRestart =
@@ -1962,7 +1967,13 @@ const make = Effect.gen(function* () {
       task.result !== null
         ? task.result
         : taskResultRun !== undefined && isTerminalTaskStatus(status)
-          ? resultText(taskResultRun)
+          ? // Read past a hold's bound before the orchestrator records it, as it will.
+            withDelegatedChildCommandsLeftRunning(
+              resultText(taskResultRun),
+              task.cancelledRunId === undefined
+                ? delegatedTaskOwnBackgroundTasks(followupRuns ?? [], childControls)
+                : [],
+            )
           : null;
     const resultTransfers = childControls.contextTransfers.filter(
       (transfer) =>

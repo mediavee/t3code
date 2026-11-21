@@ -114,7 +114,11 @@ describe("OrchestratorMcpService", () => {
         ],
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
-        thread: { id: childThreadId, title: "Child" },
+        thread: {
+          id: childThreadId,
+          lineage: { relationshipToParent: "subagent" },
+          title: "Child",
+        },
         runs: [
           {
             id: childRunId,
@@ -285,7 +289,11 @@ describe("OrchestratorMcpService", () => {
         ],
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
-        thread: { id: childThreadId, title: "Child" },
+        thread: {
+          id: childThreadId,
+          lineage: { relationshipToParent: "subagent" },
+          title: "Child",
+        },
         runs: [
           {
             id: cutRunId,
@@ -443,7 +451,11 @@ describe("OrchestratorMcpService", () => {
       let providerStarted = false;
       const childProjection = () =>
         ({
-          thread: { id: childThreadId, title: "Child task" },
+          thread: {
+            id: childThreadId,
+            lineage: { relationshipToParent: "subagent" },
+            title: "Child task",
+          },
           runs: [
             {
               id: childRunId,
@@ -541,7 +553,11 @@ describe("OrchestratorMcpService", () => {
       // The mock ignores run filters, so every report is loaded whichever runs are asked for.
       const childProjection = () =>
         ({
-          thread: { id: childThreadId, title: "Child task" },
+          thread: {
+            id: childThreadId,
+            lineage: { relationshipToParent: "subagent" },
+            title: "Child task",
+          },
           runs,
           contextTransfers: [],
           messages: reports.map(([ordinal, text]) => ({
@@ -645,7 +661,11 @@ describe("OrchestratorMcpService", () => {
       });
       const childProjection = () =>
         ({
-          thread: { id: childThreadId, title: "Child task" },
+          thread: {
+            id: childThreadId,
+            lineage: { relationshipToParent: "subagent" },
+            title: "Child task",
+          },
           runs: [childRun()],
           contextTransfers: [],
           messages: [],
@@ -746,7 +766,11 @@ describe("OrchestratorMcpService", () => {
         ],
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
-        thread: { id: childThreadId, title: "Child" },
+        thread: {
+          id: childThreadId,
+          lineage: { relationshipToParent: "subagent" },
+          title: "Child",
+        },
         runs: [],
         contextTransfers: [],
         messages: [],
@@ -834,7 +858,11 @@ describe("OrchestratorMcpService", () => {
           }) as unknown as OrchestrationV2ThreadProjection;
         // A finished run whose binding to the follow-up was lost.
         const childProjection = {
-          thread: { id: childThreadId, title: "Child" },
+          thread: {
+            id: childThreadId,
+            lineage: { relationshipToParent: "subagent" },
+            title: "Child",
+          },
           runs:
             childState === "no runs"
               ? []
@@ -943,7 +971,11 @@ describe("OrchestratorMcpService", () => {
         ],
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
-        thread: { id: childThreadId, title: "Child" },
+        thread: {
+          id: childThreadId,
+          lineage: { relationshipToParent: "subagent" },
+          title: "Child",
+        },
         runs: [{ id: childRunId, status: "running" }],
         contextTransfers: [],
         messages: [],
@@ -1045,7 +1077,11 @@ describe("OrchestratorMcpService", () => {
         ],
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
-        thread: { id: childThreadId, title: "Child" },
+        thread: {
+          id: childThreadId,
+          lineage: { relationshipToParent: "subagent" },
+          title: "Child",
+        },
         runs: [{ id: childRunId, status: "running" }],
         contextTransfers: [],
         messages: [],
@@ -1140,7 +1176,11 @@ describe("OrchestratorMcpService", () => {
           ],
         } as unknown as OrchestrationV2ThreadProjection;
         const childProjection = {
-          thread: { id: childThreadId, title: "Child" },
+          thread: {
+            id: childThreadId,
+            lineage: { relationshipToParent: "subagent" },
+            title: "Child",
+          },
           runs: [],
           contextTransfers: [],
           messages: [],
@@ -1231,7 +1271,11 @@ describe("OrchestratorMcpService", () => {
         ],
       } as unknown as OrchestrationV2ThreadProjection;
       const childProjection = {
-        thread: { id: childThreadId, title: "Child" },
+        thread: {
+          id: childThreadId,
+          lineage: { relationshipToParent: "subagent" },
+          title: "Child",
+        },
         runs: [{ id: childRunId, status: "running" }],
         contextTransfers: [],
         messages: [],
@@ -1351,7 +1395,11 @@ describe("OrchestratorMcpService", () => {
         [
           childThreadId,
           {
-            thread: { id: childThreadId, title: "Child" },
+            thread: {
+              id: childThreadId,
+              lineage: { relationshipToParent: "subagent" },
+              title: "Child",
+            },
             runs: [{ id: RunId.make("run:mcp-cancel-grandchild-child"), status: "running" }],
             contextTransfers: [],
             messages: [],
@@ -1625,7 +1673,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     }) as unknown as OrchestrationV2ThreadProjection;
 
   const childProjection = {
-    thread: { id: childThreadId, title: "Child" },
+    thread: { id: childThreadId, lineage: { relationshipToParent: "subagent" }, title: "Child" },
     runs: [],
     contextTransfers: [],
     messages: [],

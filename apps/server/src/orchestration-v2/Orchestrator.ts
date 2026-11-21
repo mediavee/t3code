@@ -95,6 +95,7 @@ import { outputRequestProblem } from "./runOutput.ts";
 import { recordThreadOpen } from "@t3tools/shared/paletteSearch";
 import {
   backgroundWorkHoldsCompletion,
+  withDelegatedChildCommandsLeftRunning,
   derivePendingBackgroundWork,
   hasPendingBackgroundSubagent,
   pendingBackgroundTurnItems,
@@ -103,6 +104,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as FiberMap from "effect/FiberMap";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
@@ -142,6 +144,8 @@ import {
   continuationFailedBeforePrompt,
   continuationStartRetryDelayMs,
   delegatedTaskAwaitsWork,
+  delegatedTaskBackgroundHold,
+  delegatedTaskOwnBackgroundTasks,
   delegatedTaskResultRun,
   delegatedTaskRuns,
   isRestartContinuationSource,
@@ -15022,14 +15026,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         childThreadId,
         { taskIds, windowSize: DELEGATED_CHILD_RUN_WINDOW },
       );
-      const progress = delegatedTaskProgress(controls);
+      const now = yield* DateTime.now;
+      const progress = delegatedTaskProgress(controls, now);
       // The latest result may have ended before the runs read above; then read them all.
       if (
         controls.runsFloor !== undefined &&
         (progress.resultRun === undefined || !ranSince(progress.resultRun, controls.runsFloor))
       ) {
         const all = yield* readAllDelegatedChildControls(childThreadId);
-        return { controls: all, progress: delegatedTaskProgress(all) };
+        return { controls: all, progress: delegatedTaskProgress(all, now) };
       }
       return { controls, progress };
     },
@@ -15132,6 +15137,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           options.task.cancelledRunId === undefined
             ? childControls
             : { subagents: childControls.subagents, providerThreads: [] },
+          yield* DateTime.now,
         )
       )
         return;
@@ -15227,7 +15233,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
 
       const now = yield* DateTime.now;
-      const result = subagentResultForRun(childProjection, { ...childRun, status: outcome });
+      const runResult = subagentResultForRun(childProjection, { ...childRun, status: outcome });
+      // A hold that ran out leaves these running; each task names only its own.
+      const ownBackgroundTasks = cancelled
+        ? []
+        : delegatedTaskOwnBackgroundTasks(taskRuns, childControls);
+      const result = {
+        ...runResult,
+        text: withDelegatedChildCommandsLeftRunning(runResult.text, ownBackgroundTasks),
+      };
       const { parentRun, ...parentProjection } = yield* readDelegatedCompletionPlanRecords(
         parentThreadId,
         task,
@@ -15358,13 +15372,77 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   );
 
   // A waiting run has ended its turn, so its task waits only on the work it left.
-  const progressAfterTurn = (child: Parameters<typeof delegatedTaskProgress>[0]) =>
-    delegatedTaskProgress({
-      ...child,
-      runs: child.runs.map((run) =>
-        run.status === "waiting" ? { ...run, status: "completed" as const } : run,
-      ),
-    });
+  const progressAfterTurn = (
+    child: Parameters<typeof delegatedTaskProgress>[0],
+    now: DateTime.Utc,
+  ) =>
+    delegatedTaskProgress(
+      {
+        ...child,
+        runs: child.runs.map((run) =>
+          run.status === "waiting" ? { ...run, status: "completed" as const } : run,
+        ),
+      },
+      now,
+    );
+
+  // Tasks seen holding per provider thread, so a roster that drops one finalizes its child.
+  // Any command counts: a delegated child's hold covers those it did not await too.
+  const holdingTaskIdsByProviderThread = new Map<string, ReadonlySet<string>>();
+  const holdingTaskIds = (tasks: OrchestrationV2ProviderThread["pendingBackgroundTasks"]) =>
+    new Set(
+      (tasks ?? [])
+        .filter((task) => task.kind === "command" || backgroundWorkHoldsCompletion([task]))
+        .map((task) => task.taskId),
+    );
+
+  // No event marks a child's command hold running out, so a timer looks again at the earliest
+  // open task's bound. The look runs in its own fiber so a hold it renews does not interrupt it.
+  const orchestratorScope = yield* Effect.scope;
+  const commandHoldExpiries = yield* FiberMap.make<ThreadId>();
+  const armedCommandHoldEnds = new Map<ThreadId, number>();
+  const armCommandHold = Effect.fnUntraced(function* (
+    child: Pick<DelegatedChildControls, "providerThreads"> & { readonly threadId: ThreadId },
+    parentThreadId: ThreadId,
+    endsAt: DateTime.Utc | undefined,
+  ): Effect.fn.Return<void> {
+    const childThreadId = child.threadId;
+    const armed = armedCommandHoldEnds.get(childThreadId);
+    if (endsAt === undefined) {
+      if (armed === undefined) return;
+      armedCommandHoldEnds.delete(childThreadId);
+      return yield* FiberMap.remove(commandHoldExpiries, childThreadId);
+    }
+    // A roster read before this server saw it change would not count its tasks as held.
+    for (const thread of child.providerThreads)
+      if (!holdingTaskIdsByProviderThread.has(thread.id)) {
+        const holding = holdingTaskIds(thread.pendingBackgroundTasks);
+        if (holding.size > 0) holdingTaskIdsByProviderThread.set(thread.id, holding);
+      }
+    if (armed === DateTime.toEpochMillis(endsAt)) return;
+    armedCommandHoldEnds.set(childThreadId, DateTime.toEpochMillis(endsAt));
+    yield* FiberMap.run(
+      commandHoldExpiries,
+      childThreadId,
+      Effect.gen(function* () {
+        yield* Effect.sleep(DateTime.distance(yield* DateTime.now, endsAt));
+        armedCommandHoldEnds.delete(childThreadId);
+        yield* threadReactions
+          .run(
+            childThreadId,
+            threadDispatch.withLock(parentThreadId, finalizeAppOwnedSubagent(childThreadId)).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Failed to finalize a delegated child after its command hold", {
+                  threadId: childThreadId,
+                  cause,
+                }),
+              ),
+            ),
+          )
+          .pipe(Effect.forkIn(orchestratorScope));
+      }),
+    );
+  });
 
   const finalizeAppOwnedSubagent = Effect.fn("Orchestrator.finalizeAppOwnedSubagent")(function* (
     childThreadId: ThreadId,
@@ -15398,6 +15476,28 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     const { controls: childControls, progress } = yield* readDelegatedChildControls(
       childThreadId,
       openTasks.map((task) => task.id),
+    );
+    const now = yield* DateTime.now;
+    // Each task's bound runs from its own last turn, so a later follow-up does not delay it.
+    const commandHoldEnds = openTasks.flatMap((task) => {
+      if (task.cancelledRunId !== undefined) return [];
+      const taskRuns = delegatedTaskRuns(childControls, task.id);
+      const endsAt =
+        taskRuns.length > 0
+          ? delegatedTaskBackgroundHold(taskRuns, childControls, now).commandHoldEndsAt
+          : task.id === forkedFrom.nodeId
+            ? progress.commandHoldEndsAt
+            : undefined;
+      return endsAt === undefined ? [] : [endsAt];
+    });
+    yield* armCommandHold(
+      { threadId: childThreadId, providerThreads: childControls.providerThreads },
+      parentThreadId,
+      commandHoldEnds.reduce<DateTime.Utc | undefined>(
+        (earliest, endsAt) =>
+          earliest === undefined || DateTime.isLessThan(endsAt, earliest) ? endsAt : earliest,
+        undefined,
+      ),
     );
     for (const task of openTasks) {
       // A cancelled task does not wait for the work its cancel is stopping.
@@ -16708,17 +16808,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // A child whose run ends while its background tasks or its own subagents still run has no
   // result yet. When that work settles there is no run update to finalize it, so these events
   // do it. A roster counts when a task seen holding leaves it, since that may be one follow-up's.
-  const holdingTaskIdsByProviderThread = new Map<string, ReadonlySet<string>>();
   const settlesChildWork = (stored: OrchestrationV2StoredEvent) => {
     const { event } = stored;
     if (event.type === "subagent.updated")
       return !isOrchestrationV2WorkActive(event.payload.status);
     if (event.type !== "provider-thread.updated") return false;
-    const holding = new Set(
-      (event.payload.pendingBackgroundTasks ?? [])
-        .filter((task) => backgroundWorkHoldsCompletion([task]))
-        .map((task) => task.taskId),
-    );
+    const holding = holdingTaskIds(event.payload.pendingBackgroundTasks);
     const previous = holdingTaskIdsByProviderThread.get(event.payload.id);
     if (holding.size > 0) holdingTaskIdsByProviderThread.set(event.payload.id, holding);
     else holdingTaskIdsByProviderThread.delete(event.payload.id);
@@ -16883,12 +16978,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         if (
           run === undefined ||
           delegatedTaskTerminalStatus(run.status) === null ||
-          delegatedTaskAwaitsWork(runs, child)
+          delegatedTaskAwaitsWork(runs, child, yield* DateTime.now)
         )
           return true;
         return yield* childAwaitsRestartContinuation(runs, run);
       }
-      const progress = delegatedTaskProgress(child);
+      const progress = delegatedTaskProgress(child, yield* DateTime.now);
       if (progress.state !== "result_available") return true;
       if (progress.resultRun === undefined) return false;
       return yield* childAwaitsRestartContinuation(child.runs, progress.resultRun);
@@ -16988,13 +17083,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const followUpRun = child.runs
           .filter((run) => run.delegatedTaskId === input.taskId)
           .toSorted((a, b) => b.ordinal - a.ordinal)[0];
+        const readAt = yield* DateTime.now;
         const unsettled =
           followUpRun === undefined
             ? child.thread.forkedFrom?.type === "node" &&
               child.thread.forkedFrom.nodeId === input.taskId &&
-              progressAfterTurn(child).state !== "result_available"
+              progressAfterTurn(child, readAt).state !== "result_available"
             : delegatedTaskTerminalStatus(runOutcome(followUpRun)) === null ||
-              delegatedTaskAwaitsWork(delegatedTaskRuns(child, input.taskId), child);
+              delegatedTaskAwaitsWork(delegatedTaskRuns(child, input.taskId), child, readAt);
         yield* threadDispatch.withLock(
           command.threadId,
           Effect.gen(function* () {
@@ -17022,8 +17118,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             const activeRun = child.runs
               .filter((run) => isLiveRun(run) && !monitorRunIds.has(run.id))
               .toSorted((a, b) => b.ordinal - a.ordinal)[0];
-            const cancelledRun = followUpRun ?? activeRun ?? progressAfterTurn(child).resultRun;
             const now = yield* DateTime.now;
+            const cancelledRun =
+              followUpRun ?? activeRun ?? progressAfterTurn(child, now).resultRun;
             const cancelledTask =
               task !== undefined && unsettled && cancelledRun !== undefined
                 ? { ...task, cancelledRunId: cancelledRun.id, updatedAt: now }
