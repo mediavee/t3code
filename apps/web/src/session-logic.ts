@@ -402,7 +402,11 @@ function projectedWorkEntry(
       return {
         ...common,
         label: title ?? resolve(msg("Thinking", { $context: "status of an agent reasoning" })),
-        ...(item.text ? { detail: item.text } : {}),
+        ...(item.text
+          ? { detail: item.text }
+          : item.detailsRemoved
+            ? { detail: resolve(msg("Details removed after 14 days in the archive.")) }
+            : {}),
       };
     case "command_execution":
       return {

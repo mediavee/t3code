@@ -32,6 +32,7 @@ import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
 import { projectStoredEventForWire } from "./WireProjection.ts";
 import { makeRunOutcomeRecorder, type RunOutcome } from "./RunMetrics.ts";
+import { withTruncatedCommandOutput } from "./payloadRetention.ts";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -414,7 +415,7 @@ const layerBase: Layer.Layer<
           event.type === "turn-item.updated"
             ? turnItemPositions
                 .normalize(
-                  event.payload,
+                  withTruncatedCommandOutput(event.payload),
                   event.payload.runId === null ? undefined : runOrdinals.get(event.payload.runId),
                 )
                 .pipe(Effect.map((payload) => ({ ...event, payload })))

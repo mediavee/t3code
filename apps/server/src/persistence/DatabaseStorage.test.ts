@@ -80,6 +80,8 @@ const compactionLayer = (
       Layer.succeed(ProjectionMaintenance.ProjectionMaintenanceV2, {
         pruneEventStore,
         purgeDeletedThread: () => Effect.succeed(0),
+        trimPayloads: () =>
+          Effect.succeed({ truncatedOutputCount: 0, trimmedThreadCount: 0, trimmedItemCount: 0 }),
       }),
     ),
     Layer.provide(Sqlite.layerMemory),
@@ -133,6 +135,80 @@ it.effect("remembers completion only after the paced pass finishes", () =>
           fs
             .writeFileString(file, content, options)
             .pipe(Effect.ensuring(Deferred.succeed(timestampWritten, undefined))),
+      }),
+    );
+  }).pipe(Effect.provide(testConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
+);
+
+it.effect("a malformed payload does not stop the scheduled compaction", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* ServerConfig.ServerConfig;
+    const timestampWritten = yield* Deferred.make<void>();
+    const longOutput = "o".repeat(70_000);
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`
+        INSERT INTO orchestration_v2_projection_threads (
+          thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+          created_at, updated_at, archived_at, payload_json
+        ) VALUES (
+          'thread:old', 'project', 'Old', 'codex', 'full-access', 'default',
+          '1969-11-01T00:00:00.000Z', '1969-11-01T00:00:00.000Z', '1969-11-01T00:00:00.000Z', '{}'
+        )
+      `;
+      const item = (id: string, threadId: string, payload: string) => sql`
+        INSERT INTO orchestration_v2_projection_turn_items (
+          turn_item_id, thread_id, ordinal, type, status, updated_at, payload_json
+        ) VALUES (${id}, ${threadId}, 1, 'command_execution', 'completed', '1969', ${payload})
+      `;
+      yield* item("malformed-live", "thread:live", "{not json");
+      yield* item("long", "thread:live", JSON.stringify({ output: longOutput }));
+      yield* item("malformed-old", "thread:old", "{not json");
+      yield* item("old", "thread:old", JSON.stringify({ type: "command_execution", output: "x" }));
+      yield* sql`
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          actor_kind, payload_json, metadata_json, application_event_version
+        ) VALUES (
+          'event:malformed', 'thread', 'thread:old', 1, 'turn-item.updated', '1969', 'server',
+          '{not json', '{}', 2
+        )
+      `;
+      yield* TestClock.adjust("1 minute");
+      yield* Deferred.await(timestampWritten);
+      const rows = yield* sql<{ readonly id: string; readonly payload: string }>`
+        SELECT turn_item_id AS id, payload_json AS payload
+        FROM orchestration_v2_projection_turn_items ORDER BY turn_item_id
+      `;
+      const payloads = new Map(rows.map((row) => [row.id, row.payload]));
+      assert.equal(payloads.get("malformed-live"), "{not json");
+      assert.equal(payloads.get("malformed-old"), "{not json");
+      assert.include(payloads.get("long"), "characters removed");
+      assert.deepEqual(JSON.parse(payloads.get("old") ?? ""), {
+        type: "command_execution",
+        detailsRemoved: true,
+      });
+    }).pipe(
+      Effect.provide(
+        DatabaseStorage.layer.pipe(
+          Layer.provide(ProjectionMaintenance.layer),
+          Layer.provideMerge(Sqlite.layerMemory),
+        ),
+      ),
+      Effect.provideService(FileSystem.FileSystem, {
+        ...fs,
+        writeFileString: (file, content, options) =>
+          fs
+            .writeFileString(file, content, options)
+            .pipe(
+              Effect.ensuring(
+                file === path.join(path.dirname(config.dbPath), "compacted-at-v2")
+                  ? Deferred.succeed(timestampWritten, undefined)
+                  : Effect.void,
+              ),
+            ),
       }),
     );
   }).pipe(Effect.provide(testConfig.pipe(Layer.provideMerge(NodeServices.layer)))),

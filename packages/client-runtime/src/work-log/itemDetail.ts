@@ -286,6 +286,8 @@ export function turnItemOutputImages(
 }
 
 export function turnItemHasDetail(item: OrchestrationV2TurnItem): boolean {
+  // The expanded row says why the details are gone.
+  if (item.detailsRemoved === true) return true;
   switch (item.type) {
     case "reasoning":
       return item.text.trim().length > 0;

@@ -13104,5 +13104,7 @@
   ],
   "fe3927cdd40da07b": "Control no válido",
   "74ff2ebf21a05651": "Una tarea de webhook no puede tener un comando de control.",
-  "ceb3cbae8957e562": "Introduce segundos enteros de 1 a {max} o déjalo en blanco."
+  "ceb3cbae8957e562": "Introduce segundos enteros de 1 a {max} o déjalo en blanco.",
+  "bb03c67cf65b5223": "Detalles eliminados tras 14 días en el archivo.",
+  "7d592f3346a6ad61": "Detalles eliminados tras 14 días en el archivo."
 }

@@ -55,7 +55,7 @@ const decodeTranscript = Schema.decodeUnknownEffect(
 
 const now = DateTime.makeUnsafe("2026-09-29T00:00:00.000Z");
 const environmentId = EnvironmentId.make("source-بيئة");
-const output = "Full tool output. ".repeat(4_000);
+const output = "Full tool output. ".repeat(3_000);
 const thread = Schema.decodeSync(OrchestrationV2AppThread)({
   id: "source-thread",
   projectId: "source-project",
@@ -254,24 +254,18 @@ it.effect("exports full history with size, scope, and missing-thread checks", ()
         0,
       );
     const boundaryOutput = "界" + "x".repeat(PROVIDER_SEND_TURN_MAX_FILE_BYTES - baseSize - 3);
+    const sql = Context.get(services, SqlClient.SqlClient);
+    const commandItemId = items.find((item) => item.type === "command_execution")!.id;
+    const setCommandPayload = (payload: Statement.Fragment) => sql`
+      UPDATE orchestration_v2_projection_turn_items SET payload_json = ${payload}
+      WHERE turn_item_id = ${commandItemId}
+    `;
     for (const [suffix, expectedStatus] of [
       ["", 200],
       ["x", 400],
     ] as const) {
-      yield* eventSink.write({
-        events: [
-          {
-            id: EventId.make(`boundary-${expectedStatus}`),
-            type: "turn-item.updated",
-            threadId: thread.id,
-            occurredAt: now,
-            payload: {
-              ...items.find((item) => item.type === "command_execution")!,
-              output: boundaryOutput + suffix,
-            },
-          },
-        ],
-      });
+      // Written to the row, as the sink would truncate an output this long before storing it.
+      yield* setCommandPayload(sql`json_set(payload_json, '$.output', ${boundaryOutput + suffix})`);
       const response = yield* read(thread.id);
       expect(response.status).toBe(expectedStatus);
       if (expectedStatus === 200) continue;
@@ -284,12 +278,6 @@ it.effect("exports full history with size, scope, and missing-thread checks", ()
       });
     }
 
-    const sql = Context.get(services, SqlClient.SqlClient);
-    const commandItemId = items.find((item) => item.type === "command_execution")!.id;
-    const setCommandPayload = (payload: Statement.Fragment) => sql`
-      UPDATE orchestration_v2_projection_turn_items SET payload_json = ${payload}
-      WHERE turn_item_id = ${commandItemId}
-    `;
     const fill = (bytes: number) => sql`printf('%.*c', ${bytes}, 'x')`;
     // Stored bytes the export drops do not count, and neither does a row SQLite cannot parse:
     // only what the export keeps can reject it.

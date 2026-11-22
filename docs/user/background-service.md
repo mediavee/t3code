@@ -78,7 +78,7 @@ For T3 Connect issues, see [T3 Connect troubleshooting](./t3-connect-troubleshoo
 
 ## Reclaim database space
 
-T3 Code automatically prunes old internal history while keeping conversations. Older databases that still hold freed space show a **Reclaim** button in **Settings → Maintenance** when at least 1 GiB is reclaimable (pauses the server/agents during repair).
+T3 Code automatically prunes old internal history while keeping conversations. It also keeps only the start and end of command output longer than 64K characters, and once a thread has stayed archived for 14 days it drops that thread's command output, tool results, reasoning and diffs; its messages stay, and the thread can still be unarchived. Older databases that still hold freed space show a **Reclaim** button in **Settings → Maintenance** when at least 1 GiB is reclaimable (pauses the server/agents during repair).
 
 For manually started servers (or CLI use), stop any hand-started server or desktop app and run:
 
