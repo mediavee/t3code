@@ -27,6 +27,7 @@ import * as KnownSecrets from "../secrets/KnownSecrets.ts";
 import { SecretRedactionStream } from "../secrets/secretRedaction.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { isTruncatedCommandOutput } from "./payloadRetention.ts";
 
 /** Output bypasses orchestration events; expanded rows receive tails, coalesced appends, then persisted output. */
 
@@ -86,7 +87,8 @@ function persistedCommandOutput(output: string | undefined): {
   const normalized = normalizeTerminalOutput(source);
   return {
     text: normalized.text,
-    truncated: normalized.truncated || source.length !== output.length,
+    truncated:
+      normalized.truncated || source.length !== output.length || isTruncatedCommandOutput(output),
   };
 }
 

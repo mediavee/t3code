@@ -1830,6 +1830,8 @@ const OrchestrationV2TurnItemBaseFields = {
   toolSurface: Schema.optional(ToolActivitySurface),
   toolIcon: Schema.optional(ToolActivityIcon),
   toolSource: Schema.optional(ToolActivitySource),
+  /** Retention removed this item's output, diff or reasoning text from an archived thread. */
+  detailsRemoved: Schema.optional(Schema.Boolean),
   id: TurnItemId,
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
