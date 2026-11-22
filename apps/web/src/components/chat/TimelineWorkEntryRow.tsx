@@ -448,12 +448,15 @@ function WorkEntryLogRow(props: WorkEntryRowProps) {
     payload?.type === "dynamic_tool"
       ? claudeSkillInvocation(payload.toolName, payload.input)
       : undefined;
+  // A trimmed item expands into the inspector, which says why its output is gone.
   const plainOutput =
-    toolGroupAction(workEntry) === "read"
-      ? workEntryReadOutput(workEntry, workspaceRoot)
-      : skill
-        ? (skill.args ?? null)
-        : undefined;
+    workEntry.projectedItem?.item.detailsRemoved === true
+      ? undefined
+      : toolGroupAction(workEntry) === "read"
+        ? workEntryReadOutput(workEntry, workspaceRoot)
+        : skill
+          ? (skill.args ?? null)
+          : undefined;
   const viewedImage =
     viewedImagePath && threadRef
       ? resolveViewedImageAsset(viewedImagePath, {
