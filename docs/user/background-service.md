@@ -171,7 +171,10 @@ For failures after signing in to T3 Connect, see
 ## Reclaim database space
 
 T3 Code removes internal history older than a day on its own while it runs;
-your conversations are kept. Databases created before this shrank automatically
+your conversations are kept. It also keeps only the start and end of command
+output longer than 64K characters, and once a thread has stayed archived for
+14 days it drops that thread's command output, tool results, reasoning and
+diffs; its messages stay, and the thread can still be unarchived. Databases created before this shrank automatically
 still hold the freed space on disk until a one-time offline repair returns it
 and turns on automatic shrinking. Settings > Maintenance (web and desktop) or
 Settings > Maintenance (mobile) suggests the repair when at least 1 GiB can be

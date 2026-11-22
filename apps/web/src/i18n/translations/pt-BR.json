@@ -1399,6 +1399,7 @@
   "4c9a0b64f128da3a": "Tentando novamente em {delay}s.",
   "5de030e595796117": "Thread criada",
   "c392becd445ecdba": "Pensando",
+  "bb03c67cf65b5223": "Detalhes removidos após 14 dias no arquivo.",
   "c01f9d3f3624c903": "Comando",
   "fc933cf9b3edd743": "{fileName} alterado",
   "9bdd23eb0206783f": "Alteração de arquivo",
@@ -4577,6 +4578,7 @@
       "v": "v"
     }
   ],
+  "7d592f3346a6ad61": "Detalhes removidos após 14 dias no arquivo.",
   "83c29850641c8935": "Na fila",
   "8402f099f88fd0e0": "Executando",
   "c5f5b73e92221a6a": "Aguardando",
