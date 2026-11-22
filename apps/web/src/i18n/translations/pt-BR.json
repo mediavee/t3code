@@ -12867,5 +12867,7 @@
   ],
   "fe3927cdd40da07b": "Verificação inválida",
   "74ff2ebf21a05651": "Uma tarefa de webhook não pode ter um comando de verificação.",
-  "ceb3cbae8957e562": "Digite segundos inteiros de 1 a {max} ou deixe em branco."
+  "ceb3cbae8957e562": "Digite segundos inteiros de 1 a {max} ou deixe em branco.",
+  "bb03c67cf65b5223": "Detalhes removidos após 14 dias no arquivo.",
+  "7d592f3346a6ad61": "Detalhes removidos após 14 dias no arquivo."
 }

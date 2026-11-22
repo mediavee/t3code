@@ -12874,5 +12874,7 @@
   ],
   "fe3927cdd40da07b": "Ogiltig kontroll",
   "74ff2ebf21a05651": "En webhook-uppgift kan inte ha ett kontrollkommando.",
-  "ceb3cbae8957e562": "Ange hela sekunder från 1 till {max}, eller lämna tomt."
+  "ceb3cbae8957e562": "Ange hela sekunder från 1 till {max}, eller lämna tomt.",
+  "bb03c67cf65b5223": "Detaljer togs bort efter 14 dagar i arkivet.",
+  "7d592f3346a6ad61": "Detaljer togs bort efter 14 dagar i arkivet."
 }

@@ -12867,5 +12867,7 @@
   ],
   "fe3927cdd40da07b": "Contrôle invalide",
   "74ff2ebf21a05651": "Une tâche webhook ne peut pas avoir de commande de contrôle.",
-  "ceb3cbae8957e562": "Saisissez un nombre entier de secondes de 1 à {max}, ou laissez vide."
+  "ceb3cbae8957e562": "Saisissez un nombre entier de secondes de 1 à {max}, ou laissez vide.",
+  "bb03c67cf65b5223": "Détails supprimés après 14 jours dans les archives.",
+  "7d592f3346a6ad61": "Détails supprimés après 14 jours dans les archives."
 }

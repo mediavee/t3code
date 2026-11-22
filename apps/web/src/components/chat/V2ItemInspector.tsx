@@ -249,7 +249,8 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
     (props.source === undefined
       ? environmentStreamsOutput
       : props.source.commandOutput !== undefined) &&
-    props.projectedItem.item.type === "command_execution";
+    props.projectedItem.item.type === "command_execution" &&
+    props.projectedItem.item.detailsRemoved !== true;
   const fetched = useFetchedTurnItem(
     props.projectedItem,
     props.environmentId,
@@ -261,6 +262,11 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
   useInitialOutputReady(streamsOutput || outputState.pending, props.onInitialOutputReady);
   return (
     <div className="space-y-2 text-xs" data-v2-item-inspector={item.type}>
+      {item.detailsRemoved ? (
+        <div className="text-muted-foreground italic">
+          <T>Details removed after 14 days in the archive.</T>
+        </div>
+      ) : null}
       {item.type === "reasoning" && item.text ? (
         <div className="rounded-md border border-border/45 bg-muted/15 p-2 italic text-muted-foreground">
           <ChatMarkdown
@@ -307,7 +313,7 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
                 <span className="text-diff-deletion">-{formatDiffCount(item.deletions ?? 0)}</span>
               </span>
             ) : null}
-            {props.onOpenToolDiff ? (
+            {props.onOpenToolDiff && !item.detailsRemoved ? (
               <Button
                 size="xs"
                 variant="outline"
