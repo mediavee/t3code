@@ -917,7 +917,8 @@ const make = Effect.gen(function* () {
       return { ...(yield* lastReplyHere(remote, runId, failed)), worktree: undefined };
     let reply: OrchestratorMcpThreadTimelineItem | undefined;
     let error: OrchestratorMcpThreadTimelineItem | undefined;
-    let afterPosition: number | undefined;
+    // Linked peers read newest first without a cursor; this scan runs forward.
+    let afterPosition = -1;
     let run: OrchestratorMcpThreadRun | undefined;
     let remainingItems = 0;
     let tailProbed = false;
@@ -932,10 +933,10 @@ const make = Effect.gen(function* () {
         // Keep the first and expected final activity pages whole. A result on a
         // middle page then needs an extra text read after the scan.
         maxCharsPerItem: failed && remainingItems > 100 ? 1 : 20_000,
-        ...(afterPosition === undefined ? {} : { afterPosition }),
+        afterPosition,
       });
       run ??= read.recentRuns.find((candidate) => candidate.runId === runId);
-      if (afterPosition === undefined) {
+      if (afterPosition === -1) {
         backgroundTasks = read.thread.pendingBackgroundTasks ?? [];
         worktree =
           read.thread.worktreePath === null

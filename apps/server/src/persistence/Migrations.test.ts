@@ -8,6 +8,7 @@ import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { hasPendingMigrations, migrationManifest, runMigrations } from "./Migrations.ts";
+import { applyForkIndexes } from "./Migrations/ForkIndexes.ts";
 
 const v2Migrations = migrationManifest.filter(([id]) => id >= 55);
 const newerMigrationId = Math.max(...migrationManifest.map(([id]) => id)) + 1;
@@ -193,14 +194,17 @@ describe("runMigrations", () => {
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         if (state === "numbered-head") {
-          yield* runMigrations({ toMigrationInclusive: 102 });
+          yield* runMigrations();
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_subagents_remote_parent_done_idx`;
           yield* sql`DROP INDEX IF EXISTS orchestration_v2_projection_turn_items_transient_failure_idx`;
           yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN last_run_thread_id`;
           yield* sql`ALTER TABLE scheduled_tasks DROP COLUMN gate_json`;
         }
-        // With the indexes present, only the ledger rows make the database pending.
-        if (state === "fork-recorded") yield* runMigrations();
+        // An earlier fork build stopped at upstream 102, created its indexes and numbered them.
+        if (state === "fork-recorded") {
+          yield* runMigrations({ toMigrationInclusive: 102 });
+          yield* applyForkIndexes();
+        }
         // The rows must be gone before the highest recorded id decides which migrations run.
         if (state === "fork-recorded-behind") yield* runMigrations({ toMigrationInclusive: 101 });
         if (state === "fork-recorded" || state === "fork-recorded-behind") {
@@ -233,7 +237,6 @@ describe("runMigrations", () => {
         `;
         assert.lengthOf(columns, 4);
         const recorded = yield* history;
-        assert.strictEqual(Math.max(...recorded.map(([id]) => id)), 102);
         assert.deepStrictEqual(recorded, migrationManifest);
         assert.isFalse(yield* hasPendingMigrations());
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),

@@ -100,5 +100,8 @@
   "099_BackgroundRecoveryIndexes.ts": "9d37f5e3da7be31771207092551a71bd88cc521c",
   "100_TurnStartReadIndexes.ts": "3c90f82c6fae40cd899efa67ae4bfa5902149b8a",
   "101_DelegatedTaskReadIndexes.ts": "e057296dafab2576a381cf34df218a9c35e54a39",
-  "102_ThreadItemCounts.ts": "5cbfee859cd4541be3ca25d3d7c719003ca53f42"
+  "102_ThreadItemCounts.ts": "5cbfee859cd4541be3ca25d3d7c719003ca53f42",
+  "103_IssueTrackerAdditionalScopes.ts": "aa4656e52d291188ecf35a68083a6aa70d6204ef",
+  "104_ProjectionProjectsTrackedFolders.ts": "34c69abe567bc671e118fd4f8dcdfb4925e8576c",
+  "105_TaskFolders.ts": "87ddeb3e806cea99b6143aa19e9665f653ed5f86"
 }
