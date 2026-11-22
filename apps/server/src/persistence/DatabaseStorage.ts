@@ -117,16 +117,16 @@ const make = Effect.gen(function* () {
     Effect.catch((cause) => Effect.logWarning("Database storage inspection failed", { cause })),
   );
 
-  const reclaim = Effect.suspend(() => {
+  const reclaimPages = (maxPages: number, betweenPages: Effect.Effect<void>) => {
     let page = 0;
     return Effect.gen(function* () {
       if (!(yield* readLayout).incrementalVacuum) return;
       // The driver steps once per statement; incremental_vacuum frees one page per step. Yield between pages.
-      for (; page < RECLAIM_PAGES_PER_PASS; page++) {
+      for (; page < maxPages; page++) {
         const free = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;
         if ((free[0]?.freelist_count ?? 0) === 0) break;
         yield* sql`PRAGMA incremental_vacuum(1)`;
-        yield* Effect.yieldNow;
+        yield* betweenPages;
       }
     }).pipe(
       Effect.ensuring(Effect.suspend(() => Effect.annotateCurrentSpan("db.reclaimed_pages", page))),
@@ -135,7 +135,8 @@ const make = Effect.gen(function* () {
       Effect.withTracerEnabled(false),
       Effect.withSpan("DatabaseStorage.reclaim"),
     );
-  });
+  };
+  const reclaim = Effect.suspend(() => reclaimPages(RECLAIM_PAGES_PER_PASS, Effect.yieldNow));
 
   // Even a pass that deletes nothing scans the event store. Persist completion
   // so restarting does not trigger another scan before the six-hour interval.
@@ -150,14 +151,19 @@ const make = Effect.gen(function* () {
       sliceStarted = yield* Clock.monotonicTimeNanos;
     });
     const result = yield* maintenance.pruneEventStore(betweenPages);
+    const trimmed = yield* maintenance.trimPayloads(betweenPages);
+    // Return what the pass freed now; the per-minute reclaim would take hours for gigabytes.
+    yield* reclaimPages(Number.POSITIVE_INFINITY, Effect.andThen(Effect.yieldNow, betweenPages));
     const completedAt = yield* Clock.currentTimeMillis;
     yield* fs.writeFileString(compactedAtPath, String(completedAt)).pipe(Effect.ignore);
     if (
+      trimmed.truncatedOutputCount > 0 ||
+      trimmed.trimmedItemCount > 0 ||
       result.deletedEventCount > 0 ||
       result.deletedReceiptCount > 0 ||
       result.purgedRowCount > 0
     ) {
-      yield* Effect.logInfo("Compacted orchestration history", result);
+      yield* Effect.logInfo("Compacted orchestration history", { ...trimmed, ...result });
     }
   }).pipe(
     Effect.catch((cause) =>
