@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   EventId,
+  MessageId,
   NodeId,
   PlanId,
   type OrchestrationV2AppThread,
@@ -27,6 +28,8 @@ import * as EventSink from "./EventSink.ts";
 import * as EventStore from "./EventStore.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import * as ProjectionReplay from "./testkit/ProjectionReplay.ts";
+import { COMMAND_OUTPUT_LIMIT } from "./payloadRetention.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 
 const database = SqlitePersistence.layerMemory;
@@ -38,6 +41,7 @@ const layerTest = Layer.mergeAll(
   OrchestrationEventStore.layer.pipe(Layer.provide(database)),
   EventSink.layer.pipe(Layer.provide(stores)),
   ProjectionMaintenance.layer.pipe(Layer.provide(stores)),
+  ProjectionReplay.layer.pipe(Layer.provide(stores)),
 );
 
 const providerInstanceId = ProviderInstanceId.make("codex");
@@ -382,4 +386,266 @@ it.effect("keeps an anchor that a row appended during the pass borrows from", ()
       );
     }),
   ).pipe(Effect.provide(layerTest)),
+);
+
+function retentionItems(
+  threadId: ThreadId,
+  now: DateTime.Utc,
+): ReadonlyArray<OrchestrationV2TurnItem> {
+  const base = (key: string, ordinal: number) => ({
+    id: TurnItemId.make(`turn-item:${threadId}:${key}`),
+    threadId,
+    runId: null,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal,
+    status: "completed" as const,
+    title: key,
+    startedAt: now,
+    completedAt: now,
+    updatedAt: now,
+  });
+  return [
+    {
+      ...base("question", 1),
+      type: "user_message",
+      messageId: MessageId.make(`message:${threadId}:question`),
+      inputIntent: "turn_start",
+      text: "What changed?",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "web",
+    },
+    { ...base("command", 2), type: "command_execution", input: "ls", output: "a\nb", exitCode: 0 },
+    { ...base("reasoning", 3), type: "reasoning", text: "Thinking it over", streaming: false },
+    {
+      ...base("edit", 4),
+      type: "file_change",
+      fileName: "a.ts",
+      additions: 1,
+      deletions: 0,
+      diffStr: "+const a = 1;",
+    },
+    {
+      ...base("tool", 5),
+      type: "dynamic_tool",
+      toolName: "read",
+      input: { path: "a" },
+      output: "x",
+    },
+    {
+      ...base("sent", 6),
+      type: "dynamic_tool",
+      toolName: "send_to_user",
+      input: { message: "Look" },
+      output: { sentMessage: "Look" },
+    },
+    { ...base("running", 7), status: "running", type: "reasoning", text: "Still", streaming: true },
+    {
+      ...base("recording", 9),
+      type: "dynamic_tool",
+      toolName: "preview_recording_stop",
+      input: {},
+      output: { path: "recording.webm" },
+    },
+    {
+      ...base("answer", 8),
+      type: "assistant_message",
+      messageId: MessageId.make(`message:${threadId}:answer`),
+      text: "It changed a.ts",
+      streaming: false,
+    },
+  ];
+}
+
+const writeRetentionThread = Effect.fn(function* (threadId: ThreadId, unarchive: boolean) {
+  const sink = yield* EventSink.EventSinkV2;
+  const now = yield* DateTime.now;
+  const thread = makeThread(threadId, now);
+  const event = (
+    key: string,
+    type: "thread.archived" | "thread.unarchived",
+    archivedAt: DateTime.Utc | null,
+  ) =>
+    ({
+      id: EventId.make(`event:${threadId}:${key}`),
+      type,
+      threadId,
+      occurredAt: now,
+      payload: { ...thread, archivedAt },
+    }) satisfies OrchestrationV2DomainEvent;
+  yield* sink.write({
+    events: [
+      { ...threadCreated(thread, now), id: EventId.make(`event:${threadId}:created`) },
+      ...retentionItems(threadId, now).map(
+        (payload) =>
+          ({
+            id: EventId.make(`event:${threadId}:${payload.title}`),
+            type: "turn-item.updated",
+            threadId,
+            occurredAt: now,
+            payload,
+          }) satisfies OrchestrationV2DomainEvent,
+      ),
+      event("archived", "thread.archived", now),
+      ...(unarchive ? [event("unarchived", "thread.unarchived", null)] : []),
+    ],
+  });
+});
+
+const storedPayloads = (threadId: ThreadId) =>
+  Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql<{ readonly source: string; readonly title: string; readonly payload: string }>`
+      SELECT 'projection' AS source, json_extract(payload_json, '$.title') AS title,
+        payload_json AS payload
+      FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}
+      UNION ALL
+      SELECT 'event', json_extract(payload_json, '$.title'), payload_json
+      FROM orchestration_events
+      WHERE stream_id = ${threadId} AND event_type = 'turn-item.updated'
+      ORDER BY 1, 2
+    `,
+  ).pipe(
+    Effect.map((rows) =>
+      rows.map((row) => ({ ...row, payload: JSON.parse(row.payload) as Record<string, unknown> })),
+    ),
+  );
+
+it.effect("drops tool details of threads archived for 14 days and keeps their conversation", () =>
+  Effect.gen(function* () {
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const replay = yield* ProjectionReplay.ProjectionReplay;
+    const archived = ThreadId.make("thread:retention-archived");
+    const unarchived = ThreadId.make("thread:retention-unarchived");
+    yield* writeRetentionThread(archived, false);
+    yield* writeRetentionThread(unarchived, true);
+    const before = yield* storedPayloads(archived);
+    const unarchivedBefore = yield* storedPayloads(unarchived);
+
+    yield* TestClock.adjust("13 days");
+    assert.equal((yield* maintenance.trimPayloads()).trimmedThreadCount, 0);
+    assert.deepEqual(yield* storedPayloads(archived), before);
+
+    yield* TestClock.adjust("2 days");
+    assert.deepEqual(yield* maintenance.trimPayloads(), {
+      truncatedOutputCount: 0,
+      trimmedThreadCount: 1,
+      trimmedItemCount: 4,
+    });
+    const trimmed = yield* storedPayloads(archived);
+    const expected = before.map(({ source, title, payload }) => {
+      const removed: Record<string, unknown> = { ...payload, detailsRemoved: true };
+      switch (title) {
+        case "command":
+          delete removed.output;
+          return { source, title, payload: removed };
+        case "tool":
+          delete removed.output;
+          return { source, title, payload: { ...removed, input: null } };
+        case "reasoning":
+          return { source, title, payload: { ...removed, text: "" } };
+        case "edit":
+          delete removed.diffStr;
+          return { source, title, payload: removed };
+        default:
+          return { source, title, payload };
+      }
+    });
+    assert.deepEqual(trimmed, expected);
+    assert.deepEqual(yield* storedPayloads(unarchived), unarchivedBefore);
+    // The server's read path still decodes the trimmed items.
+    const projection = yield* projections.getThreadProjection(archived);
+    assert.include(JSON.stringify(projection), '"detailsRemoved":true');
+
+    assert.deepEqual(yield* maintenance.trimPayloads(), {
+      truncatedOutputCount: 0,
+      trimmedThreadCount: 0,
+      trimmedItemCount: 0,
+    });
+    assert.deepEqual(yield* storedPayloads(archived), trimmed);
+
+    // Replaying the remaining events neither fails nor brings the details back.
+    assert.isTrue((yield* replay.rebuild).valid);
+    assert.deepEqual(yield* storedPayloads(archived), trimmed);
+    assert.deepEqual(yield* storedPayloads(unarchived), unarchivedBefore);
+    assert.equal((yield* maintenance.trimPayloads()).trimmedThreadCount, 1);
+    assert.deepEqual(yield* storedPayloads(archived), trimmed);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("truncates long command output as it is written and once for older rows", () =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2;
+    const sql = yield* SqlClient.SqlClient;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:truncation");
+    const head = "h".repeat(16 * 1024);
+    const tail = "t".repeat(16 * 1024);
+    const withOutput = (key: string, output: string) =>
+      ({
+        id: EventId.make(`event:truncation:${key}`),
+        type: "turn-item.updated",
+        threadId,
+        occurredAt: now,
+        payload: {
+          ...retentionItems(threadId, now)[1]!,
+          id: TurnItemId.make(`turn-item:truncation:${key}`),
+          title: key,
+          output,
+        } as OrchestrationV2TurnItem,
+      }) satisfies OrchestrationV2DomainEvent;
+    const middle = "m".repeat(COMMAND_OUTPUT_LIMIT - head.length - tail.length);
+    const limit = head + middle + tail;
+    const over = `${head}${middle}m${tail}`;
+    yield* sink.write({
+      events: [
+        threadCreated(makeThread(threadId, now), now),
+        withOutput("limit", limit),
+        withOutput("over", over),
+      ],
+    });
+    const truncated = `${head}\n\n[… 32,769 characters removed: the full output was 65,537 characters …]\n\n${tail}`;
+    const outputs = () =>
+      sql<{ readonly title: string; readonly output: string }>`
+        SELECT json_extract(payload_json, '$.title') AS title,
+          json_extract(payload_json, '$.output') AS output
+        FROM orchestration_v2_projection_turn_items WHERE thread_id = ${threadId}
+        UNION ALL
+        SELECT json_extract(payload_json, '$.title'), json_extract(payload_json, '$.output')
+        FROM orchestration_events
+        WHERE stream_id = ${threadId} AND event_type = 'turn-item.updated'
+      `.pipe(
+        // Compare by identity, not content: a failing diff of 64 KiB strings is unreadable.
+        Effect.map((rows) =>
+          rows
+            .map(
+              (row) =>
+                `${row.title}:${row.output === limit ? "limit" : row.output === truncated ? "truncated" : row.output.length}`,
+            )
+            .sort(),
+        ),
+      );
+    const expected = ["limit:limit", "limit:limit", "over:truncated", "over:truncated"];
+    assert.deepEqual(yield* outputs(), expected);
+
+    // Rows written before truncation existed.
+    yield* sql`
+      UPDATE orchestration_v2_projection_turn_items
+      SET payload_json = json_set(payload_json, '$.output', ${over})
+      WHERE json_extract(payload_json, '$.title') = 'over'
+    `;
+    yield* sql`
+      UPDATE orchestration_events SET payload_json = json_set(payload_json, '$.output', ${over})
+      WHERE json_extract(payload_json, '$.title') = 'over'
+    `;
+    assert.equal((yield* maintenance.trimPayloads()).truncatedOutputCount, 1);
+    assert.deepEqual(yield* outputs(), expected);
+    assert.equal((yield* maintenance.trimPayloads()).truncatedOutputCount, 0);
+  }).pipe(Effect.provide(layerTest)),
 );
