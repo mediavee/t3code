@@ -78,6 +78,8 @@ const compactionLayer = (
     Layer.provide(
       Layer.succeed(ProjectionMaintenance.ProjectionMaintenanceV2, {
         pruneEventStore,
+        trimPayloads: () =>
+          Effect.succeed({ truncatedOutputCount: 0, trimmedThreadCount: 0, trimmedItemCount: 0 }),
       }),
     ),
     Layer.provide(Sqlite.layerMemory),

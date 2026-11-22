@@ -59,6 +59,12 @@ const forkColumns = [
     column: "gate_result_json",
     statement: "ALTER TABLE scheduled_tasks ADD COLUMN gate_result_json TEXT",
   },
+  {
+    // When retention last dropped this archived thread's tool details; archiving again re-arms it.
+    table: "orchestration_v2_projection_threads",
+    column: "payload_trimmed_at",
+    statement: "ALTER TABLE orchestration_v2_projection_threads ADD COLUMN payload_trimmed_at TEXT",
+  },
 ] as const;
 
 const FORK_COLUMN_CONDITION = forkColumns

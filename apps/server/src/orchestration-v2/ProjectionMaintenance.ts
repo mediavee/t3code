@@ -12,6 +12,7 @@ import {
   EVENT_LOG_PRUNED_THROUGH,
 } from "../persistence/OrchestrationEventStore.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { COMMAND_OUTPUT_LIMIT, truncateCommandOutput } from "./payloadRetention.ts";
 
 export class ProjectionMaintenanceError extends Schema.TaggedError<ProjectionMaintenanceError>()(
   "ProjectionMaintenanceError",
@@ -31,6 +32,18 @@ export interface ProjectionMaintenanceV2Shape {
     },
     ProjectionMaintenanceError
   >;
+  /**
+   * Truncates long command output written before truncation existed, then drops the tool
+   * details of threads archived longer than the retention. Messages and thread rows stay.
+   */
+  readonly trimPayloads: (betweenPages?: Effect.Effect<void>) => Effect.Effect<
+    {
+      readonly truncatedOutputCount: number;
+      readonly trimmedThreadCount: number;
+      readonly trimmedItemCount: number;
+    },
+    ProjectionMaintenanceError
+  >;
 }
 
 export class ProjectionMaintenanceV2 extends Context.Service<
@@ -43,6 +56,39 @@ const RETAINED_EVENT_HISTORY = Duration.days(1);
 // Small pages bound work on the reader worker and synchronous fallback.
 const PAGE_SIZE = 50;
 const REFERENCE_SCAN_WINDOW = 1000;
+
+// An archived thread keeps its conversation; its tool details go once it stays archived this long.
+const ARCHIVED_DETAIL_RETENTION = Duration.days(14);
+const OUTPUT_TRUNCATION_MARK = "command-output-truncation";
+// Rows scanned per statement: node:sqlite runs on the server's thread, so each statement stays short.
+const SCAN_WINDOW = 2000;
+const TRIM_PAGE_SIZE = 100;
+const TRIMMED_TYPES = sqlList([
+  "command_execution",
+  "dynamic_tool",
+  "reasoning",
+  "file_change",
+  "file_search",
+  "web_search",
+]);
+const LIVE_STATUSES = sqlList(["idle", "pending", "running", "waiting"]);
+
+function sqlList(values: ReadonlyArray<string>) {
+  return `(${values.map((value) => `'${value}'`).join(", ")})`;
+}
+
+// Projection rows and turn-item events hold the same item JSON. Inline dynamic tool output
+// (messages sent to the user, HTML, MCP apps) is conversation, so the item filter keeps it.
+const trimmedPayload = (column: string) => `json_set(
+  CASE json_extract(${column}, '$.type')
+    WHEN 'command_execution' THEN json_remove(${column}, '$.output')
+    WHEN 'dynamic_tool' THEN json_set(json_remove(${column}, '$.output'), '$.input', NULL)
+    WHEN 'reasoning' THEN json_set(${column}, '$.text', '')
+    WHEN 'file_change' THEN json_remove(${column}, '$.diffStr', '$.oldStr', '$.newStr')
+    ELSE json_remove(${column}, '$.results')
+  END,
+  '$.detailsRemoved', json('true')
+)`;
 
 type MetadataRow = {
   readonly projection_name: string;
@@ -314,6 +360,151 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
       ),
     );
 
-    return ProjectionMaintenanceV2.of({ pruneEventStore });
+    const truncateOutputs = Effect.fnUntraced(function* (betweenPages: Effect.Effect<void>) {
+      let truncated = 0;
+      const [bounds] = yield* sql<{ readonly item_row_id: number; readonly sequence: number }>`
+        SELECT
+          COALESCE((SELECT MAX(rowid) FROM orchestration_v2_projection_turn_items), 0) AS item_row_id,
+          COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS sequence
+      `.pipe(NodeSqliteClient.readOnly);
+      for (let cursor = 0; cursor < (bounds?.item_row_id ?? 0); cursor += SCAN_WINDOW) {
+        const rows = yield* sql<{
+          readonly row_id: number;
+          readonly updated_at: string;
+          readonly output: string;
+        }>`
+          SELECT rowid AS row_id, updated_at, json_extract(payload_json, '$.output') AS output
+          FROM orchestration_v2_projection_turn_items
+          WHERE rowid > ${cursor} AND rowid <= ${cursor + SCAN_WINDOW}
+            AND type = 'command_execution'
+            AND length(json_extract(payload_json, '$.output')) > ${COMMAND_OUTPUT_LIMIT}
+        `.pipe(NodeSqliteClient.readOnly);
+        for (const row of rows) {
+          // A newer write already went through the sink's truncation.
+          const updated = yield* sql`
+            UPDATE orchestration_v2_projection_turn_items
+            SET payload_json = json_set(payload_json, '$.output', ${truncateCommandOutput(row.output)})
+            WHERE rowid = ${row.row_id} AND updated_at = ${row.updated_at}
+            RETURNING rowid
+          `;
+          truncated += updated.length;
+          yield* Effect.yieldNow;
+        }
+        yield* betweenPages;
+      }
+      for (let cursor = 0; cursor < (bounds?.sequence ?? 0); cursor += SCAN_WINDOW) {
+        const rows = yield* sql<{ readonly sequence: number; readonly output: string }>`
+          SELECT sequence, json_extract(payload_json, '$.output') AS output
+          FROM orchestration_events
+          WHERE sequence > ${cursor} AND sequence <= ${cursor + SCAN_WINDOW}
+            AND event_type = 'turn-item.updated'
+            AND json_extract(payload_json, '$.type') = 'command_execution'
+            AND length(json_extract(payload_json, '$.output')) > ${COMMAND_OUTPUT_LIMIT}
+        `.pipe(NodeSqliteClient.readOnly);
+        for (const row of rows) {
+          yield* sql`
+            UPDATE orchestration_events
+            SET payload_json = json_set(payload_json, '$.output', ${truncateCommandOutput(row.output)})
+            WHERE sequence = ${row.sequence}
+          `;
+          yield* Effect.yieldNow;
+        }
+        yield* betweenPages;
+      }
+      return truncated;
+    });
+
+    const trimThread = Effect.fnUntraced(function* (
+      threadId: string,
+      cutoff: string,
+      betweenPages: Effect.Effect<void>,
+    ) {
+      const stillArchived = sql`EXISTS (
+        SELECT 1 FROM orchestration_v2_projection_threads
+        WHERE thread_id = ${threadId} AND archived_at < ${cutoff}
+      )`;
+      const trimmable = sql`thread_id = ${threadId}
+        AND type IN ${sql.literal(TRIMMED_TYPES)}
+        AND status NOT IN ${sql.literal(LIVE_STATUSES)}
+        AND inline_work_output = 0`;
+      let trimmed = 0;
+      for (let cursor = 0; ;) {
+        const rows = yield* sql<{ readonly row_id: number }>`
+          UPDATE orchestration_v2_projection_turn_items
+          SET payload_json = ${sql.literal(trimmedPayload("payload_json"))}
+          WHERE rowid IN (
+            SELECT rowid FROM orchestration_v2_projection_turn_items
+            WHERE ${trimmable} AND rowid > ${cursor}
+            ORDER BY rowid LIMIT ${TRIM_PAGE_SIZE}
+          ) AND ${stillArchived}
+          RETURNING rowid AS row_id
+        `;
+        trimmed += rows.length;
+        yield* betweenPages;
+        if (rows.length < TRIM_PAGE_SIZE) break;
+        cursor = Math.max(...rows.map((row) => row.row_id));
+      }
+      // A replay must not bring the details back: the thread's remaining events match.
+      yield* sql`
+        UPDATE orchestration_events
+        SET payload_json = ${sql.literal(trimmedPayload("payload_json"))}
+        WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+          AND event_type = 'turn-item.updated'
+          AND json_extract(payload_json, '$.id') IN (
+            SELECT turn_item_id FROM orchestration_v2_projection_turn_items WHERE ${trimmable}
+          )
+          AND ${stillArchived}
+      `;
+      yield* betweenPages;
+      return trimmed;
+    });
+
+    const trimPayloads = Effect.fn("ProjectionMaintenance.trimPayloads")(
+      function* (betweenPages: Effect.Effect<void> = Effect.void) {
+        const now = yield* DateTime.now;
+        let truncatedOutputCount = 0;
+        const done = yield* sql`
+          SELECT 1 FROM orchestration_v2_projection_metadata
+          WHERE projection_name = ${OUTPUT_TRUNCATION_MARK}
+        `.pipe(NodeSqliteClient.readOnly);
+        if (done.length === 0) {
+          // New items are truncated as the sink writes them, so one complete pass suffices.
+          truncatedOutputCount = yield* truncateOutputs(betweenPages);
+          yield* writeMetadata(OUTPUT_TRUNCATION_MARK, 0, now);
+        }
+
+        const cutoff = DateTime.formatIso(
+          DateTime.subtractDuration(now, ARCHIVED_DETAIL_RETENTION),
+        );
+        const trimmedAt = DateTime.formatIso(now);
+        let trimmedThreadCount = 0;
+        let trimmedItemCount = 0;
+        while (true) {
+          // Archiving again after an unarchive sets a newer archived_at, so the thread trims again.
+          const threads = yield* sql<{ readonly thread_id: string; readonly archived_at: string }>`
+            SELECT thread_id, archived_at FROM orchestration_v2_projection_threads
+            WHERE archived_at IS NOT NULL AND archived_at < ${cutoff} AND deleted_at IS NULL
+              AND (payload_trimmed_at IS NULL OR payload_trimmed_at < archived_at)
+            LIMIT 20
+          `.pipe(NodeSqliteClient.readOnly);
+          if (threads.length === 0) break;
+          for (const thread of threads) {
+            trimmedItemCount += yield* trimThread(thread.thread_id, cutoff, betweenPages);
+            const marked = yield* sql`
+              UPDATE orchestration_v2_projection_threads SET payload_trimmed_at = ${trimmedAt}
+              WHERE thread_id = ${thread.thread_id} AND archived_at = ${thread.archived_at}
+              RETURNING thread_id
+            `;
+            trimmedThreadCount += marked.length;
+          }
+        }
+        return { truncatedOutputCount, trimmedThreadCount, trimmedItemCount };
+      },
+      Effect.mapError(
+        (cause) => new ProjectionMaintenanceError({ operation: "trim payloads", cause }),
+      ),
+    );
+
+    return ProjectionMaintenanceV2.of({ pruneEventStore, trimPayloads });
   }),
 );
