@@ -150,8 +150,8 @@ const make = Effect.gen(function* () {
       yield* Effect.sleep((Number(elapsed) / 1_000_000) * 9);
       sliceStarted = yield* Clock.monotonicTimeNanos;
     });
-    const trimmed = yield* maintenance.trimPayloads(betweenPages);
     const result = yield* maintenance.pruneEventStore(betweenPages);
+    const trimmed = yield* maintenance.trimPayloads(betweenPages);
     // Return what the pass freed now; the per-minute reclaim would take hours for gigabytes.
     yield* reclaimPages(Number.POSITIVE_INFINITY, Effect.andThen(Effect.yieldNow, betweenPages));
     const completedAt = yield* Clock.currentTimeMillis;

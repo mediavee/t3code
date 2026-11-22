@@ -445,6 +445,13 @@ function retentionItems(
     },
     { ...base("running", 7), status: "running", type: "reasoning", text: "Still", streaming: true },
     {
+      ...base("recording", 9),
+      type: "dynamic_tool",
+      toolName: "preview_recording_stop",
+      input: {},
+      output: { path: "recording.webm" },
+    },
+    {
       ...base("answer", 8),
       type: "assistant_message",
       messageId: MessageId.make(`message:${threadId}:answer`),

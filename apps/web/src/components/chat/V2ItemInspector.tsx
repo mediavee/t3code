@@ -249,7 +249,8 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
     (props.source === undefined
       ? environmentStreamsOutput
       : props.source.commandOutput !== undefined) &&
-    props.projectedItem.item.type === "command_execution";
+    props.projectedItem.item.type === "command_execution" &&
+    props.projectedItem.item.detailsRemoved !== true;
   const fetched = useFetchedTurnItem(
     props.projectedItem,
     props.environmentId,
@@ -312,7 +313,7 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
                 <span className="text-diff-deletion">-{formatDiffCount(item.deletions ?? 0)}</span>
               </span>
             ) : null}
-            {props.onOpenToolDiff ? (
+            {props.onOpenToolDiff && !item.detailsRemoved ? (
               <Button
                 size="xs"
                 variant="outline"

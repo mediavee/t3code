@@ -360,6 +360,12 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
       ),
     );
 
+    // A malformed row must not fail the whole pass: json_extract raises on invalid JSON.
+    const longOutput = sql`CASE WHEN json_valid(payload_json) THEN
+      json_type(payload_json, '$.output') = 'text'
+        AND length(json_extract(payload_json, '$.output')) > ${COMMAND_OUTPUT_LIMIT}
+      ELSE 0 END`;
+
     const truncateOutputs = Effect.fnUntraced(function* (betweenPages: Effect.Effect<void>) {
       let truncated = 0;
       const [bounds] = yield* sql<{ readonly item_row_id: number; readonly sequence: number }>`
@@ -377,7 +383,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           FROM orchestration_v2_projection_turn_items
           WHERE rowid > ${cursor} AND rowid <= ${cursor + SCAN_WINDOW}
             AND type = 'command_execution'
-            AND length(json_extract(payload_json, '$.output')) > ${COMMAND_OUTPUT_LIMIT}
+            AND ${longOutput}
         `.pipe(NodeSqliteClient.readOnly);
         for (const row of rows) {
           // A newer write already went through the sink's truncation.
@@ -389,6 +395,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           `;
           truncated += updated.length;
           yield* Effect.yieldNow;
+          yield* betweenPages;
         }
         yield* betweenPages;
       }
@@ -398,8 +405,9 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
           FROM orchestration_events
           WHERE sequence > ${cursor} AND sequence <= ${cursor + SCAN_WINDOW}
             AND event_type = 'turn-item.updated'
-            AND json_extract(payload_json, '$.type') = 'command_execution'
-            AND length(json_extract(payload_json, '$.output')) > ${COMMAND_OUTPUT_LIMIT}
+            AND ${longOutput}
+            AND CASE WHEN json_valid(payload_json)
+              THEN json_extract(payload_json, '$.type') = 'command_execution' ELSE 0 END
         `.pipe(NodeSqliteClient.readOnly);
         for (const row of rows) {
           yield* sql`
@@ -408,6 +416,7 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
             WHERE sequence = ${row.sequence}
           `;
           yield* Effect.yieldNow;
+          yield* betweenPages;
         }
         yield* betweenPages;
       }
@@ -426,7 +435,10 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
       const trimmable = sql`thread_id = ${threadId}
         AND type IN ${sql.literal(TRIMMED_TYPES)}
         AND status NOT IN ${sql.literal(LIVE_STATUSES)}
-        AND inline_work_output = 0`;
+        AND inline_work_output = 0
+        AND json_valid(payload_json)
+        -- Thread deletion finds recording attachments through this tool's output.
+        AND NOT (type = 'dynamic_tool' AND payload_json LIKE '%preview_recording_stop%')`;
       let trimmed = 0;
       for (let cursor = 0; ;) {
         const rows = yield* sql<{ readonly row_id: number }>`
@@ -445,17 +457,25 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
         cursor = Math.max(...rows.map((row) => row.row_id));
       }
       // A replay must not bring the details back: the thread's remaining events match.
-      yield* sql`
-        UPDATE orchestration_events
-        SET payload_json = ${sql.literal(trimmedPayload("payload_json"))}
-        WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
-          AND event_type = 'turn-item.updated'
-          AND json_extract(payload_json, '$.id') IN (
-            SELECT turn_item_id FROM orchestration_v2_projection_turn_items WHERE ${trimmable}
-          )
-          AND ${stillArchived}
-      `;
-      yield* betweenPages;
+      for (let cursor = 0; ;) {
+        const rows = yield* sql<{ readonly sequence: number }>`
+          UPDATE orchestration_events
+          SET payload_json = ${sql.literal(trimmedPayload("payload_json"))}
+          WHERE sequence IN (
+            SELECT sequence FROM orchestration_events
+            WHERE aggregate_kind = 'thread' AND stream_id = ${threadId}
+              AND event_type = 'turn-item.updated' AND sequence > ${cursor}
+              AND CASE WHEN json_valid(payload_json) THEN json_extract(payload_json, '$.id') END IN (
+                SELECT turn_item_id FROM orchestration_v2_projection_turn_items WHERE ${trimmable}
+              )
+            ORDER BY sequence LIMIT ${TRIM_PAGE_SIZE}
+          ) AND ${stillArchived}
+          RETURNING sequence
+        `;
+        yield* betweenPages;
+        if (rows.length < TRIM_PAGE_SIZE) break;
+        cursor = Math.max(...rows.map((row) => row.sequence));
+      }
       return trimmed;
     });
 
