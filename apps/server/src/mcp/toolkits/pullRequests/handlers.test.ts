@@ -845,6 +845,7 @@ describe("source control tools", () => {
     body: "Adds tools.",
     state: "open",
     isDraft: false,
+    visibility: "private",
     author: null,
     headBranch: "tools",
     baseBranch: "main",
@@ -900,6 +901,7 @@ describe("source control tools", () => {
       });
       const compact = yield* harness.call("pull_request_read", {});
       expect(compact).toMatchObject({
+        visibility: "private",
         headSha: "abc123",
         checks: { passed: 2, pending: 1, failed: ["Lint", "E2E"], incomplete: true },
         unresolvedThreads: 1,
@@ -1190,6 +1192,7 @@ describe("source control tools", () => {
         readonly cwd: string;
         readonly draft: boolean | undefined;
         readonly body: string;
+        readonly private: boolean | undefined;
       }> = [];
       const harness = yield* makeHarness({
         thread: {
@@ -1203,7 +1206,12 @@ describe("source control tools", () => {
         git: {
           createPullRequest: (input) =>
             Effect.sync(() =>
-              opened.push({ cwd: input.cwd, draft: input.draft, body: input.body ?? "" }),
+              opened.push({
+                cwd: input.cwd,
+                draft: input.draft,
+                body: input.body ?? "",
+                private: input.private,
+              }),
             ).pipe(
               Effect.as({
                 status: "created" as const,
@@ -1220,10 +1228,13 @@ describe("source control tools", () => {
         title: "Add tools",
         body: "Adds tools.\n\nMade with Cursor",
         draft: true,
+        private: true,
       });
       expect(result).toMatchObject({ number: 43, created: true });
       // The body is opened as the project's credit setting leaves it.
-      expect(opened).toEqual([{ cwd: "/workspace/worktree", draft: true, body: "Adds tools." }]);
+      expect(opened).toEqual([
+        { cwd: "/workspace/worktree", draft: true, body: "Adds tools.", private: true },
+      ]);
       expect(yield* Ref.get(harness.commands)).toMatchObject([
         { type: "thread.pull-request.link", number: 43, source: "created" },
       ]);
