@@ -73,7 +73,7 @@
   "072_WaitingLinkRequestIndex.ts": "feaafe620590f8f910b7496ecfb0b7ce63184801",
   "073_ActiveTurnItemIndexes.ts": "d9759bca6d82ac22d6a29578fbd1f89ceaa77f23",
   "074_ExcludeAttachmentPlaceholdersFromSearch.ts": "6ec95d108f306a8d4e1c0ac51593f4d39b1a4812",
-  "075_SubagentDeliveryState.ts": "4406911cc8a8c36397098542ec18c2336ac4db34",
+  "075_SubagentDeliveryState.ts": "0288c89ceed057b1dde6551ca26ad912577aecd5",
   "076_ProjectionProjectsPinArchive.ts": "279255ec4d5f966d4b95cb7ff51c166092407264",
   "077_RepairBooleanSettledOverride.ts": "e84473964fc611e58347834dd996e8167733957f",
   "078_DropOrchestrationEventCorrelationIndex.ts": "bf00778eff5d96eacc67604b7bbb6ac27f3c9900",
@@ -103,5 +103,7 @@
   "102_ThreadItemCounts.ts": "5cbfee859cd4541be3ca25d3d7c719003ca53f42",
   "103_IssueTrackerAdditionalScopes.ts": "aa4656e52d291188ecf35a68083a6aa70d6204ef",
   "104_ProjectionProjectsTrackedFolders.ts": "34c69abe567bc671e118fd4f8dcdfb4925e8576c",
-  "105_TaskFolders.ts": "87ddeb3e806cea99b6143aa19e9665f653ed5f86"
+  "105_TaskFolders.ts": "87ddeb3e806cea99b6143aa19e9665f653ed5f86",
+  "106_WorktreePathKeyIndex.ts": "9b1b42647d60a2b2021bc757e85778d20a489ceb",
+  "107_DeferredSlashCommandIndex.ts": "5c997fbc20a631df8fcf5a1f16d2ece7d6c113d6"
 }
