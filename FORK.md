@@ -48,9 +48,11 @@ Reports to the owner are in French. Use the `chantier` skill's worker and review
    commit, and the fork commits upstream's changes touch in core paths (`apps/server/src/orchestration-v2/`,
    `apps/server/src/peer/`, `apps/server/src/persistence/`, `packages/contracts/`, `packages/provider-*`).
    One fix round, folded into the commits it fixes; the lead checks the new range-diff, comments
-   `Review of record: <head> mergeable`, then lands it by moving fork/main to the head, only if fork/main has
-   not moved: `git push --force-with-lease=main:<old fork/main> fork <head>:main`. GitHub then marks the PR
-   merged. Never `gh pr merge` or `ship`: each would rewrite or merge the commits. If fork/main moved meanwhile,
+   `Review of record: <head> mergeable`, then lands it with platform's
+   `scripts/fork-land <T> <old fork/main> <head> [--drop <old sha>]...` (the guard refuses any other
+   force-push of main): it pushes only if fork/main has not moved, `<head>` is `<T>` plus linear commits and
+   every old fork commit survives, except the dropped ones the PR names. GitHub then marks the PR merged.
+   Never `gh pr merge` or `ship`: each would rewrite or merge the commits. If fork/main moved meanwhile,
    rebase the new fork commits onto `sync/<T>` first.
    A P1 left after the fix round, a red gate or a conflict the worker cannot resolve: run
    `t3-fork-sync abort <T>`, land nothing, and ask the owner.
