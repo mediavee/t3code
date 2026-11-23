@@ -12,7 +12,7 @@ import { migrationManifest } from "./Migrations.ts";
 // Numbered migrations belong to upstream: a fork row at an id would hide upstream's migration there
 // after a sync. Fork schema goes in unnumbered hooks such as Migrations/ForkIndexes.ts.
 // CI checkouts are shallow and have no upstream remote, so the tree is checked against this
-// manifest; T3_UPSTREAM_REF (the upstream tag being merged) checks the manifest against that tag.
+// manifest; T3_UPSTREAM_REF (the upstream tag being synced) checks the manifest against that tag.
 const MANIFEST_PATH = NodePath.join(import.meta.dirname, "upstreamMigrations.json");
 const MIGRATIONS_DIR = NodePath.join(import.meta.dirname, "Migrations");
 const NUMBERED_MIGRATION = /^(\d+)_(\w+)\.ts$/;
@@ -70,7 +70,7 @@ const upstreamRef = process.env.T3_UPSTREAM_REF?.trim() || undefined;
 
 if (process.env.T3_UPDATE_UPSTREAM_MIGRATIONS === "1") {
   if (upstreamRef === undefined) {
-    throw new Error(`Set T3_UPSTREAM_REF to the upstream tag being merged: ${REGENERATE}`);
+    throw new Error(`Set T3_UPSTREAM_REF to the upstream tag being synced: ${REGENERATE}`);
   }
   // Written from upstream's tree, never the working tree, so it cannot bless a fork edit.
   writeManifest(MANIFEST_PATH, refMigrations(MIGRATIONS_DIR, upstreamRef));
