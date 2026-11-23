@@ -105,5 +105,8 @@
   "104_ProjectionProjectsTrackedFolders.ts": "34c69abe567bc671e118fd4f8dcdfb4925e8576c",
   "105_TaskFolders.ts": "87ddeb3e806cea99b6143aa19e9665f653ed5f86",
   "106_WorktreePathKeyIndex.ts": "9b1b42647d60a2b2021bc757e85778d20a489ceb",
-  "107_DeferredSlashCommandIndex.ts": "5c997fbc20a631df8fcf5a1f16d2ece7d6c113d6"
+  "107_DeferredSlashCommandIndex.ts": "5c997fbc20a631df8fcf5a1f16d2ece7d6c113d6",
+  "108_AgentFeedback.ts": "6ea69fb60d2694b437451b1773cbda2d4bd3423d",
+  "109_IssueTrackerAccounts.ts": "8a87776600e9a08fc56ad9310204d16c8c223000",
+  "110_Workflows.ts": "39f588a564057e6d1567fd94d56f9e56793b7985"
 }
