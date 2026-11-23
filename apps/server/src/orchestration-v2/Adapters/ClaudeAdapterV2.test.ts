@@ -89,7 +89,10 @@ import { WorkflowAgentTranscriptReadObserver } from "../workflowAgentTranscript.
 import * as ServerConfig from "../../config.ts";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS_WITH_TOOL_SEARCH } from "@t3tools/provider-core/server/orchestrationInstructions";
-import { standingInstructionsBlock } from "@t3tools/provider-core/server/runtimeInstructions";
+import {
+  AGENT_FEEDBACK_INSTRUCTIONS,
+  standingInstructionsBlock,
+} from "@t3tools/provider-core/server/runtimeInstructions";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import { PreviewControlsToolkit } from "../../mcp/toolkits/previewControls/tools.ts";
 import { HtmlToolkit } from "../../mcp/toolkits/html/tools.ts";
@@ -345,6 +348,27 @@ describe("ClaudeAdapterV2 native resume history", () => {
     },
   ])("selects the native history head for $name", ({ messages, head }) => {
     assert.equal(ClaudeAdapterV2.claudeResumeSessionAt(messages), head);
+  });
+
+  it("recognizes history that ends on a failed request", () => {
+    const failed = {
+      uuid: "failed",
+      type: "assistant",
+      message: { content: "API Error: Request rejected (429)", model: "<synthetic>" },
+    };
+    assert.isTrue(ClaudeAdapterV2.claudeHistoryEndsOnFailedRequest([prompt, failed]));
+    assert.isFalse(
+      ClaudeAdapterV2.claudeHistoryEndsOnFailedRequest([
+        prompt,
+        entry("stop", "user", "[Request interrupted by user]"),
+      ]),
+    );
+    assert.isFalse(
+      ClaudeAdapterV2.claudeHistoryEndsOnFailedRequest([
+        prompt,
+        entry("reply", "assistant", "Done"),
+      ]),
+    );
   });
 });
 
@@ -913,11 +937,12 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
   });
 });
 
-describe("ClaudeAdapterV2 device instructions", () => {
+describe("ClaudeAdapterV2 T3 tool instructions", () => {
   const options = (input: {
     readonly mcp: boolean;
     readonly deviceToolsAvailable: boolean;
     readonly standingInstructions?: string;
+    readonly agentFeedback?: "off" | "on-request" | "auto";
   }) =>
     ClaudeAdapterV2.makeClaudeQueryOptions({
       modelSelection: {
@@ -934,6 +959,7 @@ describe("ClaudeAdapterV2 device instructions", () => {
       ...(input.standingInstructions === undefined
         ? {}
         : { standingInstructions: input.standingInstructions }),
+      agentFeedback: input.agentFeedback ?? "off",
       environment: {},
     });
   const append = (input: Parameters<typeof options>[0]) =>
@@ -948,6 +974,17 @@ describe("ClaudeAdapterV2 device instructions", () => {
   it("leaves the device block out without device access or without T3 tools", () => {
     assert.notInclude(append({ mcp: true, deviceToolsAvailable: false }), "## T3 Code devices");
     assert.notInclude(append({ mcp: false, deviceToolsAvailable: true }), "## T3 Code devices");
+  });
+
+  it("gives the agent feedback line only to a session with T3 tools", () => {
+    const feedback = (mcp: boolean, agentFeedback: "off" | "auto") =>
+      append({ mcp, deviceToolsAvailable: false, agentFeedback }).includes("t3_feedback");
+    assert.include(
+      append({ mcp: true, deviceToolsAvailable: false, agentFeedback: "auto" }),
+      AGENT_FEEDBACK_INSTRUCTIONS.auto,
+    );
+    assert.isFalse(feedback(true, "off"));
+    assert.isFalse(feedback(false, "auto"));
   });
 
   // Subagents start from their task prompt, not the parent's system prompt.
@@ -982,6 +1019,17 @@ describe("ClaudeAdapterV2 device instructions", () => {
     ]);
     assert.deepEqual(await subagentContext({ mcp: true, deviceToolsAvailable: false }), []);
     assert.deepEqual(await subagentContext({ mcp: false, deviceToolsAvailable: true }), []);
+    // A custom subagent can lack T3 tools even when this session has them.
+    assert.notInclude(
+      JSON.stringify(
+        await subagentContext({
+          mcp: true,
+          deviceToolsAvailable: true,
+          agentFeedback: "auto",
+        }),
+      ),
+      "t3_feedback",
+    );
   });
 
   it("gives the session and its native subagents the project's standing instructions", async () => {
@@ -8480,6 +8528,235 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
   );
+
+  // Default display sends the first pre-tool thinking block empty; a blank update is never promoted.
+  const update = "Found it: the memory file is the cause.";
+  it.effect.each([
+    {
+      model: "claude-opus-5-5",
+      texts: ["", update],
+      expected: ["assistant_message"],
+      shown: [update],
+    },
+    { model: "claude-opus-5", texts: ["", update], expected: ["reasoning"], shown: [update] },
+    {
+      model: "claude-opus-5-5",
+      texts: ["Planning the check", " \n "],
+      expected: ["reasoning", "reasoning"],
+    },
+  ] as ReadonlyArray<{
+    readonly model: string;
+    readonly texts: ReadonlyArray<string>;
+    readonly expected: ReadonlyArray<string>;
+    readonly shown?: ReadonlyArray<string>;
+  }>)(
+    "shows $model thinking $texts before a tool call as $expected",
+    ({ model, texts, expected, shown }) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now: yield* DateTime.now,
+            attemptId: RunAttemptId.make(`thinking-before-tool-${model}`),
+            text: "Check the file",
+            attachments: [],
+          }),
+        );
+        const snapshot = (uuid: string, content: ReadonlyArray<Record<string, unknown>>) =>
+          claudeSdkFrame({
+            type: "assistant",
+            uuid,
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            message: { id: "reply-message", model, content },
+          });
+        const frames = [
+          ...texts.map((thinking, index) =>
+            snapshot(`thinking-snapshot-${index}`, [
+              { type: "thinking", thinking, signature: "sig" },
+            ]),
+          ),
+          snapshot("tool-snapshot", [
+            { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "ls" } },
+          ]),
+          makeResultFrame({ uuid: "tool-result", result: "" }),
+        ];
+        for (const frame of frames) yield* Queue.offer(harness.sdkMessages, frame);
+        yield* Queue.take(harness.terminalReceipts);
+        const latest = new Map(
+          harness.events.flatMap((event) =>
+            event.type === "turn_item.updated" &&
+            (event.turnItem.type === "reasoning" || event.turnItem.type === "assistant_message")
+              ? [[event.turnItem.id, event.turnItem] as const]
+              : [],
+          ),
+        );
+        const items = [...latest.values()];
+        assert.deepEqual(
+          items.map((item) => item.type),
+          [...expected],
+        );
+        assert.deepEqual(
+          items.map((item) => item.text),
+          [...(shown ?? texts)],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+  );
+
+  describe("a model change after a Claude Code update", () => {
+    /** An install as the Claude installer lays it out: one file per version and a link. */
+    const makeInstall = Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "claude-program-" });
+      const link = NodePath.join(root, "claude");
+      const install = (version: string) => {
+        const file = NodePath.join(root, version);
+        NodeFS.writeFileSync(file, "#!/bin/sh\n", { mode: 0o755 });
+        NodeFS.rmSync(link, { force: true });
+        NodeFS.symlinkSync(file, link);
+      };
+      install("1.0.0");
+      return {
+        settings: { ...DEFAULT_CLAUDE_SETTINGS, binaryPath: link },
+        update: () => install("1.0.1"),
+      };
+    });
+    const opus = {
+      instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+      model: "claude-opus-5-5",
+    } satisfies ModelSelection;
+    const sonnet = { ...opus, model: "claude-sonnet-4-6" } satisfies ModelSelection;
+
+    it.effect("starts the new version, and only for the model change", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const install = yield* makeInstall;
+          const harness = yield* makeWakeHarnessWithOptions({
+            settings: install.settings,
+            close: (messages) => Queue.shutdown(messages),
+            freshQueueOnReopen: true,
+          });
+          const now = yield* DateTime.now;
+          const turn = (ordinal: number, modelSelection: ModelSelection) =>
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make(`attempt-updated-cli:${ordinal}`),
+              text: `Request ${ordinal}`,
+              attachments: [],
+              providerTurnOrdinal: ordinal,
+              modelSelection,
+            });
+          const settle = Effect.gen(function* () {
+            yield* harness.offerAndWait(turnOneResult);
+            yield* Queue.take(harness.terminalReceipts);
+          });
+          yield* harness.runtime.startTurn(turn(1, opus));
+          yield* settle;
+
+          // The update alone restarts nothing.
+          install.update();
+          yield* harness.runtime.startTurn(turn(2, opus));
+          yield* settle;
+          assert.lengthOf(harness.processQueues, 1);
+
+          yield* harness.runtime.startTurn(turn(3, sonnet));
+          assert.lengthOf(harness.processQueues, 2);
+          assert.equal(harness.getOpenedOptions()?.model, "claude-sonnet-4-6");
+          assert.deepEqual(harness.liveSelectionChanges, []);
+          assert.lengthOf(harness.offeredMessages, 3);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    it.effect("keeps a process that runs background work until that work ends", () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const install = yield* makeInstall;
+          const harness = yield* makeWakeHarnessWithOptions({
+            settings: install.settings,
+            close: (messages) => Queue.shutdown(messages),
+            freshQueueOnReopen: true,
+          });
+          const now = yield* DateTime.now;
+          const turn = (ordinal: number, modelSelection: ModelSelection) =>
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make(`attempt-updated-cli-background:${ordinal}`),
+              text: `Request ${ordinal}`,
+              attachments: [],
+              providerTurnOrdinal: ordinal,
+              modelSelection,
+            });
+          const settle = Effect.gen(function* () {
+            yield* harness.offerAndWait(turnOneResult);
+            yield* Queue.take(harness.terminalReceipts);
+          });
+          yield* harness.runtime.startTurn(turn(1, opus));
+          const originalOptions = harness.getOpenedOptions();
+          yield* harness.offerAndWait(wakeTaskStarted);
+          yield* settle;
+          assert.isTrue(yield* harness.hasPendingBackgroundWork);
+
+          install.update();
+          yield* harness.runtime.startTurn(turn(2, sonnet));
+          yield* settle;
+          assert.deepEqual(harness.liveSelectionChanges[0], { model: "claude-sonnet-4-6" });
+          assert.strictEqual(harness.getOpenedOptions(), originalOptions);
+          assert.lengthOf(harness.processQueues, 1);
+
+          // The background shell ended: the next turn starts the new version.
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              type: "system",
+              subtype: "background_tasks_changed",
+              tasks: [],
+              uuid: "00000000-0000-4000-8000-000000000520",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          yield* harness.runtime.startTurn(turn(3, sonnet));
+          assert.lengthOf(harness.processQueues, 2);
+          assert.equal(harness.getOpenedOptions()?.model, "claude-sonnet-4-6");
+          assert.lengthOf(harness.offeredMessages, 3);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              IdAllocator.layer,
+              McpProviderSessions.layer,
+              NodeServices.layer,
+              NodeCrypto.layer,
+            ),
+          ),
+        ),
+      ),
+    );
+  });
 
   // regression: #17270 root text_delta frames stream the reply before the block's snapshot
   it.effect("streams Claude assistant text deltas before the completed snapshot", () =>

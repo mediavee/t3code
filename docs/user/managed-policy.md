@@ -249,6 +249,7 @@ so restart T3 Code after that.
 
 - `webhookTasks: false`: scheduled tasks cannot use webhook triggers. Existing webhook tasks stay
   but do not run, and cannot be turned back on. Users can still edit or delete them.
+  Workflow webhooks are refused too.
 - `taskGates: false`: scheduled tasks cannot run a
   [gate command](./project-settings.md#scheduled-tasks-on-mobile) before their runs. Gated tasks
   stay but do not run; each skipped occurrence records why.
