@@ -10,6 +10,7 @@ import {
   type OrchestrationV2Actor,
   type OrchestrationV2CreationSource,
   type OrchestrationV2DelegatedFrom,
+  type OrchestrationV2WorkflowOrigin,
   type OrchestrationV2LinkOrigin,
   type OrchestrationV2ProviderThreadNativeMetadata,
   type OrchestrationV2ThreadProjection,
@@ -126,6 +127,8 @@ export interface ThreadLaunchInput {
   readonly delegatedFrom?: OrchestrationV2DelegatedFrom;
   /** Set by delegate_task alone: `delegatedFrom` names a thread here, kept without a link. */
   readonly localDelegation?: true;
+  /** The workflow run this thread is an agent step of. */
+  readonly workflowRun?: OrchestrationV2WorkflowOrigin;
 }
 
 type PreparationInput = Pick<
@@ -1478,6 +1481,7 @@ const make = Effect.gen(function* () {
                 ...(input.localDelegation === undefined
                   ? {}
                   : { localDelegation: input.localDelegation }),
+                ...(input.workflowRun === undefined ? {} : { workflowRun: input.workflowRun }),
                 createdBy: input.createdBy,
                 creationSource: input.creationSource,
                 ...(initialMessage === undefined
