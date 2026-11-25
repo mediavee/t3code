@@ -1,7 +1,39 @@
-import type { TraceRecord, TraceSink } from "@t3tools/shared/observability";
+import type { OtlpTraceRecord, TraceRecord, TraceSink } from "@t3tools/shared/observability";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+
+// External OTLP forwarding sends the raw batch; local NDJSON keeps only compact identity attributes.
+const COMPACT_BROWSER_RESOURCE_ATTRIBUTE_KEYS: ReadonlySet<string> = new Set([
+  "service.name",
+  "service.version",
+  "service.instance.id",
+  "t3code.client.surface",
+  "t3code.release.channel",
+  "browser.mobile",
+]);
+
+function compactLocalResourceAttributes(
+  resourceAttributes: OtlpTraceRecord["resourceAttributes"],
+): OtlpTraceRecord["resourceAttributes"] {
+  const compacted: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(resourceAttributes)) {
+    if (COMPACT_BROWSER_RESOURCE_ATTRIBUTE_KEYS.has(key)) {
+      compacted[key] = value;
+    }
+  }
+  return compacted;
+}
+
+function compactLocalTraceRecord(record: TraceRecord): TraceRecord {
+  if (record.type !== "otlp-span") {
+    return record;
+  }
+  return {
+    ...record,
+    resourceAttributes: compactLocalResourceAttributes(record.resourceAttributes),
+  };
+}
 
 export class BrowserTraceCollector extends Context.Service<
   BrowserTraceCollector,
@@ -16,7 +48,7 @@ export const make = (sink: TraceSink): BrowserTraceCollector["Service"] =>
     record: Effect.fn("BrowserTraceCollector.record")(function (records) {
       return Effect.sync(() => {
         for (const record of records) {
-          sink.push(record);
+          sink.push(compactLocalTraceRecord(record));
         }
       });
     }),

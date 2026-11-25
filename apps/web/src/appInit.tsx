@@ -49,7 +49,7 @@ import {
 import { syncBrowserChromeTheme } from "./hooks/useTheme";
 import { startThreadVisitedMigration } from "./hooks/useThreadVisitedMigration";
 import { installDesktopPasteAsText } from "./lib/desktopPasteAsText";
-import { startWindowBlurTracking } from "./lib/visibleAnimation";
+import { startBatteryPowerTracking, startWindowBlurTracking } from "./lib/visibleAnimation";
 import {
   syncDocumentElectronPlatformClasses,
   syncDocumentWindowControlsOverlayClass,
@@ -101,9 +101,9 @@ function startClientAppearance(): void {
     if (previous?.glassOpacity !== settings.glassOpacity) {
       root.style.setProperty("--glass-opacity", `${settings.glassOpacity}%`);
       if (settings.glassOpacity === 100) {
-        root.style.setProperty("--glass-blur", "0px");
+        root.dataset.glassOpaque = "true";
       } else {
-        root.style.removeProperty("--glass-blur");
+        delete root.dataset.glassOpaque;
       }
     }
     if (
@@ -274,6 +274,7 @@ export function startAppServices(): AppRouter {
 
   installDesktopPasteAsText(window.desktopBridge, window);
   startWindowBlurTracking();
+  startBatteryPowerTracking();
   guardDomAgainstPageTranslation();
 
   startClientAppearance();

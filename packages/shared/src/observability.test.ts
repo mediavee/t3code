@@ -1,6 +1,7 @@
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -9,6 +10,7 @@ import * as FileSystem from "effect/FileSystem";
 import { cast } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as References from "effect/References";
@@ -567,6 +569,131 @@ describe("observability", () => {
         assert.equal(records[0]?.name, "interrupt-span");
         assert.equal(records[0]?.exit?._tag, "Interrupted");
       }),
+    );
+
+    it.effect(
+      "skips fast successful SQLite transaction control spans locally while keeping slow, failed, rollback, and delegate spans",
+      () =>
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-local-tracer-" });
+          const tracePath = path.join(tempDir, "shared.trace.ndjson");
+          const delegateEnded: Array<string> = [];
+          const delegate = Tracer.make({
+            span(options) {
+              const native = new Tracer.NativeSpan(options);
+              const originalEnd = native.end.bind(native);
+              native.end = (endTime, exit) => {
+                delegateEnded.push(options.name);
+                originalEnd(endTime, exit);
+              };
+              return native;
+            },
+          });
+
+          yield* Effect.scoped(
+            Effect.gen(function* () {
+              const tracer = yield* makeLocalFileTracer({
+                filePath: tracePath,
+                maxBytes: 1024 * 1024,
+                maxFiles: 2,
+                batchWindowMs: 10,
+                delegate,
+              });
+
+              const emitSpan = (input: {
+                readonly name: string;
+                readonly operation: string;
+                readonly durationNs: bigint;
+                readonly exit: Exit.Exit<unknown, unknown>;
+              }) => {
+                const startTime = 1_000_000_000n;
+                const span = tracer.span({
+                  name: input.name,
+                  parent: Option.none(),
+                  annotations: Context.empty(),
+                  links: [],
+                  startTime,
+                  kind: "client",
+                  root: true,
+                  sampled: true,
+                });
+                span.attribute("db.operation.name", input.operation);
+                span.end(startTime + input.durationNs, input.exit);
+              };
+
+              // Fast successful transaction boilerplate spans are dropped from the local file.
+              emitSpan({
+                name: "BEGIN statev2.sqlite",
+                operation: "BEGIN",
+                durationNs: 2_000_000n,
+                exit: Exit.void,
+              });
+              emitSpan({
+                name: "COMMIT statev2.sqlite",
+                operation: "COMMIT",
+                durationNs: 1_000_000n,
+                exit: Exit.void,
+              });
+              emitSpan({
+                name: "SAVEPOINT statev2.sqlite",
+                operation: "SAVEPOINT",
+                durationNs: 500_000n,
+                exit: Exit.void,
+              });
+              emitSpan({
+                name: "RELEASE SAVEPOINT statev2.sqlite",
+                operation: "RELEASE SAVEPOINT",
+                durationNs: 500_000n,
+                exit: Exit.void,
+              });
+
+              // Slow (>= 10ms), failed, rollback, and regular query spans are kept locally.
+              emitSpan({
+                name: "COMMIT slow",
+                operation: "COMMIT",
+                durationNs: 10_000_000n,
+                exit: Exit.void,
+              });
+              emitSpan({
+                name: "COMMIT failed",
+                operation: "COMMIT",
+                durationNs: 1_000_000n,
+                exit: Exit.fail("sqlite-busy"),
+              });
+              emitSpan({
+                name: "ROLLBACK statev2.sqlite",
+                operation: "ROLLBACK",
+                durationNs: 1_000_000n,
+                exit: Exit.void,
+              });
+              emitSpan({
+                name: "SELECT threads",
+                operation: "SELECT",
+                durationNs: 1_000_000n,
+                exit: Exit.void,
+              });
+            }),
+          );
+
+          assert.deepStrictEqual(delegateEnded, [
+            "BEGIN statev2.sqlite",
+            "COMMIT statev2.sqlite",
+            "SAVEPOINT statev2.sqlite",
+            "RELEASE SAVEPOINT statev2.sqlite",
+            "COMMIT slow",
+            "COMMIT failed",
+            "ROLLBACK statev2.sqlite",
+            "SELECT threads",
+          ]);
+
+          const records = yield* readTraceRecords(tracePath);
+          assert.deepStrictEqual(
+            records.map((record) => record.name),
+            ["COMMIT slow", "COMMIT failed", "ROLLBACK statev2.sqlite", "SELECT threads"],
+          );
+        }),
     );
   });
 });

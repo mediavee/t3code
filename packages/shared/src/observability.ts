@@ -581,6 +581,33 @@ function redactExitCredentials(exit: Exit.Exit<unknown, unknown>): Exit.Exit<unk
   return cause === exit.cause ? exit : ExitRuntime.failCause(cause);
 }
 
+const TRIVIAL_SQL_TRANSACTION_OPERATIONS: ReadonlySet<string> = new Set([
+  "BEGIN",
+  "COMMIT",
+  "SAVEPOINT",
+  "RELEASE SAVEPOINT",
+]);
+const TRIVIAL_SQL_TRANSACTION_MAX_DURATION_NS = 10_000_000n;
+
+function shouldSkipLocalFileSpan(
+  span: SerializableSpan,
+  startTime: bigint,
+  endTime: bigint,
+  exit: Exit.Exit<unknown, unknown>,
+): boolean {
+  if (span.kind !== "client" || !ExitRuntime.isSuccess(exit) || span.events.length > 0) {
+    return false;
+  }
+  if (endTime - startTime >= TRIVIAL_SQL_TRANSACTION_MAX_DURATION_NS) {
+    return false;
+  }
+  const dbOperation = span.attributes.get("db.operation.name");
+  if (typeof dbOperation === "string" && TRIVIAL_SQL_TRANSACTION_OPERATIONS.has(dbOperation)) {
+    return true;
+  }
+  return TRIVIAL_SQL_TRANSACTION_OPERATIONS.has(span.name);
+}
+
 class LocalFileSpan implements Tracer.Span {
   readonly _tag = "Span";
   readonly name: string;
@@ -624,15 +651,16 @@ class LocalFileSpan implements Tracer.Span {
   end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
     // Cached lookup fibers retain parent spans. Traces need success status, not result payloads.
     const traceExit = ExitRuntime.isSuccess(exit) ? ExitRuntime.void : exit;
+    const startTime = this.status.startTime;
     this.status = {
       _tag: "Ended",
-      startTime: this.status.startTime,
+      startTime,
       endTime,
       exit: traceExit,
     };
     this.delegate.end(endTime, redactExitCredentials(traceExit));
 
-    if (this.sampled) {
+    if (this.sampled && !shouldSkipLocalFileSpan(this, startTime, endTime, traceExit)) {
       this.push(spanToTraceRecord(this));
     }
   }

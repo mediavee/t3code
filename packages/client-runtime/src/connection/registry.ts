@@ -331,11 +331,9 @@ export const make = Effect.gen(function* () {
             return next;
           }),
         ),
-    ).pipe(Effect.withSpan("EnvironmentRegistry.withLeaseLock"));
+    );
 
-  const getEntry = Effect.fn("EnvironmentRegistry.getEntry")(function* (
-    environmentId: EnvironmentId,
-  ) {
+  const getEntry = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
     const entry = (yield* SubscriptionRef.get(entries)).get(environmentId);
     if (entry === undefined) {
       return yield* new EnvironmentNotRegisteredError({
@@ -395,9 +393,7 @@ export const make = Effect.gen(function* () {
       ),
   );
 
-  const acquireSupervisor = Effect.fn("EnvironmentRegistry.acquireSupervisor")(function* (
-    environmentId: EnvironmentId,
-  ) {
+  const acquireSupervisor = Effect.fnUntraced(function* (environmentId: EnvironmentId) {
     return yield* withLeaseLock(
       environmentId,
       Effect.gen(function* () {

@@ -576,30 +576,24 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 }
 
 @keyframes live-tool-shine {
-  from {
-    background-position:
-      -4.5rem 0,
-      0 0;
+  0%,
+  40% {
+    opacity: 1;
+    animation-timing-function: steps(6);
   }
-  to {
-    background-position:
-      calc(100% + 4.5rem) 0,
-      0 0;
+  50%,
+  90% {
+    opacity: 0.58;
+    animation-timing-function: steps(6);
+  }
+  100% {
+    opacity: 1;
   }
 }
 
 @utility live-tool-shine {
   @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
-    color: transparent;
-    background-image:
-      linear-gradient(to right, transparent, var(--contrast-foreground), transparent),
-      linear-gradient(var(--contrast-secondary-label), var(--contrast-secondary-label));
-    background-size:
-      4.5rem 100%,
-      100% 100%;
-    background-repeat: no-repeat;
-    background-clip: text;
-    animation: live-tool-shine 2.2s steps(30) infinite;
+    animation: live-tool-shine 2.2s infinite;
     animation-play-state: var(--visible-animation-state, paused);
   }
 }
@@ -621,8 +615,28 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   animation-play-state: var(--visible-animation-state, running);
 }
 
-/* Pause infinite animations and disable GPU backdrop blur passes while unfocused or hidden. */
-:root[data-window-blurred="true"] {
+/* Skip GPU backdrop blur passes when glass opacity is already 100% opaque. */
+:root[data-glass-opaque="true"] {
+  --glass-blur: 0px !important;
+  --glass-saturation: 1 !important;
+}
+
+:root[data-glass-opaque="true"]
+  :where(
+    .surface-glass,
+    .alert-glass,
+    .dialog-glass,
+    .dropdown-glass,
+    [class*="backdrop-blur-(--glass-blur)"]
+  ),
+:root[data-glass-opaque="true"] [class*="before:backdrop-blur-(--glass-blur)"]::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* Pause infinite animations and disable GPU backdrop blur passes while unfocused, hidden, or on battery. */
+:root[data-window-blurred="true"],
+:root[data-on-battery="true"] {
   --glass-blur: 0px !important;
   --glass-opacity: 100% !important;
   --glass-saturation: 1 !important;
@@ -632,16 +646,43 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   :where(
     [class*="animate-status-pulse"],
     [class*="animate-status-ping"],
-    [class*="animate-skeleton"],
     [class*="animate-pulse"],
+    [class*="live-tool-shine"]
+  ) {
+  animation: none !important;
+}
+
+:root[data-window-blurred="true"]
+  :where(
+    [class*="animate-skeleton"],
     [class*="animate-spin"],
     [class*="animate-ping"],
     [class*="animate-bounce"],
     [class*="visible-animate-spin"],
-    [class*="live-tool-shine"],
     [class*="live-activity-focus"]
   ) {
   animation-play-state: paused !important;
+}
+
+/* On battery power, disable cosmetic pulses/shimmers at full contrast while keeping focused loading spinners responsive. */
+:root[data-on-battery="true"]
+  :where(
+    [class*="animate-status-pulse"],
+    [class*="animate-status-ping"],
+    [class*="animate-pulse"],
+    [class*="live-tool-shine"]
+  ) {
+  animation: none !important;
+  will-change: auto !important;
+}
+
+:root[data-on-battery="true"] :where([class*="animate-skeleton"], [class*="live-activity-focus"]) {
+  animation-play-state: paused !important;
+  will-change: auto !important;
+}
+
+:root[data-on-battery="true"] .live-activity-focus {
+  opacity: 0 !important;
 }
 
 :root[data-window-blurred="true"]
@@ -653,7 +694,17 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     .dropdown-glass,
     [class*="backdrop-blur"]
   ),
-:root[data-window-blurred="true"] [class*="before:backdrop-blur"]::before {
+:root[data-window-blurred="true"] [class*="before:backdrop-blur"]::before,
+:root[data-on-battery="true"]
+  :where(
+    .surface-glass,
+    .alert-glass,
+    .dialog-glass,
+    .dialog-backdrop,
+    .dropdown-glass,
+    [class*="backdrop-blur"]
+  ),
+:root[data-on-battery="true"] [class*="before:backdrop-blur"]::before {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
 }

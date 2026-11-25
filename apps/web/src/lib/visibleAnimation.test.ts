@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-import { observeVisibleAnimation, startWindowBlurTracking } from "./visibleAnimation";
+import {
+  observeVisibleAnimation,
+  startBatteryPowerTracking,
+  startWindowBlurTracking,
+} from "./visibleAnimation";
 
 function installMockDom(options?: {
   initialFocused?: boolean;
@@ -212,5 +216,49 @@ describe("visibleAnimation", () => {
 
     cleanup?.();
     dispose();
+  });
+
+  it("maintains data-on-battery on the document root from desktopBridge power state pushes", () => {
+    const dom = installMockDom({ initialFocused: true, initialVisibility: "visible" });
+    const listeners = new Set<(onBattery: boolean) => void>();
+    const getOnBatteryPower = vi.fn(() => true);
+    const onPowerStateChanged = vi.fn((listener: (onBattery: boolean) => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    });
+    Object.assign(window, {
+      desktopBridge: {
+        getOnBatteryPower,
+        onPowerStateChanged,
+      },
+    });
+
+    const dispose = startBatteryPowerTracking();
+    expect(dom.rootDataset.onBattery).toBe("true");
+    expect(getOnBatteryPower).toHaveBeenCalledTimes(1);
+    expect(onPowerStateChanged).toHaveBeenCalledTimes(1);
+
+    for (const listener of listeners) listener(false);
+    expect(dom.rootDataset.onBattery).toBeUndefined();
+    expect(getOnBatteryPower).toHaveBeenCalledTimes(1);
+
+    for (const listener of listeners) listener(true);
+    expect(dom.rootDataset.onBattery).toBe("true");
+    expect(getOnBatteryPower).toHaveBeenCalledTimes(1);
+
+    dispose();
+    expect(dom.rootDataset.onBattery).toBeUndefined();
+    expect(listeners.size).toBe(0);
+  });
+
+  it("leaves data-on-battery unset when desktopBridge power state APIs are absent", () => {
+    const dom = installMockDom({ initialFocused: true, initialVisibility: "visible" });
+    const dispose = startBatteryPowerTracking();
+
+    expect(dom.rootDataset.onBattery).toBeUndefined();
+    dispose();
+    expect(dom.rootDataset.onBattery).toBeUndefined();
   });
 });
