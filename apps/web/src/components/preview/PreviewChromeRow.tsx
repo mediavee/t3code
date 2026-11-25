@@ -21,6 +21,7 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "~/components/ui/in
 import { Tooltip, TooltipTrigger } from "~/components/ui/tooltip";
 import { SharedTooltipTrigger } from "~/components/ui/shared-tooltip";
 import { cn } from "~/lib/utils";
+import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 
 interface Props {
   url: string;
@@ -267,7 +268,10 @@ export function PreviewChromeRow({
           >
             <Camera className={cn(recording && "text-destructive")} />
             {recording ? (
-              <span className="absolute right-0.5 top-0.5 size-1.5 motion-safe:animate-status-pulse rounded-full bg-destructive" />
+              <span
+                ref={observeVisibleAnimation}
+                className="absolute right-0.5 top-0.5 size-1.5 motion-safe:animate-status-pulse rounded-full bg-destructive"
+              />
             ) : null}
           </SharedTooltipTrigger>
         ) : null}

@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -164,6 +165,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       restartScheduled: false,
     })),
     waitForReady: () => Effect.succeed(true),
+    changes: Stream.empty,
   };
   const layerBackend = DesktopBackendPool.layerTest(
     options.backendInstances ??
@@ -215,6 +217,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
       ? Layer.succeed(DesktopAppSettings.DesktopAppSettings, {
           get: Effect.sync(() => testSettings),
           load: Effect.sync(() => testSettings),
+          changes: Stream.empty,
           setMainWindowBounds: () => Effect.die("unexpected main window bounds update"),
           setServerExposureMode: () => Effect.die("unexpected server exposure update"),
           setTailscaleServe: () => Effect.die("unexpected Tailscale Serve update"),

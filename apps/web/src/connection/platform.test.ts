@@ -9,6 +9,9 @@ import {
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as PubSub from "effect/PubSub";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { afterEach, vi } from "vite-plus/test";
 import { ClientCapabilities } from "@t3tools/client-runtime/platform";
 import {
@@ -19,6 +22,7 @@ import {
 import {
   canRetainCachedPlatformRegistrationAfterRefreshFailure,
   canReuseCachedPlatformRegistration,
+  createPlatformRegistrationStream,
   layer,
   isRejectedBootstrapCredentialError,
   isRejectedSecondaryBootstrap,
@@ -26,6 +30,7 @@ import {
   primaryRegistrationToRetainAfterTopologyRead,
   prepareDesktopSshEnvironment,
   provisionDesktopSshEnvironment,
+  resolveNextPlatformRefreshDelayMs,
   secondaryRegistrationsToRetainAfterTopologyRead,
 } from "./platform.ts";
 import { APP_VERSION } from "../branding.ts";
@@ -448,5 +453,174 @@ describe("primary topology cache", () => {
         cause: new Error("IPC unavailable"),
       }),
     ).toBe(cached);
+  });
+});
+
+describe("createPlatformRegistrationStream", () => {
+  it.effect(
+    "wakes immediately on push changes and otherwise waits for the steady safety poll",
+    () =>
+      Effect.gen(function* () {
+        const changes = yield* PubSub.unbounded<void>();
+        let polls = 0;
+        const emitted: number[] = [];
+        const stream = createPlatformRegistrationStream({
+          poll: Effect.sync(() => {
+            polls += 1;
+            return { value: polls, needsRetry: false };
+          }),
+          changes: Stream.fromPubSub(changes),
+          steadyInterval: "60 seconds",
+          retryInterval: "3 seconds",
+          fallbackInterval: "3 seconds",
+        });
+        const fiber = yield* stream.pipe(
+          Stream.runForEach((value) => Effect.sync(() => void emitted.push(value))),
+          Effect.forkChild,
+        );
+
+        yield* Effect.yieldNow;
+        expect(emitted).toEqual([1]);
+
+        yield* TestClock.adjust("30 seconds");
+        expect(emitted).toEqual([1]);
+
+        yield* PubSub.publish(changes, undefined);
+        yield* Effect.yieldNow;
+        expect(emitted).toEqual([1, 2]);
+
+        yield* TestClock.adjust("59 seconds");
+        expect(emitted).toEqual([1, 2]);
+
+        yield* TestClock.adjust("1 second");
+        expect(emitted).toEqual([1, 2, 3]);
+
+        yield* Fiber.interrupt(fiber);
+      }),
+  );
+
+  it.effect("retries quickly while needsRetry is true, then slows down once healthy", () =>
+    Effect.gen(function* () {
+      const changes = yield* PubSub.unbounded<void>();
+      let polls = 0;
+      const emitted: number[] = [];
+      const stream = createPlatformRegistrationStream({
+        poll: Effect.sync(() => {
+          polls += 1;
+          return { value: polls, needsRetry: polls < 2 };
+        }),
+        changes: Stream.fromPubSub(changes),
+        steadyInterval: "60 seconds",
+        retryInterval: "3 seconds",
+        fallbackInterval: "3 seconds",
+      });
+      const fiber = yield* stream.pipe(
+        Stream.runForEach((value) => Effect.sync(() => void emitted.push(value))),
+        Effect.forkChild,
+      );
+
+      yield* Effect.yieldNow;
+      expect(emitted).toEqual([1]);
+
+      yield* TestClock.adjust("3 seconds");
+      expect(emitted).toEqual([1, 2]);
+
+      yield* TestClock.adjust("30 seconds");
+      expect(emitted).toEqual([1, 2]);
+
+      yield* TestClock.adjust("30 seconds");
+      expect(emitted).toEqual([1, 2, 3]);
+
+      yield* Fiber.interrupt(fiber);
+    }),
+  );
+
+  it.effect("falls back to polling when no push channel is available", () =>
+    Effect.gen(function* () {
+      let polls = 0;
+      const emitted: number[] = [];
+      const stream = createPlatformRegistrationStream({
+        poll: Effect.sync(() => {
+          polls += 1;
+          return { value: polls, needsRetry: false };
+        }),
+        changes: null,
+        steadyInterval: "60 seconds",
+        retryInterval: "3 seconds",
+        fallbackInterval: "3 seconds",
+      });
+      const fiber = yield* stream.pipe(
+        Stream.runForEach((value) => Effect.sync(() => void emitted.push(value))),
+        Effect.forkChild,
+      );
+
+      yield* Effect.yieldNow;
+      expect(emitted).toEqual([1]);
+
+      yield* TestClock.adjust("3 seconds");
+      expect(emitted).toEqual([1, 2]);
+
+      yield* Fiber.interrupt(fiber);
+    }),
+  );
+
+  it.effect("wakes at nextRefreshDelayMs before the steady safety poll", () =>
+    Effect.gen(function* () {
+      const changes = yield* PubSub.unbounded<void>();
+      let polls = 0;
+      const emitted: number[] = [];
+      const stream = createPlatformRegistrationStream({
+        poll: Effect.sync(() => {
+          polls += 1;
+          return {
+            value: polls,
+            needsRetry: false,
+            nextRefreshDelayMs: polls === 1 ? 12_000 : undefined,
+          };
+        }),
+        changes: Stream.fromPubSub(changes),
+        steadyInterval: "60 seconds",
+        retryInterval: "3 seconds",
+        fallbackInterval: "3 seconds",
+      });
+      const fiber = yield* stream.pipe(
+        Stream.runForEach((value) => Effect.sync(() => void emitted.push(value))),
+        Effect.forkChild,
+      );
+
+      yield* Effect.yieldNow;
+      expect(emitted).toEqual([1]);
+
+      yield* TestClock.adjust("11 seconds");
+      expect(emitted).toEqual([1]);
+
+      yield* TestClock.adjust("1 second");
+      expect(emitted).toEqual([1, 2]);
+
+      yield* Fiber.interrupt(fiber);
+    }),
+  );
+});
+
+describe("resolveNextPlatformRefreshDelayMs", () => {
+  it("picks the earliest deadline across cached bearer refreshes and rejected bootstrap retries", () => {
+    expect(resolveNextPlatformRefreshDelayMs([], [], 10_000)).toBeUndefined();
+    expect(
+      resolveNextPlatformRefreshDelayMs(
+        [{ refreshAtEpochMs: 45_000 }],
+        [{ retryAtEpochMs: 22_000 }],
+        10_000,
+      ),
+    ).toBe(12_000);
+    expect(
+      resolveNextPlatformRefreshDelayMs(
+        [{ refreshAtEpochMs: 18_000 }],
+        [{ retryAtEpochMs: 22_000 }],
+        10_000,
+      ),
+    ).toBe(8_000);
+    expect(resolveNextPlatformRefreshDelayMs([], [{ retryAtEpochMs: 25_000 }], 10_000)).toBe(
+      15_000,
+    );
   });
 });

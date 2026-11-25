@@ -44,6 +44,7 @@ import {
   getDatabaseMigrationProgress,
   getLocalEnvironmentBootstraps,
   getLocalEnvironmentBearerToken,
+  installLocalEnvironmentsChangedForwarding,
   installRelayTelemetryEnabled,
   getSystemLocale,
   getPreferredSystemLanguages,
@@ -97,6 +98,7 @@ import {
 export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers")(function* () {
   const ipc = yield* DesktopIpc.DesktopIpc;
   yield* installNotificationBadge();
+  yield* installLocalEnvironmentsChangedForwarding();
   yield* PreviewIpc.installPreviewEventForwarding();
 
   yield* ipc.handle(AppActivationIpc.setReady);
