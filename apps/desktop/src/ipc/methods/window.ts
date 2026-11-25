@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Ref from "effect/Ref";
+import * as Stream from "effect/Stream";
 import * as DesktopState from "../../app/DesktopState.ts";
 
 import * as DesktopBackendConfiguration from "../../backend/DesktopBackendConfiguration.ts";
@@ -159,6 +160,33 @@ export const getWindowFullscreenState = DesktopIpc.makeSyncIpcMethod({
     const window = yield* electronWindow.currentMainOrFirst;
     return Option.isSome(window) && window.value.isFullScreen();
   }),
+});
+
+const localEnvironmentSettingsKey = (settings: DesktopAppSettings.DesktopSettings): string =>
+  `${settings.localEnvironmentEnabled ? "1" : "0"}|${settings.wslBackendEnabled ? "1" : "0"}|${settings.wslOnly ? "1" : "0"}|${settings.wslDistro ?? ""}`;
+
+export const installLocalEnvironmentsChangedForwarding = Effect.fn(
+  "desktop.ipc.window.installLocalEnvironmentsChangedForwarding",
+)(function* () {
+  const pool = yield* DesktopBackendPool.DesktopBackendPool;
+  const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
+  const electronWindow = yield* ElectronWindow.ElectronWindow;
+  const notifyChanged = electronWindow.sendAll(IpcChannels.LOCAL_ENVIRONMENTS_CHANGED_CHANNEL);
+  const initialSettingsKey = localEnvironmentSettingsKey(yield* appSettings.get);
+  const settingsChanges = Stream.concat(
+    Stream.make(initialSettingsKey),
+    (appSettings.changes ?? Stream.empty).pipe(Stream.map(localEnvironmentSettingsKey)),
+  ).pipe(Stream.changes, Stream.drop(1));
+  if (pool.changes !== undefined) {
+    yield* pool.changes.pipe(
+      Stream.runForEach(() => notifyChanged),
+      Effect.forkScoped({ startImmediately: true }),
+    );
+  }
+  yield* settingsChanges.pipe(
+    Stream.runForEach(() => notifyChanged),
+    Effect.forkScoped({ startImmediately: true }),
+  );
 });
 
 export const getLocalEnvironmentBootstraps = DesktopIpc.makeSyncIpcMethod({

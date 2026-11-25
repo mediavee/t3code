@@ -35,6 +35,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -536,9 +537,65 @@ const loadSecondaryConnectionRegistration = Effect.fn(
   };
 });
 
-// The bridge has no topology event. Cache registrations until bearer credentials near expiry.
-const PLATFORM_POLL_INTERVAL = "3 seconds";
+// Push-driven when the bridge exposes onLocalEnvironmentsChanged; slow safety poll catches bearer refreshes.
+const PLATFORM_FALLBACK_POLL_INTERVAL = Duration.seconds(3);
+const PLATFORM_RETRY_POLL_INTERVAL = Duration.seconds(3);
+const PLATFORM_SAFETY_POLL_INTERVAL = Duration.seconds(60);
 const SECONDARY_BEARER_REFRESH_SKEW_MS = 5_000;
+
+export interface PlatformRegistrationPollResult<A> {
+  readonly value: A;
+  readonly needsRetry: boolean;
+  readonly nextRefreshDelayMs?: number | undefined;
+}
+
+export function createPlatformRegistrationStream<A>(options: {
+  readonly poll: Effect.Effect<PlatformRegistrationPollResult<A>>;
+  readonly changes: Stream.Stream<void> | null;
+  readonly steadyInterval?: Duration.Input;
+  readonly retryInterval?: Duration.Input;
+  readonly fallbackInterval?: Duration.Input;
+}): Stream.Stream<A> {
+  const steadyInterval = Duration.fromInputUnsafe(
+    options.steadyInterval ?? PLATFORM_SAFETY_POLL_INTERVAL,
+  );
+  const retryInterval = Duration.fromInputUnsafe(
+    options.retryInterval ?? PLATFORM_RETRY_POLL_INTERVAL,
+  );
+  const fallbackInterval = Duration.fromInputUnsafe(
+    options.fallbackInterval ?? PLATFORM_FALLBACK_POLL_INTERVAL,
+  );
+  if (options.changes === null) {
+    return Stream.tick(fallbackInterval).pipe(
+      Stream.mapEffect(() => options.poll.pipe(Effect.map((result) => result.value))),
+    );
+  }
+  const changes = options.changes;
+  const steadyMs = Duration.toMillis(steadyInterval);
+  return Stream.unwrap(
+    Effect.gen(function* () {
+      const wakeups = yield* Queue.sliding<void>(1);
+      yield* changes.pipe(
+        Stream.runForEach(() => Queue.offer(wakeups, undefined).pipe(Effect.asVoid)),
+        Effect.forkScoped({ startImmediately: true }),
+      );
+      return Stream.paginate(null as Duration.Duration | null, (waitBeforePoll) =>
+        Effect.gen(function* () {
+          if (waitBeforePoll !== null) {
+            yield* Queue.take(wakeups).pipe(Effect.timeoutOption(waitBeforePoll), Effect.asVoid);
+          }
+          const result = yield* options.poll;
+          const nextWait = result.needsRetry
+            ? retryInterval
+            : result.nextRefreshDelayMs !== undefined
+              ? Duration.millis(Math.max(1_000, Math.min(result.nextRefreshDelayMs, steadyMs)))
+              : steadyInterval;
+          return [[result.value], Option.some(nextWait)] as const;
+        }),
+      );
+    }),
+  );
+}
 
 function secondaryBearerExpiresAtEpochMs(
   issuedAtEpochMs: number,
@@ -685,6 +742,7 @@ const layerPlatformConnectionSource = Layer.effect(
       const nowEpochMs = yield* Clock.currentTimeMillis;
       const next = new Map<string, CachedPlatformRegistration>();
       const registrations: Array<PlatformConnectionRegistration> = [];
+      let needsRetry = false;
 
       const primaryTopologyRead = readPrimaryEnvironmentTargetResult();
       const retainedPrimary = primaryRegistrationToRetainAfterTopologyRead(
@@ -697,6 +755,7 @@ const layerPlatformConnectionSource = Layer.effect(
       }
 
       if (primaryTopologyRead._tag === "Failure") {
+        needsRetry = true;
         yield* Effect.logWarning("Could not read the primary environment topology.", {
           cause: primaryTopologyRead.cause,
         });
@@ -721,6 +780,8 @@ const layerPlatformConnectionSource = Layer.effect(
             const cacheEntry = { signature, registration: built.value };
             next.set(PRIMARY_LOCAL_ENVIRONMENT_ID, cacheEntry);
             registrations.push(built.value);
+          } else {
+            needsRetry = true;
           }
         }
       }
@@ -736,6 +797,7 @@ const layerPlatformConnectionSource = Layer.effect(
       }
 
       if (topologyRead._tag === "Failure") {
+        needsRetry = true;
         yield* Effect.logWarning("Could not read the desktop-local backend topology.", {
           cause: topologyRead.cause,
         });
@@ -809,29 +871,66 @@ const layerPlatformConnectionSource = Layer.effect(
             };
             next.set(bootstrap.id, cacheEntry);
             registrations.push(built.value.registration);
-          } else if (
-            cached !== undefined &&
-            canRetainCachedPlatformRegistrationAfterRefreshFailure(
-              cached,
-              endpointSignature,
-              nowEpochMs,
-            )
-          ) {
-            next.set(bootstrap.id, cached);
-            registrations.push(cached.registration);
+          } else {
+            if (
+              bootstrap.httpBaseUrl !== null &&
+              bootstrap.wsBaseUrl !== null &&
+              bootstrap.bootstrapToken !== undefined &&
+              !nextRejected.has(bootstrap.id)
+            ) {
+              needsRetry = true;
+            }
+            if (
+              cached !== undefined &&
+              canRetainCachedPlatformRegistrationAfterRefreshFailure(
+                cached,
+                endpointSignature,
+                nowEpochMs,
+              )
+            ) {
+              next.set(bootstrap.id, cached);
+              registrations.push(cached.registration);
+            }
           }
         }
         yield* Ref.set(rejectedRef, nextRejected);
       }
 
       yield* Ref.set(cacheRef, next);
-      return registrations as ReadonlyArray<PlatformConnectionRegistration>;
+      let nextRefreshDelayMs: number | undefined;
+      for (const cached of next.values()) {
+        if (cached.refreshAtEpochMs !== undefined) {
+          const remaining = cached.refreshAtEpochMs - nowEpochMs;
+          nextRefreshDelayMs =
+            nextRefreshDelayMs === undefined ? remaining : Math.min(nextRefreshDelayMs, remaining);
+        }
+      }
+      return {
+        value: registrations as ReadonlyArray<PlatformConnectionRegistration>,
+        needsRetry,
+        nextRefreshDelayMs,
+      } satisfies PlatformRegistrationPollResult<ReadonlyArray<PlatformConnectionRegistration>>;
     }).pipe(Effect.provide(FetchHttpClient.layer));
 
+    const bridge = typeof window !== "undefined" ? window.desktopBridge : undefined;
+    const subscribeChanges = bridge?.onLocalEnvironmentsChanged;
+    const changes =
+      subscribeChanges !== undefined
+        ? Stream.callback<void>((queue) =>
+            Effect.acquireRelease(
+              Effect.sync(() => subscribeChanges(() => Queue.offerUnsafe(queue, undefined))),
+              (unsubscribe) => Effect.sync(unsubscribe),
+            ).pipe(Effect.asVoid),
+          )
+        : bridge === undefined
+          ? Stream.empty
+          : null;
+
     return PlatformConnectionSource.PlatformConnectionSource.of({
-      registrations: Stream.tick(PLATFORM_POLL_INTERVAL).pipe(
-        Stream.mapEffect(() => buildPlatformRegistrations),
-      ),
+      registrations: createPlatformRegistrationStream({
+        poll: buildPlatformRegistrations,
+        changes,
+      }),
     });
   }),
 );

@@ -12,9 +12,11 @@ import * as FiberHandle from "effect/FiberHandle";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 import { msg } from "gt-i18n";
@@ -107,6 +109,7 @@ export class DesktopBackendPool extends Context.Service<
     readonly unregister: (
       id: BackendInstanceId,
     ) => Effect.Effect<void, DesktopBackendPoolCannotUnregisterPrimaryError>;
+    readonly changes?: Stream.Stream<void>;
   }
 >()("@t3tools/desktop/backend/DesktopBackendPool") {}
 
@@ -247,6 +250,20 @@ export const layer = Layer.effect(
       },
     );
 
+    const changePubSub = yield* PubSub.unbounded<void>();
+    const notifyChanged = PubSub.publish(changePubSub, undefined).pipe(Effect.asVoid);
+    const forwardInstanceChanges = (
+      instance: DesktopBackendInstance,
+      scope: Scope.Scope,
+    ): Effect.Effect<void> =>
+      instance.changes === undefined
+        ? Effect.void
+        : instance.changes.pipe(
+            Stream.runForEach(() => notifyChanged),
+            Effect.forkIn(scope, { startImmediately: true }),
+            Effect.asVoid,
+          );
+
     const primary = yield* DesktopBackendManager.makeBackendInstance({
       id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
       // Resolve lazily: startup loads persisted settings after pool initialization.
@@ -296,6 +313,8 @@ export const layer = Layer.effect(
         ),
     });
 
+    yield* forwardInstanceChanges(primary, layerScope);
+
     const instancesRef = yield* SynchronizedRef.make<
       ReadonlyMap<BackendInstanceId, RegisteredInstance>
     >(
@@ -336,12 +355,14 @@ export const layer = Layer.effect(
                 Scope.provide(instanceScope),
                 Effect.provide(factoryContext),
               );
+              yield* forwardInstanceChanges(instance, instanceScope);
               const next = new Map(current);
               next.set(spec.id, {
                 _tag: "Active",
                 instance,
                 scope: Option.some(instanceScope),
               });
+              yield* notifyChanged;
               return [
                 { _tag: "Registered", instance } as const,
                 next as ReadonlyMap<BackendInstanceId, RegisteredInstance>,
@@ -404,7 +425,11 @@ export const layer = Layer.effect(
           undefined,
           next as ReadonlyMap<BackendInstanceId, RegisteredInstance>,
         ] as const);
-      }).pipe(Effect.andThen(Deferred.succeed(done, undefined)), Effect.asVoid);
+      }).pipe(
+        Effect.andThen(notifyChanged),
+        Effect.andThen(Deferred.succeed(done, undefined)),
+        Effect.asVoid,
+      );
       yield* Option.match(action.entry.scope, {
         onNone: () => Effect.void,
         onSome: (scope) => Scope.close(scope, Exit.void).pipe(Effect.ignore),
@@ -430,6 +455,7 @@ export const layer = Layer.effect(
       primary: Effect.succeed(primary),
       register,
       unregister,
+      changes: Stream.fromPubSub(changePubSub),
     });
   }),
 );
@@ -459,6 +485,7 @@ export const layerTest = (
         unregister: Effect.fn("DesktopBackendPool.unregister")(function () {
           return Effect.die("DesktopBackendPool.layerTest does not support unregister");
         }),
+        changes: Stream.empty,
       });
     }),
   );

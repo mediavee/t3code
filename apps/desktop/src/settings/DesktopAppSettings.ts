@@ -14,8 +14,10 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
+import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -153,6 +155,7 @@ export class DesktopAppSettings extends Context.Service<
   {
     readonly load: Effect.Effect<DesktopSettings>;
     readonly get: Effect.Effect<DesktopSettings>;
+    readonly changes?: Stream.Stream<DesktopSettings>;
     readonly setLocalEnvironmentEnabled: (
       enabled: boolean,
     ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;
@@ -488,6 +491,7 @@ export const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const random = yield* SecureRandom.SecureRandom;
   const settingsRef = yield* SynchronizedRef.make(environment.defaultDesktopSettings);
+  const changePubSub = yield* PubSub.unbounded<DesktopSettings>();
   // Writing over a settings file we could not read would erase the preferences it holds.
   const persistenceEnabled = yield* Ref.make(true);
 
@@ -495,7 +499,11 @@ export const make = Effect.gen(function* () {
     SynchronizedRef.modify(settingsRef, (settings) => {
       const nextSettings = update(settings);
       return [settingsChange(nextSettings, nextSettings !== settings), nextSettings] as const;
-    });
+    }).pipe(
+      Effect.tap((change) =>
+        change.changed ? PubSub.publish(changePubSub, change.settings) : Effect.void,
+      ),
+    );
 
   const persist = (
     update: (settings: DesktopSettings) => DesktopSettings,
@@ -526,10 +534,15 @@ export const make = Effect.gen(function* () {
         ),
         Effect.as([settingsChange(nextSettings, true), nextSettings] as const),
       );
-    });
+    }).pipe(
+      Effect.tap((change) =>
+        change.changed ? PubSub.publish(changePubSub, change.settings) : Effect.void,
+      ),
+    );
 
   return DesktopAppSettings.of({
     get: SynchronizedRef.get(settingsRef),
+    changes: Stream.fromPubSub(changePubSub),
     load: Effect.gen(function* () {
       const settings = yield* readSettings(
         fileSystem,
@@ -547,7 +560,9 @@ export const make = Effect.gen(function* () {
           ),
         ),
       );
-      return yield* SynchronizedRef.setAndGet(settingsRef, settings);
+      const loaded = yield* SynchronizedRef.setAndGet(settingsRef, settings);
+      yield* PubSub.publish(changePubSub, loaded);
+      return loaded;
     }).pipe(Effect.withSpan("desktop.settings.load")),
     setMainWindowBounds: Effect.fn("desktop.settings.setMainWindowBounds")(
       function* (bounds, isMaximized) {
@@ -615,6 +630,7 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
     DesktopAppSettings,
     Effect.gen(function* () {
       const settingsRef = yield* SynchronizedRef.make(initialSettings);
+      const changePubSub = yield* PubSub.unbounded<DesktopSettings>();
       const update = (f: (settings: DesktopSettings) => DesktopSettings) =>
         SynchronizedRef.modify(settingsRef, (settings) => {
           const nextSettings = f(settings);
@@ -625,11 +641,16 @@ export const layerTest = (initialSettings: DesktopSettings = DEFAULT_DESKTOP_SET
             },
             nextSettings,
           ] as const;
-        });
+        }).pipe(
+          Effect.tap((change) =>
+            change.changed ? PubSub.publish(changePubSub, change.settings) : Effect.void,
+          ),
+        );
 
       return DesktopAppSettings.of({
         get: SynchronizedRef.get(settingsRef),
         load: SynchronizedRef.get(settingsRef),
+        changes: Stream.fromPubSub(changePubSub),
         setMainWindowBounds: Effect.fn("DesktopAppSettings.setMainWindowBounds")(
           function (bounds, isMaximized) {
             return update((settings) => setMainWindowBounds(settings, bounds, isMaximized));

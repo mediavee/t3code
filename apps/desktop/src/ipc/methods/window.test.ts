@@ -11,6 +11,7 @@ import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
@@ -38,6 +39,7 @@ import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import {
   getLocalEnvironmentBootstraps,
+  installLocalEnvironmentsChangedForwarding,
   installRelayTelemetryEnabled,
   pickProjectFavicon,
   probeRemoteEditors,
@@ -222,6 +224,52 @@ describe("getLocalEnvironmentBootstraps", () => {
       assert.deepEqual(result, []);
     }).pipe(Effect.provide(bootstrapsLayer([stoppedInstance])));
   });
+});
+
+describe("installLocalEnvironmentsChangedForwarding", () => {
+  it.effect("broadcasts on pool changes and local-environment setting changes only", () =>
+    Effect.gen(function* () {
+      const poolChanges = yield* PubSub.unbounded<void>();
+      const sentChannels: string[] = [];
+      const poolLayer = Layer.succeed(DesktopBackendPool.DesktopBackendPool, {
+        get: () => Effect.succeedNone,
+        list: Effect.succeed([defaultWslInstance]),
+        primary: Effect.succeed(defaultWslInstance),
+        register: () => Effect.die("unexpected register"),
+        unregister: () => Effect.die("unexpected unregister"),
+        changes: Stream.fromPubSub(poolChanges),
+      });
+      const windowLayer = Layer.mock(ElectronWindow.ElectronWindow)({
+        sendAll: (channel) =>
+          Effect.sync(() => {
+            sentChannels.push(channel);
+          }),
+      });
+      const layer = Layer.mergeAll(poolLayer, DesktopAppSettings.layerTest(), windowLayer);
+
+      yield* Effect.gen(function* () {
+        yield* installLocalEnvironmentsChangedForwarding();
+        yield* Effect.yieldNow;
+        assert.deepEqual(sentChannels, []);
+
+        yield* PubSub.publish(poolChanges, undefined);
+        yield* Effect.yieldNow;
+        assert.deepEqual(sentChannels, [IpcChannels.LOCAL_ENVIRONMENTS_CHANGED_CHANNEL]);
+
+        const appSettings = yield* DesktopAppSettings.DesktopAppSettings;
+        yield* appSettings.setMainWindowBounds({ x: 10, y: 20, width: 800, height: 600 }, false);
+        yield* Effect.yieldNow;
+        assert.deepEqual(sentChannels, [IpcChannels.LOCAL_ENVIRONMENTS_CHANGED_CHANNEL]);
+
+        yield* appSettings.setLocalEnvironmentEnabled(false);
+        yield* Effect.yieldNow;
+        assert.deepEqual(sentChannels, [
+          IpcChannels.LOCAL_ENVIRONMENTS_CHANGED_CHANNEL,
+          IpcChannels.LOCAL_ENVIRONMENTS_CHANGED_CHANNEL,
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(layer));
+    }),
+  );
 });
 
 describe("toLocalBackendPath", () => {
