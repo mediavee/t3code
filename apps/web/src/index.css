@@ -223,10 +223,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     );
   --color-zinc-25: oklch(99.2% 0 0);
   --animate-skeleton: skeleton 2.4s infinite;
-  /* Duty-cycled indicator animations: long holds with stepped ramps, so the
-     compositor updates discrete frames instead of every vsync. */
-  --animate-status-pulse: status-pulse 2s infinite;
-  --animate-status-ping: status-ping 2s infinite;
   /* Stash pulses hold a highlight for 1.2s; the row then eases back over 200ms, the count snaps.
      The row alternates two identical keyframes so each stash restarts it without a remount. */
   --animate-stash-pulse-row: stash-pulse-row 1400ms;
@@ -335,21 +331,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       color: var(--color-primary);
     }
   }
-  @keyframes status-pulse {
-    0%,
-    40% {
-      opacity: 1;
-      animation-timing-function: steps(6);
-    }
-    50%,
-    90% {
-      opacity: 0.5;
-      animation-timing-function: steps(6);
-    }
-    100% {
-      opacity: 1;
-    }
-  }
   @keyframes step-in {
     from {
       opacity: 0;
@@ -369,21 +350,6 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   @keyframes check-draw {
     from {
       stroke-dashoffset: 12;
-    }
-  }
-  @keyframes status-ping {
-    /* Burst first (immediate feedback for click ripples), then hold
-       invisible for the rest of the cycle. Mirrors animate-ping's
-       75%-scale start. */
-    0% {
-      opacity: 0.9;
-      scale: 0.75;
-      animation-timing-function: steps(8);
-    }
-    40%,
-    100% {
-      opacity: 0;
-      scale: 2;
     }
   }
 }
@@ -604,10 +570,98 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+@keyframes visible-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @utility visible-animate-spin {
-  animation: var(--animate-spin);
+  animation: visible-spin 1s steps(12, end) infinite;
   animation-play-state: var(--visible-animation-state, paused);
   will-change: var(--visible-animation-will-change, auto);
+}
+
+/* Duty-cycled indicator animations: long holds with stepped ramps, so the
+   compositor updates discrete frames instead of every vsync. */
+@keyframes status-pulse {
+  0%,
+  40% {
+    opacity: 1;
+    animation-timing-function: steps(6);
+  }
+  50%,
+  90% {
+    opacity: 0.5;
+    animation-timing-function: steps(6);
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes status-ping {
+  /* Burst first (immediate feedback for click ripples), then hold
+     invisible for the rest of the cycle. Mirrors animate-ping's
+     75%-scale start. */
+  0% {
+    opacity: 0.9;
+    scale: 0.75;
+    animation-timing-function: steps(8);
+  }
+  40%,
+  100% {
+    opacity: 0;
+    scale: 2;
+  }
+}
+
+@utility animate-status-pulse {
+  animation: status-pulse 2s infinite;
+  animation-play-state: var(--visible-animation-state, var(--window-animation-state, running));
+}
+
+@utility animate-status-ping {
+  animation: status-ping 2s infinite;
+  animation-play-state: var(--visible-animation-state, var(--window-animation-state, running));
+}
+
+/* Pause infinite animations and disable GPU backdrop blur passes while unfocused or hidden. */
+:root[data-window-blurred="true"] {
+  --window-animation-state: paused;
+  --glass-blur: 0px !important;
+  --glass-opacity: 100% !important;
+  --glass-saturation: 1 !important;
+}
+
+:root[data-window-blurred="true"]
+  :where(
+    [class*="animate-status-pulse"],
+    [class*="animate-status-ping"],
+    [class*="animate-skeleton"],
+    [class*="animate-pulse"],
+    [class*="animate-spin"],
+    [class*="animate-ping"],
+    [class*="animate-bounce"],
+    [class*="visible-animate-spin"],
+    [class*="live-tool-shine"],
+    [class*="live-activity-focus"]
+  ) {
+  animation-play-state: paused !important;
+}
+
+:root[data-window-blurred="true"]
+  :where(
+    .surface-glass,
+    .alert-glass,
+    .dialog-glass,
+    .dialog-backdrop,
+    .dropdown-glass,
+    [class*="backdrop-blur"]
+  ),
+:root[data-window-blurred="true"] [class*="before:backdrop-blur"]::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 @keyframes live-activity-focus {

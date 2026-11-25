@@ -42,6 +42,7 @@ import {
 } from "react";
 import { cn } from "../lib/utils";
 import { revealThreadTerminal } from "../lib/revealThreadTerminal";
+import { observeVisibleAnimation } from "../lib/visibleAnimation";
 
 import { useEnvironmentQuery } from "../state/query";
 import { linkedPullRequestDetailAtom, useSharedPullRequestSummary } from "../state/pullRequests";
@@ -791,6 +792,7 @@ export function ThreadTerminalStatusButton({
         }
       >
         <TerminalIcon
+          ref={observeVisibleAnimation}
           className="size-3.5 motion-safe:animate-status-pulse"
           onAnimationStart={synchronizeTerminalPulse}
         />
@@ -822,6 +824,7 @@ function ThreadStatusLabel({
           }
         >
           <span
+            ref={status.pulse ? observeVisibleAnimation : undefined}
             className={`size-[9px] rounded-full ${status.dotClass} ${
               status.pulse ? "motion-safe:animate-status-pulse" : ""
             }`}
@@ -844,6 +847,7 @@ function ThreadStatusLabel({
         }
       >
         <span
+          ref={status.pulse ? observeVisibleAnimation : undefined}
           className={`h-1.5 w-1.5 rounded-full ${status.dotClass} ${
             status.pulse ? "motion-safe:animate-status-pulse" : ""
           }`}
@@ -994,6 +998,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
             }
           >
             <TerminalIcon
+              ref={terminalStatus.pulse ? observeVisibleAnimation : undefined}
               className={`size-3 ${terminalStatus.pulse ? "motion-safe:animate-status-pulse" : ""}`}
               onAnimationStart={synchronizeTerminalPulse}
             />
