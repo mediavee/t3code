@@ -740,12 +740,18 @@ export function terminalStatusFromRunningIds(
   };
 }
 
-function synchronizeTerminalPulse(event: AnimationEvent<SVGSVGElement>) {
+const STATUS_PULSE_DURATION_MS = 2_000;
+
+export function synchronizeTerminalPulse(
+  event: Pick<AnimationEvent<SVGSVGElement>, "animationName" | "currentTarget">,
+) {
   if (event.animationName !== "status-pulse") return;
+  const phaseMs = Number(document.timeline.currentTime ?? 0) % STATUS_PULSE_DURATION_MS;
 
   for (const animation of event.currentTarget.getAnimations()) {
     if ("animationName" in animation && animation.animationName === "status-pulse") {
-      animation.startTime = 0;
+      // Setting currentTime instead of startTime preserves CSS animation-play-state: paused.
+      animation.currentTime = phaseMs;
     }
   }
 }

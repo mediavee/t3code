@@ -711,6 +711,27 @@ export function isRejectedBootstrapCredentialError(error: ConnectionAttemptError
   return error._tag === "ConnectionBlockedError" && error.reason === "authentication";
 }
 
+export function resolveNextPlatformRefreshDelayMs(
+  cachedRegistrations: Iterable<Pick<CachedPlatformRegistration, "refreshAtEpochMs">>,
+  rejectedBootstraps: Iterable<Pick<RejectedSecondaryBootstrap, "retryAtEpochMs">>,
+  nowEpochMs: number,
+): number | undefined {
+  let nextRefreshDelayMs: number | undefined;
+  for (const cached of cachedRegistrations) {
+    if (cached.refreshAtEpochMs !== undefined) {
+      const remaining = cached.refreshAtEpochMs - nowEpochMs;
+      nextRefreshDelayMs =
+        nextRefreshDelayMs === undefined ? remaining : Math.min(nextRefreshDelayMs, remaining);
+    }
+  }
+  for (const rejected of rejectedBootstraps) {
+    const remaining = rejected.retryAtEpochMs - nowEpochMs;
+    nextRefreshDelayMs =
+      nextRefreshDelayMs === undefined ? remaining : Math.min(nextRefreshDelayMs, remaining);
+  }
+  return nextRefreshDelayMs;
+}
+
 export function secondaryRegistrationsToRetainAfterTopologyRead(
   previous: ReadonlyMap<string, CachedPlatformRegistration>,
   topologyRead: DesktopSecondaryBootstrapsRead,
@@ -897,14 +918,12 @@ const layerPlatformConnectionSource = Layer.effect(
       }
 
       yield* Ref.set(cacheRef, next);
-      let nextRefreshDelayMs: number | undefined;
-      for (const cached of next.values()) {
-        if (cached.refreshAtEpochMs !== undefined) {
-          const remaining = cached.refreshAtEpochMs - nowEpochMs;
-          nextRefreshDelayMs =
-            nextRefreshDelayMs === undefined ? remaining : Math.min(nextRefreshDelayMs, remaining);
-        }
-      }
+      const currentRejected = yield* Ref.get(rejectedRef);
+      const nextRefreshDelayMs = resolveNextPlatformRefreshDelayMs(
+        next.values(),
+        currentRejected.values(),
+        nowEpochMs,
+      );
       return {
         value: registrations as ReadonlyArray<PlatformConnectionRegistration>,
         needsRetry,

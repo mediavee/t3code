@@ -109,7 +109,7 @@ export class DesktopBackendPool extends Context.Service<
     readonly unregister: (
       id: BackendInstanceId,
     ) => Effect.Effect<void, DesktopBackendPoolCannotUnregisterPrimaryError>;
-    readonly changes?: Stream.Stream<void>;
+    readonly changes: Stream.Stream<void>;
   }
 >()("@t3tools/desktop/backend/DesktopBackendPool") {}
 
@@ -256,13 +256,11 @@ export const layer = Layer.effect(
       instance: DesktopBackendInstance,
       scope: Scope.Scope,
     ): Effect.Effect<void> =>
-      instance.changes === undefined
-        ? Effect.void
-        : instance.changes.pipe(
-            Stream.runForEach(() => notifyChanged),
-            Effect.forkIn(scope, { startImmediately: true }),
-            Effect.asVoid,
-          );
+      instance.changes.pipe(
+        Stream.runForEach(() => notifyChanged),
+        Effect.forkIn(scope, { startImmediately: true }),
+        Effect.asVoid,
+      );
 
     const primary = yield* DesktopBackendManager.makeBackendInstance({
       id: DesktopBackendManager.PRIMARY_INSTANCE_ID,
@@ -362,7 +360,6 @@ export const layer = Layer.effect(
                 instance,
                 scope: Option.some(instanceScope),
               });
-              yield* notifyChanged;
               return [
                 { _tag: "Registered", instance } as const,
                 next as ReadonlyMap<BackendInstanceId, RegisteredInstance>,
@@ -372,7 +369,7 @@ export const layer = Layer.effect(
         ).pipe(
           Effect.flatMap((result) =>
             result._tag === "Registered"
-              ? Effect.succeed(result.instance)
+              ? notifyChanged.pipe(Effect.as(result.instance))
               : Deferred.await(result.done).pipe(Effect.andThen(register(spec))),
           ),
         ),

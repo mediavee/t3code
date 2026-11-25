@@ -90,6 +90,9 @@ function installMockDom(options?: {
       focused = false;
       winTarget.dispatchEvent(new Event("blur"));
     },
+    blurIntoIframe: () => {
+      winTarget.dispatchEvent(new Event("blur"));
+    },
     focus: () => {
       focused = true;
       winTarget.dispatchEvent(new Event("focus"));
@@ -183,6 +186,31 @@ describe("visibleAnimation", () => {
     dom.focus();
     expect(dom.rootDataset.windowBlurred).toBeUndefined();
 
+    dispose();
+  });
+
+  it("ignores window blur events when focus moves into an iframe while document.hasFocus() stays true", () => {
+    const dom = installMockDom({ initialFocused: true, initialVisibility: "visible" });
+    const element = dom.makeElement();
+    const dispose = startWindowBlurTracking();
+    const cleanup = observeVisibleAnimation(element);
+
+    dom.setIntersecting(element, true);
+    expect(dom.rootDataset.windowBlurred).toBeUndefined();
+    expect(element.style.getPropertyValue("--visible-animation-state")).toBe("running");
+    expect(element.style.getPropertyValue("--visible-animation-will-change")).toBe("transform");
+
+    dom.blurIntoIframe();
+    expect(dom.rootDataset.windowBlurred).toBeUndefined();
+    expect(element.style.getPropertyValue("--visible-animation-state")).toBe("running");
+    expect(element.style.getPropertyValue("--visible-animation-will-change")).toBe("transform");
+
+    dom.blur();
+    expect(dom.rootDataset.windowBlurred).toBe("true");
+    expect(element.style.getPropertyValue("--visible-animation-state")).toBe("paused");
+    expect(element.style.getPropertyValue("--visible-animation-will-change")).toBe("auto");
+
+    cleanup?.();
     dispose();
   });
 });

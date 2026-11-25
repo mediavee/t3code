@@ -155,7 +155,7 @@ export class DesktopAppSettings extends Context.Service<
   {
     readonly load: Effect.Effect<DesktopSettings>;
     readonly get: Effect.Effect<DesktopSettings>;
-    readonly changes?: Stream.Stream<DesktopSettings>;
+    readonly changes: Stream.Stream<DesktopSettings>;
     readonly setLocalEnvironmentEnabled: (
       enabled: boolean,
     ) => Effect.Effect<DesktopSettingsChange, DesktopSettingsWriteError>;

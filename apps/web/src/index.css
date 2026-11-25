@@ -223,6 +223,10 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     );
   --color-zinc-25: oklch(99.2% 0 0);
   --animate-skeleton: skeleton 2.4s infinite;
+  /* Duty-cycled indicator animations: long holds with stepped ramps, so the
+     compositor updates discrete frames instead of every vsync. */
+  --animate-status-pulse: status-pulse 2s infinite;
+  --animate-status-ping: status-ping 2s infinite;
   /* Stash pulses hold a highlight for 1.2s; the row then eases back over 200ms, the count snaps.
      The row alternates two identical keyframes so each stash restarts it without a remount. */
   --animate-stash-pulse-row: stash-pulse-row 1400ms;
@@ -331,6 +335,21 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
       color: var(--color-primary);
     }
   }
+  @keyframes status-pulse {
+    0%,
+    40% {
+      opacity: 1;
+      animation-timing-function: steps(6);
+    }
+    50%,
+    90% {
+      opacity: 0.5;
+      animation-timing-function: steps(6);
+    }
+    100% {
+      opacity: 1;
+    }
+  }
   @keyframes step-in {
     from {
       opacity: 0;
@@ -350,6 +369,21 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   @keyframes check-draw {
     from {
       stroke-dashoffset: 12;
+    }
+  }
+  @keyframes status-ping {
+    /* Burst first (immediate feedback for click ripples), then hold
+       invisible for the rest of the cycle. Mirrors animate-ping's
+       75%-scale start. */
+    0% {
+      opacity: 0.9;
+      scale: 0.75;
+      animation-timing-function: steps(8);
+    }
+    40%,
+    100% {
+      opacity: 0;
+      scale: 2;
     }
   }
 }
@@ -577,58 +611,18 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
 }
 
 @utility visible-animate-spin {
-  animation: visible-spin 1s steps(12, end) infinite;
+  animation: visible-spin 1s steps(24, end) infinite;
   animation-play-state: var(--visible-animation-state, paused);
   will-change: var(--visible-animation-will-change, auto);
 }
 
-/* Duty-cycled indicator animations: long holds with stepped ramps, so the
-   compositor updates discrete frames instead of every vsync. */
-@keyframes status-pulse {
-  0%,
-  40% {
-    opacity: 1;
-    animation-timing-function: steps(6);
-  }
-  50%,
-  90% {
-    opacity: 0.5;
-    animation-timing-function: steps(6);
-  }
-  100% {
-    opacity: 1;
-  }
-}
-
-@keyframes status-ping {
-  /* Burst first (immediate feedback for click ripples), then hold
-     invisible for the rest of the cycle. Mirrors animate-ping's
-     75%-scale start. */
-  0% {
-    opacity: 0.9;
-    scale: 0.75;
-    animation-timing-function: steps(8);
-  }
-  40%,
-  100% {
-    opacity: 0;
-    scale: 2;
-  }
-}
-
-@utility animate-status-pulse {
-  animation: status-pulse 2s infinite;
-  animation-play-state: var(--visible-animation-state, var(--window-animation-state, running));
-}
-
-@utility animate-status-ping {
-  animation: status-ping 2s infinite;
-  animation-play-state: var(--visible-animation-state, var(--window-animation-state, running));
+/* Unlayered so animation-play-state overrides @layer utilities animation shorthands. */
+:where([class*="animate-status-pulse"], [class*="animate-status-ping"]) {
+  animation-play-state: var(--visible-animation-state, running);
 }
 
 /* Pause infinite animations and disable GPU backdrop blur passes while unfocused or hidden. */
 :root[data-window-blurred="true"] {
-  --window-animation-state: paused;
   --glass-blur: 0px !important;
   --glass-opacity: 100% !important;
   --glass-saturation: 1 !important;

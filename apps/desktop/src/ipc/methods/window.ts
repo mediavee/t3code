@@ -175,14 +175,12 @@ export const installLocalEnvironmentsChangedForwarding = Effect.fn(
   const initialSettingsKey = localEnvironmentSettingsKey(yield* appSettings.get);
   const settingsChanges = Stream.concat(
     Stream.make(initialSettingsKey),
-    (appSettings.changes ?? Stream.empty).pipe(Stream.map(localEnvironmentSettingsKey)),
+    appSettings.changes.pipe(Stream.map(localEnvironmentSettingsKey)),
   ).pipe(Stream.changes, Stream.drop(1));
-  if (pool.changes !== undefined) {
-    yield* pool.changes.pipe(
-      Stream.runForEach(() => notifyChanged),
-      Effect.forkScoped({ startImmediately: true }),
-    );
-  }
+  yield* pool.changes.pipe(
+    Stream.runForEach(() => notifyChanged),
+    Effect.forkScoped({ startImmediately: true }),
+  );
   yield* settingsChanges.pipe(
     Stream.runForEach(() => notifyChanged),
     Effect.forkScoped({ startImmediately: true }),

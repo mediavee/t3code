@@ -53,13 +53,16 @@ function handleWindowFocus() {
 }
 
 function handleWindowBlur() {
-  windowFocused = false;
+  windowFocused =
+    typeof document !== "undefined" && typeof document.hasFocus === "function"
+      ? document.hasFocus()
+      : false;
   updateAnimations();
 }
 
 function handleVisibilityChange() {
-  if (document.visibilityState === "visible" && readWindowFocused()) {
-    windowFocused = true;
+  if (document.visibilityState === "visible") {
+    windowFocused = readWindowFocused();
   }
   updateAnimations();
 }

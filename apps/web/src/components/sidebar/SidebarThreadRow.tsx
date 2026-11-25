@@ -102,7 +102,9 @@ import {
   resolveSidebarRowStatus,
   resolveThreadLastVisitedAt,
   shouldRecedeSidebarThread,
+  resolveWorkingDurationMinuteSnapshot,
   resolveWorkingStartedAt,
+  WORKING_DURATION_MINUTE_THRESHOLD_MS,
   useRetainedValue,
   withoutRemovedCheckout,
   useSidebarRowSubscriptionLease,
@@ -195,8 +197,6 @@ export function JumpHintBadge(props: { label: string }) {
 export const JUMP_HINT_SLOT_CLASS_NAME =
   "[&>:not([data-jump-hint])]:invisible [&>:not([data-jump-hint])]:absolute";
 
-const WORKING_DURATION_MINUTE_THRESHOLD_MS = 60_000;
-
 function WorkingDuration(props: { environmentId: EnvironmentId; startedAt: string | null }) {
   const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
   if (Number.isNaN(startedMs)) return null;
@@ -204,7 +204,7 @@ function WorkingDuration(props: { environmentId: EnvironmentId; startedAt: strin
 }
 
 // Self-ticking so only this span re-renders on clock ticks, not the whole row.
-// Switches from the shared 1Hz clock to the minute clock once elapsed reaches 60s
+// Switches from the shared 1Hz clock to exact per-minute deadlines once elapsed reaches 60s
 // because minute/hour labels omit seconds.
 function WorkingDurationLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
   const minuteThresholdMs =
@@ -233,27 +233,32 @@ function WorkingDurationSecondLabel(props: { environmentId: EnvironmentId; start
   );
 }
 
-function resolveWorkingDurationMinuteElapsedMs(
-  environmentId: EnvironmentId,
-  startedMs: number,
-  nowMinute: string,
-): number {
-  const minuteMs = Date.parse(`${nowMinute}:00.000Z`);
-  const elapsedMs = toServerClock(environmentId, minuteMs) - startedMs;
-  return elapsedMs < WORKING_DURATION_MINUTE_THRESHOLD_MS
-    ? WORKING_DURATION_MINUTE_THRESHOLD_MS
-    : elapsedMs;
-}
-
 function WorkingDurationMinuteLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
-  const nowMinute = useNowMinute();
-  const messages = useMessages();
-  const elapsedMs = resolveWorkingDurationMinuteElapsedMs(
-    props.environmentId,
-    props.startedMs,
-    nowMinute,
+  const [snapshot, setSnapshot] = useState(() =>
+    resolveWorkingDurationMinuteSnapshot(props.environmentId, props.startedMs, Date.now()),
   );
-  return <span className="tabular-nums">{formatWorkingDurationLabel(elapsedMs, messages)}</span>;
+  const boundaryPassed = useDeadlinePassed(snapshot.nextBoundaryClientMs);
+  if (
+    snapshot.environmentId !== props.environmentId ||
+    snapshot.startedMs !== props.startedMs ||
+    boundaryPassed
+  ) {
+    // Read Date.now() inside the updater so React Compiler cannot cache the initial reading.
+    setSnapshot((prev) =>
+      resolveWorkingDurationMinuteSnapshot(
+        props.environmentId,
+        props.startedMs,
+        Date.now(),
+        prev.environmentId === props.environmentId && prev.startedMs === props.startedMs
+          ? prev.nextBoundaryClientMs
+          : undefined,
+      ),
+    );
+  }
+  const messages = useMessages();
+  return (
+    <span className="tabular-nums">{formatWorkingDurationLabel(snapshot.elapsedMs, messages)}</span>
+  );
 }
 
 function terminalProcessLabel(count: number, resolve: MessageResolver): string {

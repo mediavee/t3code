@@ -1,10 +1,12 @@
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { ProjectId, type PullRequestSummary, type VcsStatusResult } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
+import { afterEach, vi } from "vite-plus/test";
 
 import {
   resolveDisplayedThreadPr,
   resolveDisplayedThreadPrProvider,
+  synchronizeTerminalPulse,
 } from "./ThreadStatusIndicators";
 import { newestPullRequestSummary } from "../state/pullRequests";
 
@@ -134,5 +136,41 @@ describe("resolveDisplayedThreadPr", () => {
         gitStatus: status({ refName: "main", pr: mainPr }),
       }),
     ).toBeNull();
+  });
+});
+
+describe("synchronizeTerminalPulse", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("syncs status-pulse via currentTime modulo 2000ms without overwriting startTime", () => {
+    vi.stubGlobal("document", { timeline: { currentTime: 5_350 } });
+    const pulseAnim = { animationName: "status-pulse", startTime: null, currentTime: 0 };
+    const otherAnim = { animationName: "other-anim", startTime: null, currentTime: 123 };
+
+    synchronizeTerminalPulse({
+      animationName: "status-pulse",
+      currentTarget: {
+        getAnimations: () => [pulseAnim, otherAnim],
+      } as unknown as SVGSVGElement,
+    });
+
+    expect(pulseAnim.currentTime).toBe(1_350);
+    expect(pulseAnim.startTime).toBeNull();
+    expect(otherAnim.currentTime).toBe(123);
+  });
+
+  it("ignores non-status-pulse animation events", () => {
+    vi.stubGlobal("document", { timeline: { currentTime: 5_350 } });
+    const getAnimations = vi.fn(() => []);
+
+    synchronizeTerminalPulse({
+      animationName: "status-ping",
+      currentTarget: { getAnimations } as unknown as SVGSVGElement,
+    });
+
+    expect(getAnimations).not.toHaveBeenCalled();
   });
 });

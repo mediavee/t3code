@@ -263,7 +263,7 @@ export interface DesktopBackendInstance {
   readonly currentConfig: Effect.Effect<Option.Option<DesktopBackendStartConfig>>;
   readonly snapshot: Effect.Effect<DesktopBackendSnapshot>;
   readonly waitForReady: (timeout: Duration.Duration) => Effect.Effect<boolean>;
-  readonly changes?: Stream.Stream<void>;
+  readonly changes: Stream.Stream<void>;
 }
 
 export interface BackendInstanceSpec {
