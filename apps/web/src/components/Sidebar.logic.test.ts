@@ -1,3 +1,4 @@
+import { recordServerClock } from "@t3tools/client-runtime/clock";
 import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { isThreadWorking as isSidebarThreadWorking } from "@t3tools/client-runtime/state/thread-inbox";
@@ -23,6 +24,7 @@ import {
   resolveSidebarThreadStatus,
   resolveThreadStatusPill,
   resolveWindowTitleThreadStatus,
+  resolveWorkingDurationMinuteSnapshot,
   resolveWorkingStartedAt,
   searchSidebarThreads,
   shouldRecedeSidebarThread,
@@ -464,6 +466,37 @@ describe("resolveWorkingStartedAt", () => {
       ).toBeNull();
     },
   );
+});
+
+describe("resolveWorkingDurationMinuteSnapshot", () => {
+  it("schedules exact minute boundaries relative to startedMs and respects server clock offset", () => {
+    const envId = EnvironmentId.make("working-duration-env");
+    recordServerClock(envId, {
+      serverTimeMs: 1_005_000,
+      requestedAtMs: 1_000_000,
+      receivedAtMs: 1_000_000,
+    });
+    try {
+      const startedMs = 1_000_500;
+      const first = resolveWorkingDurationMinuteSnapshot(envId, startedMs, 1_055_500);
+      expect(first.elapsedMs).toBe(60_000);
+      expect(first.nextBoundaryClientMs).toBe(1_115_500);
+
+      const second = resolveWorkingDurationMinuteSnapshot(envId, startedMs, 1_115_500);
+      expect(second.elapsedMs).toBe(120_000);
+      expect(second.nextBoundaryClientMs).toBe(1_175_500);
+
+      const guarded = resolveWorkingDurationMinuteSnapshot(envId, startedMs, 1_115_000, 1_115_500);
+      expect(guarded.elapsedMs).toBe(120_000);
+      expect(guarded.nextBoundaryClientMs).toBe(1_175_500);
+    } finally {
+      recordServerClock(envId, {
+        serverTimeMs: undefined,
+        requestedAtMs: 0,
+        receivedAtMs: 0,
+      });
+    }
+  });
 });
 
 describe("resolveThreadStatusPill", () => {

@@ -960,6 +960,7 @@ describe("DesktopUpdates", () => {
           restartScheduled: false,
         })),
         waitForReady: () => Effect.succeed(true),
+        changes: Stream.empty,
       } satisfies DesktopBackendPool.DesktopBackendInstance;
     };
     const primary = makeInstance(DesktopBackendPool.PRIMARY_INSTANCE_ID, false);

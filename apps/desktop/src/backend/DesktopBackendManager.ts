@@ -263,6 +263,7 @@ export interface DesktopBackendInstance {
   readonly currentConfig: Effect.Effect<Option.Option<DesktopBackendStartConfig>>;
   readonly snapshot: Effect.Effect<DesktopBackendSnapshot>;
   readonly waitForReady: (timeout: Duration.Duration) => Effect.Effect<boolean>;
+  readonly changes: Stream.Stream<void>;
 }
 
 export interface BackendInstanceSpec {
@@ -1297,6 +1298,28 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
       ),
   );
 
+  const bootstrapRelevantKey = (current: BackendManagerState): string => {
+    const config = Option.getOrUndefined(current.config);
+    const preflight = config ? Option.getOrUndefined(config.preflightFailure) : undefined;
+    return [
+      current.ready ? "1" : "0",
+      current.desiredRunning ? "1" : "0",
+      Option.isSome(current.restartFiber) ? "1" : "0",
+      config?.httpBaseUrl.href ?? "",
+      config?.runningDistro ?? "",
+      config?.bootstrap.desktopBootstrapToken ?? "",
+      config?.bootstrap.desktopBootstrapSecret ? "s" : "",
+      preflight ? `${preflight.fatal ? "f" : "t"}:${preflight.reason}` : "",
+    ].join("\u0000");
+  };
+
+  const changes = SubscriptionRef.changes(state).pipe(
+    Stream.map(bootstrapRelevantKey),
+    Stream.changes,
+    Stream.drop(1),
+    Stream.as(undefined),
+  );
+
   yield* Effect.addFinalizer(() => stop());
 
   return {
@@ -1307,5 +1330,6 @@ export const makeBackendInstance = Effect.fn("makeBackendInstance")(function* (
     currentConfig,
     snapshot,
     waitForReady,
+    changes,
   } satisfies DesktopBackendInstance;
 });

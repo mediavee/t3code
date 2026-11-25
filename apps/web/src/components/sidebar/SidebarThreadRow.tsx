@@ -102,7 +102,9 @@ import {
   resolveSidebarRowStatus,
   resolveThreadLastVisitedAt,
   shouldRecedeSidebarThread,
+  resolveWorkingDurationMinuteSnapshot,
   resolveWorkingStartedAt,
+  WORKING_DURATION_MINUTE_THRESHOLD_MS,
   useRetainedValue,
   withoutRemovedCheckout,
   useSidebarRowSubscriptionLease,
@@ -201,9 +203,24 @@ function WorkingDuration(props: { environmentId: EnvironmentId; startedAt: strin
   return <WorkingDurationLabel environmentId={props.environmentId} startedMs={startedMs} />;
 }
 
-// Self-ticking so only this span re-renders each second, not the whole row;
-// the shared tick lands every working row's update in the same frame.
+// Self-ticking so only this span re-renders on clock ticks, not the whole row.
+// Switches from the shared 1Hz clock to exact per-minute deadlines once elapsed reaches 60s
+// because minute/hour labels omit seconds.
 function WorkingDurationLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
+  const minuteThresholdMs =
+    props.startedMs + WORKING_DURATION_MINUTE_THRESHOLD_MS - toServerClock(props.environmentId, 0);
+  const reachedMinute = useDeadlinePassed(minuteThresholdMs);
+  if (reachedMinute) {
+    return (
+      <WorkingDurationMinuteLabel environmentId={props.environmentId} startedMs={props.startedMs} />
+    );
+  }
+  return (
+    <WorkingDurationSecondLabel environmentId={props.environmentId} startedMs={props.startedMs} />
+  );
+}
+
+function WorkingDurationSecondLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
   const nowMs = useNowSecond();
   const messages = useMessages();
   return (
@@ -213,6 +230,34 @@ function WorkingDurationLabel(props: { environmentId: EnvironmentId; startedMs: 
         messages,
       )}
     </span>
+  );
+}
+
+function WorkingDurationMinuteLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
+  const [snapshot, setSnapshot] = useState(() =>
+    resolveWorkingDurationMinuteSnapshot(props.environmentId, props.startedMs, Date.now()),
+  );
+  const boundaryPassed = useDeadlinePassed(snapshot.nextBoundaryClientMs);
+  if (
+    snapshot.environmentId !== props.environmentId ||
+    snapshot.startedMs !== props.startedMs ||
+    boundaryPassed
+  ) {
+    // Read Date.now() inside the updater so React Compiler cannot cache the initial reading.
+    setSnapshot((prev) =>
+      resolveWorkingDurationMinuteSnapshot(
+        props.environmentId,
+        props.startedMs,
+        Date.now(),
+        prev.environmentId === props.environmentId && prev.startedMs === props.startedMs
+          ? prev.nextBoundaryClientMs
+          : undefined,
+      ),
+    );
+  }
+  const messages = useMessages();
+  return (
+    <span className="tabular-nums">{formatWorkingDurationLabel(snapshot.elapsedMs, messages)}</span>
   );
 }
 

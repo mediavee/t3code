@@ -42,6 +42,7 @@ import {
 } from "react";
 import { cn } from "../lib/utils";
 import { revealThreadTerminal } from "../lib/revealThreadTerminal";
+import { observeVisibleAnimation } from "../lib/visibleAnimation";
 
 import { useEnvironmentQuery } from "../state/query";
 import { linkedPullRequestDetailAtom, useSharedPullRequestSummary } from "../state/pullRequests";
@@ -739,12 +740,18 @@ export function terminalStatusFromRunningIds(
   };
 }
 
-function synchronizeTerminalPulse(event: AnimationEvent<SVGSVGElement>) {
+const STATUS_PULSE_DURATION_MS = 2_000;
+
+export function synchronizeTerminalPulse(
+  event: Pick<AnimationEvent<SVGSVGElement>, "animationName" | "currentTarget">,
+) {
   if (event.animationName !== "status-pulse") return;
+  const phaseMs = Number(document.timeline.currentTime ?? 0) % STATUS_PULSE_DURATION_MS;
 
   for (const animation of event.currentTarget.getAnimations()) {
     if ("animationName" in animation && animation.animationName === "status-pulse") {
-      animation.startTime = 0;
+      // Setting currentTime instead of startTime preserves CSS animation-play-state: paused.
+      animation.currentTime = phaseMs;
     }
   }
 }
@@ -791,6 +798,7 @@ export function ThreadTerminalStatusButton({
         }
       >
         <TerminalIcon
+          ref={observeVisibleAnimation}
           className="size-3.5 motion-safe:animate-status-pulse"
           onAnimationStart={synchronizeTerminalPulse}
         />
@@ -822,6 +830,7 @@ function ThreadStatusLabel({
           }
         >
           <span
+            ref={status.pulse ? observeVisibleAnimation : undefined}
             className={`size-[9px] rounded-full ${status.dotClass} ${
               status.pulse ? "motion-safe:animate-status-pulse" : ""
             }`}
@@ -844,6 +853,7 @@ function ThreadStatusLabel({
         }
       >
         <span
+          ref={status.pulse ? observeVisibleAnimation : undefined}
           className={`h-1.5 w-1.5 rounded-full ${status.dotClass} ${
             status.pulse ? "motion-safe:animate-status-pulse" : ""
           }`}
@@ -994,6 +1004,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
             }
           >
             <TerminalIcon
+              ref={terminalStatus.pulse ? observeVisibleAnimation : undefined}
               className={`size-3 ${terminalStatus.pulse ? "motion-safe:animate-status-pulse" : ""}`}
               onAnimationStart={synchronizeTerminalPulse}
             />
