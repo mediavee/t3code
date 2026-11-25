@@ -1,4 +1,5 @@
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
+import { toServerClock } from "@t3tools/client-runtime/clock";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
@@ -1272,6 +1273,35 @@ export function reduceSidebarProjectScopeMenuState(
     case "project-settings-opened":
       return { open: false, query: "" };
   }
+}
+
+export const WORKING_DURATION_MINUTE_THRESHOLD_MS = 60_000;
+
+export function resolveWorkingDurationMinuteSnapshot(
+  environmentId: EnvironmentId,
+  startedMs: number,
+  nowClientMs: number,
+  minClientMs?: number,
+) {
+  const serverClockOffset = toServerClock(environmentId, 0);
+  const effectiveNowClientMs =
+    minClientMs !== undefined && nowClientMs < minClientMs ? minClientMs : nowClientMs;
+  const elapsedMs = effectiveNowClientMs + serverClockOffset - startedMs;
+  const completedMinutes = Math.max(
+    1,
+    Math.floor(elapsedMs / WORKING_DURATION_MINUTE_THRESHOLD_MS),
+  );
+  const nextBoundaryClientMs =
+    startedMs + (completedMinutes + 1) * WORKING_DURATION_MINUTE_THRESHOLD_MS - serverClockOffset;
+  return {
+    environmentId,
+    startedMs,
+    elapsedMs: completedMinutes * WORKING_DURATION_MINUTE_THRESHOLD_MS,
+    nextBoundaryClientMs:
+      minClientMs !== undefined && nextBoundaryClientMs <= minClientMs
+        ? minClientMs + WORKING_DURATION_MINUTE_THRESHOLD_MS
+        : nextBoundaryClientMs,
+  };
 }
 
 export function resolveWorkingStartedAt(

@@ -41,6 +41,7 @@ import { useBrowserLayoutZoomFactor } from "~/browser/useBrowserLayoutZoomFactor
 import { Button } from "~/components/ui/button";
 import { toastManager } from "~/components/ui/toast";
 import { cn } from "~/lib/utils";
+import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 import { useThreadPreviewState } from "~/previewStateStore";
 import {
   type PreviewMiniPlayerSize,
@@ -629,6 +630,7 @@ function MiniPlayerShell({
               className="absolute right-0 top-0 size-2 transition-opacity group-hover:opacity-0 group-focus-within:opacity-0 group-data-pill-open:opacity-0 pointer-coarse:right-2.5 pointer-coarse:top-2.5"
             >
               <span
+                ref={recording ? observeVisibleAnimation : undefined}
                 className={cn(
                   "block size-2 rounded-full shadow-sm ring-1 ring-background/70",
                   recording
@@ -640,7 +642,10 @@ function MiniPlayerShell({
             <div className="pointer-events-none absolute right-0 top-0 flex h-8 cursor-grab items-center gap-0.5 rounded-lg border border-border/80 bg-popover/92 p-0.5 opacity-0 shadow-lg/20 backdrop-blur-xl transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 group-data-pill-open:pointer-events-auto group-data-pill-open:opacity-100 active:cursor-grabbing pointer-coarse:right-2.5 pointer-coarse:top-2.5">
               {recording ? (
                 <span aria-hidden className="flex size-6 shrink-0 items-center justify-center">
-                  <span className="size-2 rounded-full bg-destructive motion-safe:animate-status-pulse" />
+                  <span
+                    ref={observeVisibleAnimation}
+                    className="size-2 rounded-full bg-destructive motion-safe:animate-status-pulse"
+                  />
                 </span>
               ) : null}
               <SharedTooltipTrigger

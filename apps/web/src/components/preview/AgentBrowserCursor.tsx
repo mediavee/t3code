@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { useBrowserPointerStore } from "~/browser/browserPointerStore";
 import { useBrowserSurfaceStore } from "~/browser/browserSurfaceStore";
+import { observeVisibleAnimation } from "~/lib/visibleAnimation";
 
 import { agentBrowserCursorOpacity, type BrowserController } from "./agentBrowserCursorLogic";
 
@@ -85,6 +86,7 @@ export function AgentCursorMark(props: {
       {phase === "click" ? (
         <span
           key={sequence}
+          ref={observeVisibleAnimation}
           className="absolute left-0.5 top-0.5 size-4 animate-status-ping rounded-full bg-primary/25 motion-reduce:animate-none"
         />
       ) : null}

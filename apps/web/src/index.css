@@ -604,10 +604,58 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
   }
 }
 
+@keyframes visible-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @utility visible-animate-spin {
-  animation: var(--animate-spin);
+  animation: visible-spin 1s steps(24, end) infinite;
   animation-play-state: var(--visible-animation-state, paused);
   will-change: var(--visible-animation-will-change, auto);
+}
+
+/* Unlayered so animation-play-state overrides @layer utilities animation shorthands. */
+:where([class*="animate-status-pulse"], [class*="animate-status-ping"]) {
+  animation-play-state: var(--visible-animation-state, running);
+}
+
+/* Pause infinite animations and disable GPU backdrop blur passes while unfocused or hidden. */
+:root[data-window-blurred="true"] {
+  --glass-blur: 0px !important;
+  --glass-opacity: 100% !important;
+  --glass-saturation: 1 !important;
+}
+
+:root[data-window-blurred="true"]
+  :where(
+    [class*="animate-status-pulse"],
+    [class*="animate-status-ping"],
+    [class*="animate-skeleton"],
+    [class*="animate-pulse"],
+    [class*="animate-spin"],
+    [class*="animate-ping"],
+    [class*="animate-bounce"],
+    [class*="visible-animate-spin"],
+    [class*="live-tool-shine"],
+    [class*="live-activity-focus"]
+  ) {
+  animation-play-state: paused !important;
+}
+
+:root[data-window-blurred="true"]
+  :where(
+    .surface-glass,
+    .alert-glass,
+    .dialog-glass,
+    .dialog-backdrop,
+    .dropdown-glass,
+    [class*="backdrop-blur"]
+  ),
+:root[data-window-blurred="true"] [class*="before:backdrop-blur"]::before {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 
 @keyframes live-activity-focus {

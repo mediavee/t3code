@@ -14,22 +14,55 @@ export interface ClockStore<A> {
 // setTimeout fires immediately for delays beyond a signed 32-bit int.
 const MAX_TIMEOUT_MS = 2_147_483_647;
 
-function makeTickStore<A>(read: () => A, periodMs: number): ClockStore<A> {
+interface VisibilityDocument {
+  readonly visibilityState?: string;
+  readonly addEventListener?: (type: string, listener: () => void) => void;
+  readonly removeEventListener?: (type: string, listener: () => void) => void;
+}
+
+function getVisibilityDocument(): VisibilityDocument | undefined {
+  const doc = (globalThis as { readonly document?: VisibilityDocument }).document;
+  return doc !== undefined && typeof doc.addEventListener === "function" ? doc : undefined;
+}
+
+function isDocumentHidden(): boolean {
+  return getVisibilityDocument()?.visibilityState === "hidden";
+}
+
+function makeTickStore<A>(
+  read: () => A,
+  periodMs: number,
+  options?: { readonly pauseWhenHidden?: boolean },
+): ClockStore<A> {
+  const pauseWhenHidden = options?.pauseWhenHidden === true;
   let value = read();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let subscribedDoc: VisibilityDocument | undefined;
   const listeners = new Set<() => void>();
+
+  const stopTimer = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+
+  const notifyIfChanged = () => {
+    const next = read();
+    if (next !== value) {
+      value = next;
+      for (const listener of listeners) listener();
+    }
+  };
 
   // Each tick lands on a wall-clock boundary so every subscriber updates in
   // the same frame instead of each drifting on its own phase.
   const schedule = () => {
+    if (pauseWhenHidden && isDocumentHidden()) return;
     timer = setTimeout(
       () => {
         timer = undefined;
-        const next = read();
-        if (next !== value) {
-          value = next;
-          for (const listener of listeners) listener();
-        }
+        notifyIfChanged();
         // Listeners may unsubscribe (stopping the clock) or resubscribe (arming
         // a fresh timer) while notified; only continue a clock nobody re-armed.
         if (listeners.size > 0 && timer === undefined) schedule();
@@ -38,32 +71,60 @@ function makeTickStore<A>(read: () => A, periodMs: number): ClockStore<A> {
     );
   };
 
+  const onVisibilityChange = () => {
+    if (listeners.size === 0) return;
+    if (isDocumentHidden()) {
+      stopTimer();
+      return;
+    }
+    notifyIfChanged();
+    if (listeners.size > 0 && timer === undefined) schedule();
+  };
+
+  const startVisibilityListener = () => {
+    if (!pauseWhenHidden || subscribedDoc !== undefined) return;
+    const doc = getVisibilityDocument();
+    if (doc === undefined) return;
+    subscribedDoc = doc;
+    doc.addEventListener?.("visibilitychange", onVisibilityChange);
+  };
+
+  const stopVisibilityListener = () => {
+    if (subscribedDoc === undefined) return;
+    subscribedDoc.removeEventListener?.("visibilitychange", onVisibilityChange);
+    subscribedDoc = undefined;
+  };
+
   return {
     subscribe: (listener) => {
       if (listeners.size === 0) {
         value = read();
+        startVisibilityListener();
         schedule();
       }
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
         if (listeners.size === 0) {
-          clearTimeout(timer);
-          timer = undefined;
+          stopTimer();
+          stopVisibilityListener();
         }
       };
     },
     getSnapshot: () => {
-      if (timer === undefined) value = read();
+      if (timer === undefined && !(pauseWhenHidden && listeners.size > 0 && isDocumentHidden())) {
+        value = read();
+      }
       return value;
     },
   };
 }
 
-/** Epoch ms floored to the second, advancing on each wall-clock second. */
+/** Epoch ms floored to the second, advancing on each wall-clock second while visible. */
 export const secondTick: ClockStore<number> = makeTickStore(
   () => Math.floor(Date.now() / 1000) * 1000,
   1000,
+  { pauseWhenHidden: true },
 );
 
 /** ISO timestamp truncated to the minute (`YYYY-MM-DDTHH:mm`). */

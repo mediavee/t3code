@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Electron sandboxed preload runs outside an Effect runtime.
 import type {
   DesktopBridge,
   DesktopPreviewAnnotationVoiceEvent,
@@ -87,6 +88,30 @@ if (!primaryPasteEnabled) {
   );
 }
 
+const LOCAL_ENVIRONMENTS_CACHE_TTL_MS = 5 * 60_000;
+const localEnvironmentsChangedListeners = new Set<() => void>();
+let cachedLocalEnvironmentBootstraps:
+  | {
+      readonly value: ReturnType<DesktopBridge["getLocalEnvironmentBootstraps"]>;
+      readonly cachedAtMs: number;
+    }
+  | undefined;
+let cachedLocalEnvironmentEnabled: boolean | undefined;
+
+function invalidateLocalEnvironmentsCache() {
+  cachedLocalEnvironmentBootstraps = undefined;
+  cachedLocalEnvironmentEnabled = undefined;
+}
+
+ipcRenderer.on(IpcChannels.LOCAL_ENVIRONMENTS_CHANGED_CHANNEL, () => {
+  invalidateLocalEnvironmentsCache();
+  for (const listener of localEnvironmentsChangedListeners) {
+    try {
+      listener();
+    } catch {}
+  }
+});
+
 function unwrapEnsureSshEnvironmentResult(result: unknown) {
   if (
     typeof result === "object" &&
@@ -150,18 +175,47 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     return Array.isArray(result) ? result.filter((tag) => typeof tag === "string") : [];
   },
   getLocalEnvironmentBootstraps: () => {
+    const now = Date.now();
+    if (
+      cachedLocalEnvironmentBootstraps !== undefined &&
+      now - cachedLocalEnvironmentBootstraps.cachedAtMs < LOCAL_ENVIRONMENTS_CACHE_TTL_MS
+    ) {
+      return cachedLocalEnvironmentBootstraps.value;
+    }
     const result = ipcRenderer.sendSync(IpcChannels.GET_LOCAL_ENVIRONMENT_BOOTSTRAPS_CHANNEL);
     if (!Array.isArray(result)) {
       return [];
     }
-    return result as ReturnType<DesktopBridge["getLocalEnvironmentBootstraps"]>;
+    const bootstraps = result as ReturnType<DesktopBridge["getLocalEnvironmentBootstraps"]>;
+    cachedLocalEnvironmentBootstraps = { value: bootstraps, cachedAtMs: now };
+    return bootstraps;
   },
   getLocalEnvironmentBearerToken: () =>
     ipcRenderer.invoke(IpcChannels.GET_LOCAL_ENVIRONMENT_BEARER_TOKEN_CHANNEL),
-  getLocalEnvironmentEnabled: () =>
-    ipcRenderer.sendSync(IpcChannels.GET_LOCAL_ENVIRONMENT_ENABLED_CHANNEL) !== false,
-  setLocalEnvironmentEnabled: (enabled) =>
-    ipcRenderer.invoke(IpcChannels.SET_LOCAL_ENVIRONMENT_ENABLED_CHANNEL, enabled),
+  getLocalEnvironmentEnabled: () => {
+    if (cachedLocalEnvironmentEnabled !== undefined) {
+      return cachedLocalEnvironmentEnabled;
+    }
+    const result = ipcRenderer.sendSync(IpcChannels.GET_LOCAL_ENVIRONMENT_ENABLED_CHANNEL);
+    if (typeof result === "boolean") {
+      cachedLocalEnvironmentEnabled = result;
+      return result;
+    }
+    return true;
+  },
+  setLocalEnvironmentEnabled: async (enabled) => {
+    try {
+      return await ipcRenderer.invoke(IpcChannels.SET_LOCAL_ENVIRONMENT_ENABLED_CHANNEL, enabled);
+    } finally {
+      invalidateLocalEnvironmentsCache();
+    }
+  },
+  onLocalEnvironmentsChanged: (listener) => {
+    localEnvironmentsChangedListeners.add(listener);
+    return () => {
+      localEnvironmentsChangedListeners.delete(listener);
+    };
+  },
   getHostEnvironmentId: () => ipcRenderer.invoke(IpcChannels.GET_HOST_ENVIRONMENT_ID_CHANNEL),
   getClientSettings: () => ipcRenderer.invoke(IpcChannels.GET_CLIENT_SETTINGS_CHANNEL),
   setClientSettings: (settings) =>
