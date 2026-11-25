@@ -67,3 +67,35 @@ it.effect("names the span that grew the heap in a spike, not an older open or en
     assert.equal(old.attributes.get("memory.heap_growth_bytes"), 160 * MB);
   }),
 );
+
+it("caches heap readings within the throttle window and refreshes on readFresh", () => {
+  let reads = 0;
+  let nowMs = 1_000;
+  let heap = 100 * MB;
+  const reader = HeapAttribution.makeCachedHeapReader(
+    () => {
+      reads += 1;
+      return heap;
+    },
+    { windowMs: 500, now: () => nowMs },
+  );
+
+  assert.equal(reader.readCached(), 100 * MB);
+  assert.equal(reads, 1);
+
+  heap = 120 * MB;
+  nowMs = 1_499;
+  assert.equal(reader.readCached(), 100 * MB);
+  assert.equal(reads, 1);
+
+  nowMs = 1_500;
+  assert.equal(reader.readCached(), 120 * MB);
+  assert.equal(reads, 2);
+
+  heap = 150 * MB;
+  nowMs = 1_510;
+  assert.equal(reader.readFresh(), 150 * MB);
+  assert.equal(reads, 3);
+  assert.equal(reader.readCached(), 150 * MB);
+  assert.equal(reads, 3);
+});

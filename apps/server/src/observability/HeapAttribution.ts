@@ -13,8 +13,34 @@ const SPIKE_WINDOW_SAMPLES = 10;
 const SPIKE_COOLDOWN_SAMPLES = 60;
 const RECENT_SPANS = 32;
 const REPORTED_SPANS = 8;
+const HEAP_STAT_CACHE_WINDOW_MS = 500;
 
-const readHeapUsed = () => NodeV8.getHeapStatistics().used_heap_size;
+const readV8HeapUsed = () => NodeV8.getHeapStatistics().used_heap_size;
+
+export const makeCachedHeapReader = (
+  read: () => number = readV8HeapUsed,
+  options?: {
+    readonly windowMs?: number;
+    readonly now?: () => number;
+  },
+) => {
+  const windowMs = options?.windowMs ?? HEAP_STAT_CACHE_WINDOW_MS;
+  const now = options?.now ?? (() => performance.now());
+  let cachedValue = 0;
+  let cachedAtMs = Number.NEGATIVE_INFINITY;
+  const readFresh = () => {
+    cachedValue = read();
+    cachedAtMs = now();
+    return cachedValue;
+  };
+  const readCached = () => {
+    if (now() - cachedAtMs < windowMs) {
+      return cachedValue;
+    }
+    return readFresh();
+  };
+  return { readCached, readFresh };
+};
 
 interface Growth {
   readonly name: string;
@@ -25,8 +51,12 @@ interface Growth {
  * Heap growth is approximate: it includes other fibers' allocations and GC, so it names
  * suspects, not culprits. A spike lists what was open or just grew.
  */
-export const make = (tracer: Tracer.Tracer, heapUsed: () => number = readHeapUsed) =>
+export const make = (tracer: Tracer.Tracer, heapUsed?: () => number) =>
   Effect.sync(() => {
+    const reader =
+      heapUsed === undefined
+        ? makeCachedHeapReader()
+        : { readCached: heapUsed, readFresh: heapUsed };
     const open = new Map<
       Tracer.Span,
       { readonly name: string; readonly startHeap: number; readonly startTick: number }
@@ -40,12 +70,12 @@ export const make = (tracer: Tracer.Tracer, heapUsed: () => number = readHeapUse
       ...(tracer.context === undefined ? {} : { context: tracer.context }),
       span(options) {
         const span = tracer.span(options);
-        const startHeap = heapUsed();
+        const startHeap = reader.readCached();
         open.set(span, { name: options.name, startHeap, startTick: tick });
         const end = span.end.bind(span);
         span.end = (endTime, exit) => {
           open.delete(span);
-          const growthBytes = heapUsed() - startHeap;
+          const growthBytes = reader.readCached() - startHeap;
           if (growthBytes >= SPAN_GROWTH_ATTRIBUTE_BYTES) {
             span.attribute("memory.heap_growth_bytes", growthBytes);
             recent.push({ name: options.name, growthBytes, endTick: tick });
@@ -59,7 +89,7 @@ export const make = (tracer: Tracer.Tracer, heapUsed: () => number = readHeapUse
 
     // Untraced: it runs every second and only emits a span when the heap spikes.
     const sample = Effect.fnUntraced(function* () {
-      const heap = heapUsed();
+      const heap = reader.readFresh();
       tick++;
       samples.push(heap);
       if (samples.length > SPIKE_WINDOW_SAMPLES) samples.shift();
