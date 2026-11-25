@@ -109,6 +109,7 @@ describe("deadlineStore", () => {
 describe("secondTick", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("advances on wall-clock second boundaries", () => {
@@ -142,6 +143,75 @@ describe("secondTick", () => {
     vi.advanceTimersByTime(1_000);
     expect(vi.getTimerCount()).toBe(1);
     unsubscribeNext();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("pauses while document is hidden and syncs immediately when visible again", () => {
+    vi.useFakeTimers({ now: 10_200 });
+    let visibilityState: DocumentVisibilityState = "visible";
+    const docTarget = new EventTarget();
+    Object.defineProperty(docTarget, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState,
+    });
+    vi.stubGlobal("document", docTarget);
+
+    const listener = vi.fn();
+    const unsubscribe = secondTick.subscribe(listener);
+    try {
+      expect(secondTick.getSnapshot()).toBe(10_000);
+      expect(vi.getTimerCount()).toBe(1);
+
+      visibilityState = "hidden";
+      docTarget.dispatchEvent(new Event("visibilitychange"));
+      expect(vi.getTimerCount()).toBe(0);
+
+      vi.advanceTimersByTime(5_000);
+      expect(listener).not.toHaveBeenCalled();
+      // Snapshot stays stable while subscribed and hidden (useSyncExternalStore contract).
+      expect(secondTick.getSnapshot()).toBe(10_000);
+
+      visibilityState = "visible";
+      docTarget.dispatchEvent(new Event("visibilitychange"));
+      expect(secondTick.getSnapshot()).toBe(15_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
+
+      vi.advanceTimersByTime(800);
+      expect(secondTick.getSnapshot()).toBe(16_000);
+      expect(listener).toHaveBeenCalledTimes(2);
+    } finally {
+      unsubscribe();
+    }
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not arm a timer when subscribed while already hidden", () => {
+    vi.useFakeTimers({ now: 20_000 });
+    let visibilityState: DocumentVisibilityState = "hidden";
+    const docTarget = new EventTarget();
+    Object.defineProperty(docTarget, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState,
+    });
+    vi.stubGlobal("document", docTarget);
+
+    const listener = vi.fn();
+    const unsubscribe = secondTick.subscribe(listener);
+    try {
+      expect(vi.getTimerCount()).toBe(0);
+
+      vi.advanceTimersByTime(3_000);
+      expect(listener).not.toHaveBeenCalled();
+
+      visibilityState = "visible";
+      docTarget.dispatchEvent(new Event("visibilitychange"));
+      expect(secondTick.getSnapshot()).toBe(23_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(1);
+    } finally {
+      unsubscribe();
+    }
     expect(vi.getTimerCount()).toBe(0);
   });
 });

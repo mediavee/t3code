@@ -195,15 +195,32 @@ export function JumpHintBadge(props: { label: string }) {
 export const JUMP_HINT_SLOT_CLASS_NAME =
   "[&>:not([data-jump-hint])]:invisible [&>:not([data-jump-hint])]:absolute";
 
+const WORKING_DURATION_MINUTE_THRESHOLD_MS = 60_000;
+
 function WorkingDuration(props: { environmentId: EnvironmentId; startedAt: string | null }) {
   const startedMs = props.startedAt !== null ? Date.parse(props.startedAt) : Number.NaN;
   if (Number.isNaN(startedMs)) return null;
   return <WorkingDurationLabel environmentId={props.environmentId} startedMs={startedMs} />;
 }
 
-// Self-ticking so only this span re-renders each second, not the whole row;
-// the shared tick lands every working row's update in the same frame.
+// Self-ticking so only this span re-renders on clock ticks, not the whole row.
+// Switches from the shared 1Hz clock to the minute clock once elapsed reaches 60s
+// because minute/hour labels omit seconds.
 function WorkingDurationLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
+  const minuteThresholdMs =
+    props.startedMs + WORKING_DURATION_MINUTE_THRESHOLD_MS - toServerClock(props.environmentId, 0);
+  const reachedMinute = useDeadlinePassed(minuteThresholdMs);
+  if (reachedMinute) {
+    return (
+      <WorkingDurationMinuteLabel environmentId={props.environmentId} startedMs={props.startedMs} />
+    );
+  }
+  return (
+    <WorkingDurationSecondLabel environmentId={props.environmentId} startedMs={props.startedMs} />
+  );
+}
+
+function WorkingDurationSecondLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
   const nowMs = useNowSecond();
   const messages = useMessages();
   return (
@@ -214,6 +231,29 @@ function WorkingDurationLabel(props: { environmentId: EnvironmentId; startedMs: 
       )}
     </span>
   );
+}
+
+function resolveWorkingDurationMinuteElapsedMs(
+  environmentId: EnvironmentId,
+  startedMs: number,
+  nowMinute: string,
+): number {
+  const minuteMs = Date.parse(`${nowMinute}:00.000Z`);
+  const elapsedMs = toServerClock(environmentId, minuteMs) - startedMs;
+  return elapsedMs < WORKING_DURATION_MINUTE_THRESHOLD_MS
+    ? WORKING_DURATION_MINUTE_THRESHOLD_MS
+    : elapsedMs;
+}
+
+function WorkingDurationMinuteLabel(props: { environmentId: EnvironmentId; startedMs: number }) {
+  const nowMinute = useNowMinute();
+  const messages = useMessages();
+  const elapsedMs = resolveWorkingDurationMinuteElapsedMs(
+    props.environmentId,
+    props.startedMs,
+    nowMinute,
+  );
+  return <span className="tabular-nums">{formatWorkingDurationLabel(elapsedMs, messages)}</span>;
 }
 
 function terminalProcessLabel(count: number, resolve: MessageResolver): string {
