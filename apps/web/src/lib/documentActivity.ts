@@ -11,7 +11,7 @@ let snapshot: DocumentActivity = ALWAYS_ACTIVE;
 function readActivity(): DocumentActivity {
   if (typeof document === "undefined") return ALWAYS_ACTIVE;
   const visible = document.visibilityState === "visible";
-  const focused = document.hasFocus();
+  const focused = typeof document.hasFocus === "function" ? document.hasFocus() : true;
   return snapshot.visible === visible && snapshot.focused === focused
     ? snapshot
     : { visible, focused };

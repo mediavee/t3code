@@ -861,6 +861,7 @@ export function ThreadTerminalStatusButton({
         ref={observeVisibleAnimation}
         className="size-3.5 motion-safe:animate-status-pulse"
         onAnimationStart={synchronizeTerminalPulse}
+        onAnimationIteration={synchronizeTerminalPulse}
       />
     </SharedTooltipTrigger>
   );
@@ -1061,6 +1062,7 @@ export function ThreadRowTrailingStatus({ thread }: { thread: SidebarThreadSumma
             ref={terminalStatus.pulse ? observeVisibleAnimation : undefined}
             className={`size-3 ${terminalStatus.pulse ? "motion-safe:animate-status-pulse" : ""}`}
             onAnimationStart={synchronizeTerminalPulse}
+            onAnimationIteration={synchronizeTerminalPulse}
           />
         </SharedTooltipTrigger>
       ) : null}

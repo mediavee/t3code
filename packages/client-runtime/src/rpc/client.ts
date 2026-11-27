@@ -167,7 +167,7 @@ export type EnvironmentRpcStreamFailure<TTag extends EnvironmentStreamRpcTag> =
     ? E
     : never;
 
-export const currentSession = Effect.fn("EnvironmentRpc.currentSession")(function* () {
+export const currentSession = Effect.fnUntraced(function* () {
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   return yield* SubscriptionRef.get(supervisor.session).pipe(
     Effect.flatMap(
@@ -210,10 +210,7 @@ export class RpcPermissionGuard extends Context.Reference<{
   }),
 }) {}
 
-const authorizeRequest = Effect.fn("EnvironmentRpc.authorize")(function* (
-  method: string,
-  input: unknown,
-) {
+const authorizeRequest = Effect.fnUntraced(function* (method: string, input: unknown) {
   if (clientRpcRequiredScopes(method, input).length === 0) return;
   const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
   const guard = yield* RpcPermissionGuard;

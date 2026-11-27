@@ -31,15 +31,19 @@ import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../../shell/DesktopShellEnvironment.ts";
+import * as DesktopTelemetryPublisher from "../../telemetry/DesktopTelemetryPublisher.ts";
 import * as DesktopManagedPolicy from "../../app/DesktopManagedPolicy.ts";
 import * as DesktopWslEnvironment from "../../wsl/DesktopWslEnvironment.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
+import * as ElectronPowerMonitor from "../../electron/ElectronPowerMonitor.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
 import {
   getLocalEnvironmentBootstraps,
+  getOnBatteryPower,
   installLocalEnvironmentsChangedForwarding,
+  installPowerStateChangedForwarding,
   installRelayTelemetryEnabled,
   pickProjectFavicon,
   probeRemoteEditors,
@@ -270,6 +274,130 @@ describe("installLocalEnvironmentsChangedForwarding", () => {
         ]);
       }).pipe(Effect.scoped, Effect.provide(layer));
     }),
+  );
+});
+
+describe("power state IPC", () => {
+  it.effect("reads battery power state from ElectronPowerMonitor", () =>
+    Effect.gen(function* () {
+      assert.isTrue(
+        yield* getOnBatteryPower.handler().pipe(
+          Effect.provide(
+            Layer.mock(ElectronPowerMonitor.ElectronPowerMonitor)({
+              isOnBatteryPower: Effect.succeed(true),
+            }),
+          ),
+        ),
+      );
+      assert.isFalse(
+        yield* getOnBatteryPower.handler().pipe(
+          Effect.provide(
+            Layer.mock(ElectronPowerMonitor.ElectronPowerMonitor)({
+              isOnBatteryPower: Effect.succeed(false),
+            }),
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.effect(
+    "forwards deduplicated power transitions from powerMonitor, resume, and telemetry",
+    () =>
+      Effect.gen(function* () {
+        let currentOnBattery = false;
+        const listeners = new Map<string, Set<() => void>>();
+        const telemetryChanges = yield* PubSub.unbounded<{
+          readonly power: { readonly onBattery: "true" | "false" | "unknown" };
+        }>();
+        const sent: Array<{ readonly channel: string; readonly args: readonly unknown[] }> = [];
+        const powerLayer = Layer.mock(ElectronPowerMonitor.ElectronPowerMonitor)({
+          isOnBatteryPower: Effect.sync(() => currentOnBattery),
+          onSimpleEvent: (eventName, listener) =>
+            Effect.acquireRelease(
+              Effect.sync(() => {
+                let set = listeners.get(eventName);
+                if (!set) {
+                  set = new Set();
+                  listeners.set(eventName, set);
+                }
+                set.add(listener);
+              }),
+              () =>
+                Effect.sync(() => {
+                  listeners.get(eventName)?.delete(listener);
+                }),
+            ).pipe(Effect.asVoid),
+        });
+        const telemetryLayer = Layer.mock(DesktopTelemetryPublisher.DesktopTelemetryPublisher)({
+          changes: Stream.fromPubSub(telemetryChanges) as never,
+        });
+        const windowLayer = Layer.mock(ElectronWindow.ElectronWindow)({
+          sendAll: (channel, ...args) =>
+            Effect.sync(() => {
+              sent.push({ channel, args });
+            }),
+        });
+
+        yield* Effect.gen(function* () {
+          yield* installPowerStateChangedForwarding();
+          yield* Effect.yieldNow;
+          assert.deepEqual(sent, []);
+
+          // Instant macOS/Win32 powerMonitor events emit on change and deduplicate repeats.
+          for (const listener of listeners.get("on-battery") ?? []) listener();
+          yield* Effect.yieldNow;
+          for (const listener of listeners.get("on-battery") ?? []) listener();
+          yield* Effect.yieldNow;
+          assert.deepEqual(sent, [
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [true] },
+          ]);
+
+          // Duplicate telemetry sample matching current state does not re-emit.
+          yield* PubSub.publish(telemetryChanges, { power: { onBattery: "true" as const } });
+          yield* Effect.yieldNow;
+          assert.strictEqual(sent.length, 1);
+
+          // Non-macOS telemetry transition (e.g., Windows/Linux) forwards when state changes.
+          yield* PubSub.publish(telemetryChanges, { power: { onBattery: "false" as const } });
+          yield* Effect.yieldNow;
+          assert.deepEqual(sent, [
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [true] },
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [false] },
+          ]);
+
+          // Unknown telemetry state is ignored.
+          yield* PubSub.publish(telemetryChanges, { power: { onBattery: "unknown" as const } });
+          yield* Effect.yieldNow;
+          assert.strictEqual(sent.length, 2);
+
+          // Resume re-reads isOnBatteryPower to catch unplug/plug during sleep.
+          currentOnBattery = true;
+          for (const listener of listeners.get("resume") ?? []) listener();
+          yield* Effect.yieldNow;
+          assert.deepEqual(sent, [
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [true] },
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [false] },
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [true] },
+          ]);
+
+          for (const listener of listeners.get("on-ac") ?? []) listener();
+          yield* Effect.yieldNow;
+          assert.deepEqual(sent, [
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [true] },
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [false] },
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [true] },
+            { channel: IpcChannels.POWER_STATE_CHANGED_CHANNEL, args: [false] },
+          ]);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(Layer.mergeAll(powerLayer, telemetryLayer, windowLayer)),
+        );
+
+        assert.strictEqual(listeners.get("on-battery")?.size ?? 0, 0);
+        assert.strictEqual(listeners.get("on-ac")?.size ?? 0, 0);
+        assert.strictEqual(listeners.get("resume")?.size ?? 0, 0);
+      }),
   );
 });
 
