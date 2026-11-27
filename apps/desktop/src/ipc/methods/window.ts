@@ -24,6 +24,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
@@ -38,12 +39,14 @@ import * as DesktopManagedPolicy from "../../app/DesktopManagedPolicy.ts";
 import * as DesktopPrimaryPaste from "../../app/DesktopPrimaryPaste.ts";
 import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
 import * as DesktopShellEnvironment from "../../shell/DesktopShellEnvironment.ts";
+import * as DesktopTelemetryPublisher from "../../telemetry/DesktopTelemetryPublisher.ts";
 import * as DesktopWslBackend from "../../wsl/DesktopWslBackend.ts";
 import * as DesktopWslEnvironment from "../../wsl/DesktopWslEnvironment.ts";
 import * as ElectronApp from "../../electron/ElectronApp.ts";
 import * as ElectronAudio from "../../electron/ElectronAudio.ts";
 import * as ElectronDialog from "../../electron/ElectronDialog.ts";
 import * as ElectronMenu from "../../electron/ElectronMenu.ts";
+import * as ElectronPowerMonitor from "../../electron/ElectronPowerMonitor.ts";
 import * as ElectronShell from "../../electron/ElectronShell.ts";
 import * as ElectronTheme from "../../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../../electron/ElectronWindow.ts";
@@ -160,6 +163,55 @@ export const getWindowFullscreenState = DesktopIpc.makeSyncIpcMethod({
     const window = yield* electronWindow.currentMainOrFirst;
     return Option.isSome(window) && window.value.isFullScreen();
   }),
+});
+
+export const getOnBatteryPower = DesktopIpc.makeSyncIpcMethod({
+  channel: IpcChannels.GET_ON_BATTERY_POWER_CHANNEL,
+  result: Schema.Boolean,
+  handler: Effect.fn("desktop.ipc.window.getOnBatteryPower")(function* () {
+    const powerMonitor = yield* ElectronPowerMonitor.ElectronPowerMonitor;
+    return yield* powerMonitor.isOnBatteryPower;
+  }),
+});
+
+export const installPowerStateChangedForwarding = Effect.fn(
+  "desktop.ipc.window.installPowerStateChangedForwarding",
+)(function* () {
+  const powerMonitor = yield* ElectronPowerMonitor.ElectronPowerMonitor;
+  const telemetryPublisher = yield* DesktopTelemetryPublisher.DesktopTelemetryPublisher;
+  const electronWindow = yield* ElectronWindow.ElectronWindow;
+  let lastSent = yield* powerMonitor.isOnBatteryPower;
+  const powerStateSignals = yield* Queue.sliding<boolean | "refresh">(1);
+
+  yield* powerMonitor.onSimpleEvent("on-battery", () => {
+    Queue.offerUnsafe(powerStateSignals, true);
+  });
+  yield* powerMonitor.onSimpleEvent("on-ac", () => {
+    Queue.offerUnsafe(powerStateSignals, false);
+  });
+  yield* powerMonitor.onSimpleEvent("resume", () => {
+    Queue.offerUnsafe(powerStateSignals, "refresh");
+  });
+  yield* telemetryPublisher.changes.pipe(
+    Stream.runForEach((snapshot) => {
+      if (snapshot.power.onBattery === "unknown") return Effect.void;
+      return Effect.sync(() => {
+        Queue.offerUnsafe(powerStateSignals, snapshot.power.onBattery === "true");
+      });
+    }),
+    Effect.forkScoped({ startImmediately: true }),
+  );
+  yield* Stream.fromQueue(powerStateSignals).pipe(
+    Stream.runForEach((signal) =>
+      Effect.gen(function* () {
+        const next = signal === "refresh" ? yield* powerMonitor.isOnBatteryPower : signal;
+        if (next === lastSent) return;
+        lastSent = next;
+        yield* electronWindow.sendAll(IpcChannels.POWER_STATE_CHANGED_CHANNEL, next);
+      }),
+    ),
+    Effect.forkScoped({ startImmediately: true }),
+  );
 });
 
 const localEnvironmentSettingsKey = (settings: DesktopAppSettings.DesktopSettings): string =>

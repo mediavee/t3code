@@ -112,6 +112,22 @@ ipcRenderer.on(IpcChannels.LOCAL_ENVIRONMENTS_CHANGED_CHANNEL, () => {
   }
 });
 
+const powerStateChangedListeners = new Set<(onBattery: boolean) => void>();
+let cachedOnBatteryPower: boolean | undefined;
+
+ipcRenderer.on(
+  IpcChannels.POWER_STATE_CHANGED_CHANNEL,
+  (_event: Electron.IpcRendererEvent, onBattery: unknown) => {
+    if (typeof onBattery !== "boolean") return;
+    cachedOnBatteryPower = onBattery;
+    for (const listener of powerStateChangedListeners) {
+      try {
+        listener(onBattery);
+      } catch {}
+    }
+  },
+);
+
 function unwrapEnsureSshEnvironmentResult(result: unknown) {
   if (
     typeof result === "object" &&
@@ -376,6 +392,25 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   getWindowFullscreenState: () =>
     ipcRenderer.sendSync(IpcChannels.GET_WINDOW_FULLSCREEN_STATE_CHANNEL) === true,
   getWindowZoomFactor: () => webFrame.getZoomFactor(),
+  getOnBatteryPower: () => {
+    if (cachedOnBatteryPower !== undefined) {
+      return cachedOnBatteryPower;
+    }
+    try {
+      const result: unknown = ipcRenderer.sendSync(IpcChannels.GET_ON_BATTERY_POWER_CHANNEL);
+      if (typeof result === "boolean") {
+        cachedOnBatteryPower = result;
+        return result;
+      }
+    } catch {}
+    return false;
+  },
+  onPowerStateChanged: (listener) => {
+    powerStateChangedListeners.add(listener);
+    return () => {
+      powerStateChangedListeners.delete(listener);
+    };
+  },
   onWindowFullscreenStateChange: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, fullscreen: unknown) => {
       if (typeof fullscreen !== "boolean") return;

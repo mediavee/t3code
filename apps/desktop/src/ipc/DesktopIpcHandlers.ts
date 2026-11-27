@@ -44,7 +44,9 @@ import {
   getDatabaseMigrationProgress,
   getLocalEnvironmentBootstraps,
   getLocalEnvironmentBearerToken,
+  getOnBatteryPower,
   installLocalEnvironmentsChangedForwarding,
+  installPowerStateChangedForwarding,
   installRelayTelemetryEnabled,
   getSystemLocale,
   getPreferredSystemLanguages,
@@ -99,6 +101,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   const ipc = yield* DesktopIpc.DesktopIpc;
   yield* installNotificationBadge();
   yield* installLocalEnvironmentsChangedForwarding();
+  yield* installPowerStateChangedForwarding();
   yield* PreviewIpc.installPreviewEventForwarding();
 
   yield* ipc.handle(AppActivationIpc.setReady);
@@ -114,6 +117,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handleSync(getPreferredSystemLanguages);
   yield* ipc.handleSync(getPrimaryPasteEnabled);
   yield* ipc.handleSync(getWindowFullscreenState);
+  yield* ipc.handleSync(getOnBatteryPower);
   yield* ipc.handleSync(getLocalEnvironmentBootstraps);
   yield* ipc.handleSync(getLocalEnvironmentEnabled);
   yield* ipc.handle(setLocalEnvironmentEnabled);

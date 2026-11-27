@@ -26,10 +26,12 @@ describe("desktop preload local environment cache", () => {
       },
     ];
     let localEnabled = true;
+    let onBatteryPower = false;
 
     const sendSync = vi.fn((channel: string) => {
       if (channel === IpcChannels.GET_LOCAL_ENVIRONMENT_BOOTSTRAPS_CHANNEL) return bootstraps;
       if (channel === IpcChannels.GET_LOCAL_ENVIRONMENT_ENABLED_CHANNEL) return localEnabled;
+      if (channel === IpcChannels.GET_ON_BATTERY_POWER_CHANNEL) return onBatteryPower;
       if (channel === IpcChannels.GET_PRIMARY_PASTE_ENABLED_CHANNEL) return true;
       return undefined;
     });
@@ -141,6 +143,36 @@ describe("desktop preload local environment cache", () => {
     expect(bridge.getLocalEnvironmentBootstraps()).toEqual(nextBootstraps);
     expect(bootstrapCalls()).toBe(3);
 
+    // Battery power state is read once via sendSync, then updated via push events with zero polling.
+    const batteryCalls = () =>
+      sendSync.mock.calls.filter(
+        ([channel]) => channel === IpcChannels.GET_ON_BATTERY_POWER_CHANNEL,
+      ).length;
+    expect(bridge.getOnBatteryPower?.()).toBe(false);
+    expect(bridge.getOnBatteryPower?.()).toBe(false);
+    expect(batteryCalls()).toBe(1);
+
+    const observedBatteryStates: boolean[] = [];
+    const unsubscribePower = bridge.onPowerStateChanged?.((next) => {
+      observedBatteryStates.push(next);
+      expect(bridge.getOnBatteryPower?.()).toBe(next);
+    });
+    onBatteryPower = true;
+    for (const handler of ipcListeners.get(IpcChannels.POWER_STATE_CHANGED_CHANNEL) ?? []) {
+      handler({}, true);
+    }
+    expect(observedBatteryStates).toEqual([true]);
+    expect(bridge.getOnBatteryPower?.()).toBe(true);
+    expect(batteryCalls()).toBe(1);
+
+    for (const handler of ipcListeners.get(IpcChannels.POWER_STATE_CHANGED_CHANNEL) ?? []) {
+      handler({}, false);
+    }
+    expect(observedBatteryStates).toEqual([true, false]);
+    expect(bridge.getOnBatteryPower?.()).toBe(false);
+    expect(batteryCalls()).toBe(1);
+
+    unsubscribePower?.();
     unsubscribe();
   });
 });

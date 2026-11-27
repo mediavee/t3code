@@ -1,3 +1,5 @@
+import { getDocumentActivity, subscribeDocumentActivity } from "./documentActivity";
+
 interface ObservedAnimation {
   element: HTMLElement | SVGElement;
   intersecting: boolean;
@@ -6,20 +8,15 @@ interface ObservedAnimation {
 const animations = new Map<Element, ObservedAnimation>();
 let observer: IntersectionObserver | null = null;
 let reducedMotion: MediaQueryList | null = null;
-let windowFocused = true;
 let rootTrackingCount = 0;
-let lifecycleAttached = false;
-
-function readWindowFocused(): boolean {
-  return typeof document !== "undefined" && typeof document.hasFocus === "function"
-    ? document.hasFocus()
-    : true;
-}
+let unsubscribeDocumentActivity: (() => void) | null = null;
+let batteryTrackingCount = 0;
+let unsubscribePowerState: (() => void) | null = null;
+let onBatteryPower = false;
 
 function isWindowActive(): boolean {
-  return (
-    typeof document === "undefined" || (document.visibilityState === "visible" && windowFocused)
-  );
+  const { visible, focused } = getDocumentActivity();
+  return visible && focused;
 }
 
 function syncRootBlurredAttribute() {
@@ -30,6 +27,17 @@ function syncRootBlurredAttribute() {
     delete root.dataset.windowBlurred;
   } else {
     root.dataset.windowBlurred = "true";
+  }
+}
+
+function syncRootBatteryAttribute() {
+  if (batteryTrackingCount === 0 || typeof document === "undefined") return;
+  const root = document.documentElement;
+  if (!root) return;
+  if (onBatteryPower) {
+    root.dataset.onBattery = "true";
+  } else {
+    delete root.dataset.onBattery;
   }
 }
 
@@ -47,43 +55,17 @@ function updateAnimations() {
   for (const animation of animations.values()) updateAnimation(animation);
 }
 
-function handleWindowFocus() {
-  windowFocused = true;
-  updateAnimations();
-}
-
-function handleWindowBlur() {
-  windowFocused =
-    typeof document !== "undefined" && typeof document.hasFocus === "function"
-      ? document.hasFocus()
-      : false;
-  updateAnimations();
-}
-
-function handleVisibilityChange() {
-  if (document.visibilityState === "visible") {
-    windowFocused = readWindowFocused();
-  }
-  updateAnimations();
-}
-
 function attachLifecycleListeners() {
-  if (lifecycleAttached || typeof document === "undefined" || typeof window === "undefined") {
+  if (unsubscribeDocumentActivity !== null || typeof document === "undefined") {
     return;
   }
-  lifecycleAttached = true;
-  windowFocused = readWindowFocused();
-  document.addEventListener("visibilitychange", handleVisibilityChange);
-  window.addEventListener("focus", handleWindowFocus);
-  window.addEventListener("blur", handleWindowBlur);
+  unsubscribeDocumentActivity = subscribeDocumentActivity(updateAnimations);
 }
 
 function maybeDetachLifecycleListeners() {
-  if (!lifecycleAttached || rootTrackingCount > 0 || animations.size > 0) return;
-  lifecycleAttached = false;
-  document.removeEventListener("visibilitychange", handleVisibilityChange);
-  window.removeEventListener("focus", handleWindowFocus);
-  window.removeEventListener("blur", handleWindowBlur);
+  if (unsubscribeDocumentActivity === null || rootTrackingCount > 0 || animations.size > 0) return;
+  unsubscribeDocumentActivity();
+  unsubscribeDocumentActivity = null;
 }
 
 /**
@@ -106,6 +88,39 @@ export function startWindowBlurTracking(): () => void {
       delete document.documentElement?.dataset.windowBlurred;
     }
     maybeDetachLifecycleListeners();
+  };
+}
+
+/**
+ * Maintains `data-on-battery="true"` on the root element while the desktop host is on battery power
+ * so CSS can disable glass blur and pause cosmetic infinite animations without polling IPC.
+ */
+export function startBatteryPowerTracking(): () => void {
+  if (typeof document === "undefined" || typeof window === "undefined") {
+    return () => {};
+  }
+  batteryTrackingCount += 1;
+  if (batteryTrackingCount === 1) {
+    const bridge = window.desktopBridge;
+    onBatteryPower = bridge?.getOnBatteryPower?.() === true;
+    unsubscribePowerState =
+      bridge?.onPowerStateChanged?.((nextOnBattery) => {
+        onBatteryPower = nextOnBattery;
+        syncRootBatteryAttribute();
+      }) ?? null;
+  }
+  syncRootBatteryAttribute();
+  let disposed = false;
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    batteryTrackingCount -= 1;
+    if (batteryTrackingCount === 0) {
+      unsubscribePowerState?.();
+      unsubscribePowerState = null;
+      onBatteryPower = false;
+      delete document.documentElement?.dataset.onBattery;
+    }
   };
 }
 

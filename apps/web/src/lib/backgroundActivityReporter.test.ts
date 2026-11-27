@@ -69,17 +69,26 @@ describe("wasRecentlyInteracted", () => {
 });
 
 describe("layer", () => {
+  let visibilityState: DocumentVisibilityState = "visible";
+  let target: EventTarget;
+
   beforeEach(() => {
-    const target = new EventTarget();
+    visibilityState = "visible";
+    target = new EventTarget();
     const listeners = {
       addEventListener: target.addEventListener.bind(target),
       removeEventListener: target.removeEventListener.bind(target),
     };
+    const doc = { ...listeners, hasFocus: () => true };
+    Object.defineProperty(doc, "visibilityState", {
+      configurable: true,
+      get: () => visibilityState,
+    });
     vi.stubGlobal("window", {
       ...listeners,
       localStorage: { getItem: () => "client", setItem: () => undefined },
     });
-    vi.stubGlobal("document", { ...listeners, visibilityState: "visible", hasFocus: () => true });
+    vi.stubGlobal("document", doc);
   });
 
   afterEach(() => {
@@ -108,6 +117,9 @@ describe("layer", () => {
       expect(calls).toBe(1);
 
       yield* TestClock.adjust("25 seconds");
+      expect(calls).toBe(1);
+
+      yield* TestClock.adjust("20 seconds");
       expect(calls).toBe(2);
     }),
   );
@@ -132,8 +144,49 @@ describe("layer", () => {
       yield* TestClock.adjust("1 second");
       expect(calls).toBe(1);
 
-      yield* TestClock.adjust("25 seconds");
+      yield* TestClock.adjust("45 seconds");
       expect(calls).toBe(2);
     }),
+  );
+
+  it.effect(
+    "keeps periodic heartbeats alive while hidden and keeps interaction window at 45s",
+    () =>
+      Effect.gen(function* () {
+        const entries = yield* SubscriptionRef.make(
+          new Map([[EnvironmentId.make("environment-reporter-test"), {}]]),
+        );
+        let calls = 0;
+        const registry = EnvironmentRegistry.EnvironmentRegistry.of({
+          entries,
+          run: () => {
+            calls += 1;
+            return Effect.void;
+          },
+        } as unknown as EnvironmentRegistry.EnvironmentRegistry["Service"]);
+
+        yield* Layer.build(
+          layer.pipe(
+            Layer.provide(Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, registry)),
+          ),
+        );
+        yield* TestClock.adjust("1 second");
+        expect(calls).toBe(1);
+
+        visibilityState = "hidden";
+        target.dispatchEvent(new Event("visibilitychange"));
+        yield* TestClock.adjust("1 second");
+        expect(calls).toBe(2);
+
+        // Periodic heartbeats continue every 45s while hidden so server leases do not expire.
+        yield* TestClock.adjust("45 seconds");
+        expect(calls).toBe(3);
+
+        // An interaction after >45s (even within the 90s lease TTL) triggers an immediate report.
+        yield* TestClock.adjust("5 seconds");
+        target.dispatchEvent(new Event("pointermove"));
+        yield* TestClock.adjust("1 second");
+        expect(calls).toBe(4);
+      }),
   );
 });
